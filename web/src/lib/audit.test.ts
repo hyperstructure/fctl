@@ -220,3 +220,37 @@ describe("an audit log entry in words", () => {
     );
   });
 });
+
+describe("what admin tokens do, in words", () => {
+  const by = (action: string, target: string, data: Record<string, unknown>) =>
+    said(describeAudit(entry(action, target, { ...data, admin_token: "adt_1" }, "Kofi Mensah"), names));
+
+  it("says whose account a token changed, and that a token changed it", () => {
+    expect(by("user.created", "usr_ada", { email: "ada@example.com" })).toBe(
+      "created the account of ada@example.com with an admin token",
+    );
+    expect(by("user.email_changed", "usr_asha", { from: "asha@old.example", to: "asha@example.com" })).toBe(
+      "changed the address of Asha Patel to asha@example.com with an admin token",
+    );
+    expect(by("user.avatar_set", "usr_asha", {})).toBe("set the picture of Asha Patel with an admin token");
+    expect(by("claude.token_set", "usr_asha", { credential: "crd_1" })).toBe(
+      "set the Claude token of Asha Patel with an admin token",
+    );
+  });
+
+  it("says where a token placed someone, and took them from", () => {
+    expect(by("workspace.member_added", "usr_asha", { email: "asha@example.com", role: "admin" })).toBe(
+      "added Asha Patel to the workspace as an admin with an admin token",
+    );
+    expect(by("project.member_removed", "prj_farm", { user: "usr_asha" })).toBe(
+      "removed Asha Patel from [Farm portal](project) with an admin token",
+    );
+  });
+
+  it("names the admin tokens admins make and revoke", () => {
+    const made = entry("admin_token.created", "adt_1", { name: "Okta provisioning" }, "Kofi Mensah");
+    expect(said(describeAudit(made))).toBe("created the admin token Okta provisioning");
+    const revoked = entry("admin_token.revoked", "adt_1", { name: "Okta provisioning" }, "Asha Patel");
+    expect(said(describeAudit(revoked))).toBe("revoked the admin token Okta provisioning");
+  });
+});

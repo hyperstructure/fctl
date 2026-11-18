@@ -2,4 +2,40 @@
 import type { InstanceRole } from "./InstanceRole";
 import type { UserStatus } from "./UserStatus";
 
-export type UpdateUserRequest = { role?: InstanceRole, status?: UserStatus, name?: string, };
+/**
+ * `PATCH /api/v1/admin/users/{user}`: absent fields stay as they are.
+ * Instance admins change roles, statuses and full names; an admin token
+ * ([`AdminToken`]) changes statuses, names, addresses and commit emails,
+ * never roles.
+ */
+export type UpdateUserRequest = { role?: InstanceRole, status?: UserStatus, 
+/**
+ * The full name. With `given_name` or `family_name` (admin tokens), it
+ * is made of those instead, and of the parts they had for the one the
+ * request leaves out.
+ */
+name?: string, 
+/**
+ * First names, all of them (admin tokens).
+ */
+given_name?: string, 
+/**
+ * The last name (admin tokens); an empty one clears it.
+ */
+family_name?: string, 
+/**
+ * What agents call them (admin tokens); an empty one leaves them their
+ * first names.
+ */
+preferred_name?: string, 
+/**
+ * Their primary address (admin tokens): it signs in from now on, and
+ * the workspaces they joined as the one it replaces know them by it.
+ * The address it replaces stops signing in to their account.
+ */
+email?: string, 
+/**
+ * The address their commits credit them with, their primary
+ * address's (admin tokens); an empty one removes it.
+ */
+commit_email?: string, };

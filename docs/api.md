@@ -25,7 +25,9 @@ curl -sS -H "Authorization: Bearer $FCTL_TOKEN" "$FCTL_SERVER/api/v1/sessions?st
 - **Base URL**: the instance's address followed by `/api/v1`.
 - **Authentication**: `Authorization: Bearer <token>`, with an access token
   (`fctl_pat_…`, [limited to what it is for](automation.md#access-tokens))
-  or the CLI's own. The web app's cookie works only from the app itself.
+  or the CLI's own, or an admin token (`fctl_adm_…`) for
+  [people](#people-with-an-admin-token). The web app's cookie works only
+  from the app itself.
 - **Bodies** are JSON (`Content-Type: application/json`), except file
   uploads, which are `application/octet-stream`.
 - **Ids** have a type prefix: `ses_` sessions, `prj_` projects, `wsp_`
@@ -456,6 +458,38 @@ requests and issues: `null` for fctl's defaults, `""` for nothing),
 | `GET`, `PATCH /api/v1/projects/{project}/review-agents` | its review agents: `{"enabled", "run_as_me", "model", "effort", "instructions", "bots", "skipped_repos", "drafts", "description_summary", "rounds"}` (owners turn them on, on their own subscription; another owner's change to how they review, while they're on, runs them on theirs, as `run_as_me` does); `repos` are the repositories they review, `skipped_repos` those they don't (`["acme/shared-lib"]`, `[]` for none); `drafts`: each new commit of a draft gets a review (on by default; `false`: drafts wait until they're marked ready for review, or someone asks); `description_summary`: their agents sum each pull request up at the end of its description before the review (off by default); `rounds`: where one of fctl's agents opened the pull request, its session gets the findings of this many reviews in a row while nobody messages its agent, then fctl holds the next ones back until a person messages it or passes them on (1 to 10, 5 by default) |
 | `GET /api/v1/projects/{project}/reviews` | its reviews, newest first: `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), the pull request, `findings`, `review_url`, `opened_by` (`id`, `number`, `title`): the project's session whose agent opened the pull request, if one did, `unsent` where its findings went to no session (fctl passes them on to the session that opened the pull request once one lists it), and `pull_request_summary` (`risk`: `low`, `medium`, `high` or `critical`, `risk_reason`, `overview`, `highlight`): what the agent put in the pull request's description, where it did; `?session=` for one session's review |
 | `POST /api/v1/projects/{project}/reviews` | `{"pull_request": "12"}` (or `owner/name#12`, or its URL): review its head now |
+
+## People, with an admin token
+
+Where a self-hosted instance's deployment turns them on
+([Self-hosting](self-hosting.md#provision-people-with-admin-tokens)), an
+instance admin makes admin tokens (`fctl_adm_…`), and your own programs
+provision people with one: it acts as that admin on these endpoints alone.
+`{user}` is a person's id or any of their addresses; `{workspace}` and
+`{project}` a slug or an id. The answers are the person as
+[`AdminUser`](../crates/fctl-proto/src/api.rs) describes them, with their
+workspaces, projects and the Claude token a token set, never the token
+itself.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/v1/admin/users` | creates an account: `{"email", "given_name", "family_name", "preferred_name", "commit_email", "password"}`, with an email and either `given_name` (and `family_name`) or `name` |
+| `GET /api/v1/admin/users` | everyone on the instance |
+| `GET /api/v1/admin/users/{user}` | one person |
+| `PATCH /api/v1/admin/users/{user}` | `{"given_name", "family_name", "name", "preferred_name", "email", "commit_email", "status"}`: a new `email` becomes their primary address, and the one it replaces stops signing in; `""` clears `family_name`, `preferred_name` and `commit_email`; `"status": "disabled"` signs them out and stops the sessions on their subscription, `"active"` lets them in again |
+| `PUT`, `DELETE /api/v1/admin/users/{user}/avatar` | their picture, a PNG, JPEG, GIF or WebP image of at most 256 KB as `application/octet-stream`; or their initials again |
+| `PUT`, `DELETE /api/v1/admin/users/{user}/claude` | the Claude token their sessions run on, `{"token": "sk-ant-oat01-…", "label": "Acme seat"}` from `claude setup-token`: setting it again replaces it, and the first becomes their default; their own Claude connections stay theirs |
+| `PUT /api/v1/admin/users/{user}/workspaces/{workspace}` | makes them a workspace's member, `{"role": "member"}`, or admin, `"admin"`, as their primary address, or gives them that role there |
+| `DELETE /api/v1/admin/users/{user}/workspaces/{workspace}` | takes them out of it, with its projects; their sessions there stop |
+| `PUT`, `DELETE /api/v1/admin/users/{user}/projects/{project}` | makes a member of its workspace a project's `viewer`, `editor`, `maintainer` or `owner` (`{"role": "editor"}`), or takes them out of it |
+| `POST /api/v1/admin/users/{user}/reset-link` | a link that sets their password: `{"emailed": true}` where the instance emailed it to them, else `{"url": …}` |
+| `DELETE /api/v1/admin/users/{user}` | deletes their account, as deleting their own would, once none of their sessions runs |
+| `GET /api/v1/admin/workspaces` | every workspace, to place people in |
+
+Anything else answers `forbidden`, and so do the endpoints only admin
+tokens reach to anyone else. No token changes the primary instance
+owner's account, only the primary owner's tokens change admins', and none
+changes roles.
 
 ## Everything else
 

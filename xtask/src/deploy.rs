@@ -37,6 +37,11 @@ pub struct Instance {
     /// one over http with the redirect (`fctl_domain::https`).
     #[serde(default)]
     pub https_only: bool,
+    /// Instance admins make admin tokens, which programs provision people
+    /// with (`fctl_domain::admin_tokens`): a self-hosted instance's choice,
+    /// never app.fctl.sh's.
+    #[serde(default)]
+    pub admin_tokens: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +165,9 @@ impl Instance {
         }
         if self.https_only {
             vars.push(("FCTL_HTTPS_ONLY", "1".to_owned()));
+        }
+        if self.admin_tokens {
+            vars.push(("FCTL_ADMIN_TOKENS", "1".to_owned()));
         }
         // The Worker runs first for the app's files too, to redirect them;
         // otherwise Cloudflare serves them itself, over http as well.
@@ -629,6 +637,26 @@ client_id = "lin_client"
                 assert!(doc["vars"].get(var).is_none(), "{instance} sets {var}");
             }
         }
+    }
+
+    /// Nobody provisions people on app.fctl.sh: its Worker never gets the
+    /// setting that lets its admins make admin tokens, which a self-hosted
+    /// instance's file turns on.
+    #[test]
+    fn app_fctl_sh_takes_no_admin_tokens() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for instance in ["fctl-sh", "example"] {
+            let doc: toml::Table =
+                toml::from_str(&load(&root, instance).unwrap().wrangler_toml()).unwrap();
+            assert!(
+                doc["vars"].get("FCTL_ADMIN_TOKENS").is_none(),
+                "{instance} sets FCTL_ADMIN_TOKENS"
+            );
+        }
+        let mut own = load(&root, "example").unwrap();
+        own.admin_tokens = true;
+        let doc: toml::Table = toml::from_str(&own.wrangler_toml()).unwrap();
+        assert_eq!(doc["vars"]["FCTL_ADMIN_TOKENS"].as_str(), Some("1"));
     }
 
     #[test]

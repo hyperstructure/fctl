@@ -195,6 +195,10 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
             "DELETE FROM tokens WHERE expires_at IS NOT NULL AND expires_at < ?",
             now,
         ),
+        (
+            "DELETE FROM admin_tokens WHERE expires_at IS NOT NULL AND expires_at < ?",
+            now,
+        ),
         ("DELETE FROM password_resets WHERE expires_at < ?", now),
         ("DELETE FROM sign_in_challenges WHERE expires_at < ?", now),
         ("DELETE FROM passkey_challenges WHERE expires_at < ?", now),

@@ -568,6 +568,10 @@ export const api = {
       "DELETE",
       `/admin/allowlist/${enc(id)}`,
     ),
+  adminTokens: () => request<G.AdminTokenList>("GET", "/admin/tokens"),
+  createAdminToken: (b: G.CreateAdminTokenRequest) =>
+    request<G.CreatedAdminToken>("POST", "/admin/tokens", b),
+  revokeAdminToken: (id: string) => request<G.Ok>("DELETE", `/admin/tokens/${enc(id)}`),
   reservedSlugs: () => request<G.ReservedSlugList>("GET", "/admin/reserved-slugs"),
   reserveSlug: (b: G.ReserveSlugRequest) => request<G.ReservedSlug>("POST", "/admin/reserved-slugs", b),
   unreserveSlug: (slug: string) => request<G.Ok>("DELETE", `/admin/reserved-slugs/${enc(slug)}`),

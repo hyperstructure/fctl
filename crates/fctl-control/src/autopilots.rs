@@ -3113,6 +3113,7 @@ async fn relayed(ctx: &Ctx, session_id: &str, method: &str, path: &str) -> AppRe
             most: Some(ap::ROLE_CAP),
         }),
         autopilot: Some(caller),
+        admin_token: false,
     };
     let (route_path, _) = path.split_once('?').unwrap_or((path, ""));
     let segs = route_path

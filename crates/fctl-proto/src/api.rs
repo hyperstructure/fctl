@@ -13,10 +13,10 @@ use crate::session::{
     WorkspaceRole,
 };
 use crate::{
-    AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, EnrollmentTokenId,
-    IdentityId, InviteId, LoginJobId, MemoryId, Millis, PasskeyId, ProjectId, PushDeviceId,
-    RetrospectiveId, RunnerId, ScheduleId, ScheduleRunId, SessionId, TokenId, UserId, WorkspaceId,
-    WorkspaceInviteId,
+    AccessRequestId, AdminTokenId, AllowId, AttachmentId, CredentialId, DeliveryId,
+    EnrollmentTokenId, IdentityId, InviteId, LoginJobId, MemoryId, Millis, PasskeyId, ProjectId,
+    PushDeviceId, RetrospectiveId, RunnerId, ScheduleId, ScheduleRunId, SessionId, TokenId, UserId,
+    WorkspaceId, WorkspaceInviteId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -71,6 +71,13 @@ pub struct Features {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub linear_webhook: bool,
+    /// Instance admins make admin tokens ([`AdminToken`]), which programs
+    /// provision people with: where the deployment turns them on
+    /// (`FCTL_ADMIN_TOKENS`), as a self-hosted instance's may, never
+    /// app.fctl.sh's. Absent from control planes before them.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub admin_tokens: bool,
 }
 
 /// `POST /api/v1/setup`: create the owner account with the setup token.
@@ -1162,13 +1169,178 @@ pub struct UserList {
     pub users: Vec<User>,
 }
 
+/// `PATCH /api/v1/admin/users/{user}`: absent fields stay as they are.
+/// Instance admins change roles, statuses and full names; an admin token
+/// ([`AdminToken`]) changes statuses, names, addresses and commit emails,
+/// never roles.
 #[skip_serializing_none]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct UpdateUserRequest {
     pub role: Option<InstanceRole>,
     pub status: Option<UserStatus>,
+    /// The full name. With `given_name` or `family_name` (admin tokens), it
+    /// is made of those instead, and of the parts they had for the one the
+    /// request leaves out.
     pub name: Option<String>,
+    /// First names, all of them (admin tokens).
+    pub given_name: Option<String>,
+    /// The last name (admin tokens); an empty one clears it.
+    pub family_name: Option<String>,
+    /// What agents call them (admin tokens); an empty one leaves them their
+    /// first names.
+    pub preferred_name: Option<String>,
+    /// Their primary address (admin tokens): it signs in from now on, and
+    /// the workspaces they joined as the one it replaces know them by it.
+    /// The address it replaces stops signing in to their account.
+    pub email: Option<String>,
+    /// The address their commits credit them with, their primary
+    /// address's (admin tokens); an empty one removes it.
+    pub commit_email: Option<String>,
+}
+
+/// `POST /api/v1/admin/users` (admin tokens): an account for someone, as
+/// an active member of the instance, whose address the allowlist admits
+/// from now on. They sign in with `password`, with Google where the
+/// instance has it, or with a link that sets their password
+/// (`POST /api/v1/admin/users/{user}/reset-link`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct CreateUserRequest {
+    pub email: String,
+    /// First and last name; or `name`, the full name alone.
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    pub name: Option<String>,
+    /// What agents call them; absent: their first names.
+    pub preferred_name: Option<String>,
+    /// The address their commits credit them with.
+    pub commit_email: Option<String>,
+    /// Absent: they have none until they set one.
+    pub password: Option<String>,
+}
+
+/// `GET /api/v1/admin/users/{user}` (admin tokens): someone's account as a
+/// program that provisions people reads it, with the workspaces and
+/// projects they are a member of. Never their Claude token.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AdminUser {
+    pub user: User,
+    /// The address their commits credit them with (their primary
+    /// address's); absent when they have none.
+    pub commit_email: Option<String>,
+    #[serde(default)]
+    pub workspaces: Vec<AdminUserWorkspace>,
+    /// The projects they are a member of themselves; a workspace's admins
+    /// and its base role give them more.
+    #[serde(default)]
+    pub projects: Vec<AdminUserProject>,
+    /// The Claude token an admin token set for them, when one did.
+    pub claude: Option<AdminClaudeToken>,
+}
+
+/// A workspace someone is a member of.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AdminUserWorkspace {
+    pub workspace: WorkspaceRef,
+    pub role: WorkspaceRole,
+    /// The address its people know them by.
+    pub email: String,
+    pub joined_at: Millis,
+}
+
+/// A project someone is a member of.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AdminUserProject {
+    pub id: ProjectId,
+    pub slug: String,
+    pub name: String,
+    pub workspace: WorkspaceRef,
+    pub role: ProjectRole,
+    pub added_at: Millis,
+}
+
+/// The Claude token an admin token set for someone
+/// (`PUT /api/v1/admin/users/{user}/claude`), never the token itself. Their
+/// own Claude connections are theirs alone.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AdminClaudeToken {
+    pub id: CredentialId,
+    pub label: Option<String>,
+    pub status: CredentialStatus,
+    /// The sessions they start run on it, unless a workspace's choice of
+    /// theirs says otherwise.
+    pub is_default: bool,
+    pub created_at: Millis,
+    pub updated_at: Millis,
+}
+
+/// `PUT /api/v1/admin/users/{user}/workspaces/{workspace}` (admin tokens):
+/// makes them a member, or an admin, of any workspace, or changes their
+/// role there. Absent: `member`.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SetWorkspaceMembershipRequest {
+    pub role: Option<WorkspaceRole>,
+}
+
+// ───────────────────────────── admin tokens ─────────────────────────────
+
+/// An instance admin token (`fctl_adm_…`), never its secret: what a
+/// program provisions people with, where the instance's deployment turns
+/// admin tokens on (`FCTL_ADMIN_TOKENS`, [`Features::admin_tokens`]),
+/// which app.fctl.sh's never does. It acts as the admin who made it, while
+/// they are an active admin, and reaches the admin API's people endpoints
+/// alone: it creates, reads, changes and deletes accounts, sets their
+/// pictures and Claude tokens, and adds them to workspaces and projects.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AdminToken {
+    pub id: AdminTokenId,
+    pub name: String,
+    /// The admin who made it, whom it acts as.
+    pub created_by: UserRef,
+    pub created_at: Millis,
+    pub last_used_at: Option<Millis>,
+    pub expires_at: Option<Millis>,
+}
+
+/// `GET /api/v1/admin/tokens` (instance admins): every admin token of the
+/// instance, newest first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AdminTokenList {
+    /// The instance takes admin tokens ([`Features::admin_tokens`]): when it
+    /// doesn't, none works and none can be made, but they can be revoked.
+    pub enabled: bool,
+    pub tokens: Vec<AdminToken>,
+}
+
+/// `POST /api/v1/admin/tokens` (instance admins).
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct CreateAdminTokenRequest {
+    pub name: String,
+    /// Absent or 0: it doesn't expire. At most 3650.
+    pub expires_in_days: Option<u32>,
+}
+
+/// A new admin token, with its secret, shown once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CreatedAdminToken {
+    pub token: AdminToken,
+    pub secret: String,
 }
 
 /// Who may sign up: an exact email (`ada@example.com`) or a domain

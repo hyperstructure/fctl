@@ -174,6 +174,18 @@ pub fn check_limit(count: usize, limit: Option<usize>) -> Result<()> {
     }
 }
 
+/// Whether someone else, who is a member of `count` workspaces, of at most
+/// `limit`, may be placed in another one (an admin token,
+/// `crate::admin_tokens`).
+pub fn check_their_limit(count: usize, limit: Option<usize>) -> Result<()> {
+    match limit {
+        Some(max) if count >= max => Err(ApiError::conflict(format!(
+            "They are a member of {count} workspaces, and nobody but the primary instance owner can be in more than {max}. Take them out of one first."
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The role an invitation gives: a member or an admin, never the primary
 /// admin.
 pub fn invitation_role(role: Option<WorkspaceRole>) -> Result<WorkspaceRole> {

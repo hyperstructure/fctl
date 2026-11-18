@@ -214,6 +214,19 @@ fn token_lookup_sql(column: &str) -> String {
     )
 }
 
+/// The admin token whose hash is `?`, its maker and the instance's
+/// settings, as [`TokenLookup`]: one query.
+fn admin_token_sql() -> String {
+    format!(
+        "SELECT t.id AS token_id, 'admin' AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
+         t.last_used_at AS last_used_at, NULL AS verified_at, NULL AS scope, \
+         (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
+         FROM admin_tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?",
+        crate::instance::KEY,
+        user_columns("u")
+    )
+}
+
 /// Who a token signs in, as sockets opened with it check again while they
 /// stay open ([`by_token_id`]).
 pub struct Holder {
@@ -266,6 +279,14 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     // themselves.
     if matches!(kind, SecretKind::Runner | SecretKind::Enrollment) {
         return Ok(());
+    }
+    if kind == SecretKind::Admin {
+        // A bearer token's alone: no browser gets one in a cookie.
+        if via_cookie {
+            clear_session_cookie(ctx);
+            return Ok(());
+        }
+        return admin_token(ctx, &secret).await;
     }
     if !matches!(
         kind,
@@ -356,6 +377,78 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         settings,
         limits,
         autopilot: None,
+        admin_token: false,
+    });
+    Ok(())
+}
+
+/// Resolves an admin token (`fctl_adm_…`, `fctl_domain::admin_tokens`) to
+/// the admin who made it, while the instance takes admin tokens, the token
+/// hasn't expired and they are still an active admin of the instance.
+async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
+    if !ctx.cfg.admin_tokens {
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::Unauthorized,
+            "This instance doesn't take admin tokens: its deployment turns them on with FCTL_ADMIN_TOKENS=1.",
+        )));
+    }
+    let found: Option<TokenLookup> = q(&ctx.db, &admin_token_sql(), &[s(&hash_secret(secret))])?
+        .first()
+        .await?;
+    let Some(found) = found else {
+        return Err(AppError(ApiError::unauthorized()));
+    };
+    if found.expires_at.is_some_and(|e| e <= ctx.now) {
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::Unauthorized,
+            "This admin token has expired. An instance admin makes another under Admin → Settings → Admin tokens.",
+        )));
+    }
+    if !found.user.is_active() || !found.user.is_admin() {
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::AccessDenied,
+            "This admin token stopped working: the admin who made it isn't an active admin of the instance any more.",
+        )));
+    }
+    if found
+        .last_used_at
+        .is_none_or(|t| ctx.now - t > 10 * 60 * 1000)
+    {
+        let db = crate::db::handle(&ctx.db);
+        let (id, now) = (found.token_id.clone(), ctx.now);
+        ctx.defer(async move {
+            q(
+                &db,
+                "UPDATE admin_tokens SET last_used_at = ? WHERE id = ?",
+                &[n(now), s(&id)],
+            )?
+            .run()
+            .await?;
+            Ok(())
+        });
+    }
+    let settings = crate::instance::parse(found.instance_settings.as_deref());
+    // An admin the instance requires two-factor sign-in of, who hasn't set
+    // it up, does nothing else until they have, with their tokens too.
+    let two_factor_setup_required = fctl_domain::two_factor::setup_required(
+        &settings,
+        found.user.has_password(),
+        found.user.factors(),
+    );
+    ctx.auth = Some(Authed {
+        user: found.user,
+        token_id: found.token_id,
+        // Not one of `TokenKind`'s, which clients read: `admin_token` says
+        // what it is, and what it reaches knows no other kind.
+        kind: TokenKind::Pat,
+        via_cookie: false,
+        signed_in_at: found.token_created_at,
+        verified_at: None,
+        two_factor_setup_required,
+        settings,
+        limits: None,
+        autopilot: None,
+        admin_token: true,
     });
     Ok(())
 }
@@ -443,20 +536,36 @@ pub fn data_export(ctx: &Ctx, user: &UserRow) -> fctl_proto::api::DataExport {
     }
 }
 
-/// Revokes every token of a user (password change or reset), except `keep`.
+/// Revokes every token of a user (password change or reset), except `keep`:
+/// their admin tokens too ([`sign_out_everywhere`]).
 pub async fn revoke_tokens(ctx: &Ctx, user_id: &str, keep: Option<&str>) -> AppResult<()> {
-    crate::db::batch(
-        &ctx.db,
-        vec![
-            q(
-                &ctx.db,
-                "DELETE FROM tokens WHERE user_id = ? AND id != ?",
-                &[s(user_id), s(keep.unwrap_or(""))],
-            )?,
-            refuse_device_codes(&ctx.db, user_id)?,
-        ],
-    )
-    .await
+    crate::db::batch(&ctx.db, sign_out_everywhere(&ctx.db, user_id, keep)?).await
+}
+
+/// What revokes every token of `user_id` but `keep`: their browsers' and
+/// CLIs' sign-ins, their access tokens, their admin tokens, and the CLI
+/// sign-ins they approved that no CLI picked up yet. Whatever signs them
+/// out everywhere (a new password, a reset, a disabled account) runs all
+/// of it, so that nothing made while someone else held the account
+/// outlasts it.
+pub fn sign_out_everywhere(
+    db: &D1Database,
+    user_id: &str,
+    keep: Option<&str>,
+) -> AppResult<Vec<crate::db::Query>> {
+    Ok(vec![
+        q(
+            db,
+            "DELETE FROM tokens WHERE user_id = ? AND id != ?",
+            &[s(user_id), s(keep.unwrap_or(""))],
+        )?,
+        q(
+            db,
+            "DELETE FROM admin_tokens WHERE user_id = ? AND id != ?",
+            &[s(user_id), s(keep.unwrap_or(""))],
+        )?,
+        refuse_device_codes(db, user_id)?,
+    ])
 }
 
 /// Refuses the CLI sign-ins `user_id` approved that no CLI has picked up
@@ -468,4 +577,83 @@ pub fn refuse_device_codes(db: &D1Database, user_id: &str) -> AppResult<crate::d
         "UPDATE device_codes SET status = 'denied' WHERE user_id = ? AND status IN ('pending', 'approved')",
         &[s(user_id)],
     )
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::db::{Count, batch};
+    use crate::testing;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    async fn count(db: &D1Database, sql: &str) -> AppResult<i64> {
+        let c: Option<Count> = q(db, sql, &[])?.first().await?;
+        Ok(c.map_or(0, |c| c.n))
+    }
+
+    /// What a password reset, a new password or a disabled account signs
+    /// out: an admin token made while someone else held the account too.
+    #[wasm_bindgen_test]
+    async fn signing_out_everywhere_takes_admin_tokens_too() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, role, created_at, updated_at) VALUES \
+             ('usr_ada', 'ada@example.com', 'Ada', 'admin', 0, 0), ('usr_bob', 'bob@example.com', 'Bob', 'admin', 0, 0)",
+            "INSERT INTO tokens (id, hash, kind, user_id, created_at) VALUES \
+             ('tok_web', 'h1', 'web', 'usr_ada', 0), ('tok_pat', 'h2', 'pat', 'usr_ada', 0), ('tok_bob', 'h3', 'pat', 'usr_bob', 0)",
+            "INSERT INTO admin_tokens (id, hash, name, user_id, created_at) VALUES \
+             ('adt_ada', 'h4', 'Okta', 'usr_ada', 0), ('adt_bob', 'h5', 'HR sync', 'usr_bob', 0)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        // The browser that changed the password stays signed in.
+        batch(&db, sign_out_everywhere(&db, "usr_ada", Some("tok_web"))?).await?;
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM tokens WHERE user_id = 'usr_ada'"
+            )
+            .await?,
+            1
+        );
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) AS n FROM tokens WHERE id = 'tok_web'").await?,
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM admin_tokens WHERE user_id = 'usr_ada'"
+            )
+            .await?,
+            0
+        );
+        // A reset keeps nothing; Bob's are his.
+        batch(&db, sign_out_everywhere(&db, "usr_ada", None)?).await?;
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM tokens WHERE user_id = 'usr_ada'"
+            )
+            .await?,
+            0
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM tokens WHERE user_id = 'usr_bob'"
+            )
+            .await?,
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM admin_tokens WHERE user_id = 'usr_bob'"
+            )
+            .await?,
+            1
+        );
+        Ok(())
+    }
 }

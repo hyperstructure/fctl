@@ -26,8 +26,34 @@ pub enum Role {
 
 #[derive(Subcommand)]
 pub enum AdminCmd {
-    /// List users.
-    Users,
+    /// List users; and, with an admin token, create, show, change, and add
+    /// them to workspaces and projects.
+    #[command(after_help = "Examples:
+  fctl admin users
+  FCTL_TOKEN=fctl_adm_… fctl admin users create ada@acme.dev --given-name Ada --family-name Lovelace
+  FCTL_TOKEN=fctl_adm_… fctl admin users add ada@acme.dev -w acme -p web:editor
+  FCTL_TOKEN=fctl_adm_… fctl admin users show ada@acme.dev")]
+    Users {
+        #[command(subcommand)]
+        cmd: Option<crate::cmd::provision::UsersCmd>,
+    },
+    /// The instance's admin tokens, which programs provision people with,
+    /// where its deployment turns them on (FCTL_ADMIN_TOKENS=1).
+    #[command(after_help = "Examples:
+  fctl admin tokens
+  fctl admin tokens create \"Okta provisioning\" --days 365
+  fctl admin tokens revoke \"Okta provisioning\"")]
+    Tokens {
+        #[command(subcommand)]
+        cmd: Option<crate::cmd::provision::AdminTokensCmd>,
+    },
+    /// Make a link that sets someone's password: emailed to them where the
+    /// instance sends email, else printed for you to hand over. It works
+    /// for an hour. Only the primary instance owner makes admins' links.
+    ResetLink {
+        /// Any of their email addresses, or their user id.
+        user: String,
+    },
     /// Invite someone to the instance by email, and to workspaces you are
     /// an admin of. They create an account with the link, or connect the
     /// address to the account they have.
@@ -271,9 +297,8 @@ async fn set_status(
     let users = api.users().await?.users;
     let target = find_user(&users, who)?;
     let req = UpdateUserRequest {
-        role: None,
         status: Some(status),
-        name: None,
+        ..Default::default()
     };
     let updated = api.update_user(target.id.as_str(), &req).await?;
     if json {
@@ -286,6 +311,52 @@ async fn set_status(
             updated.name
         ),
         _ => println!("{} {} can sign in again", style::accent("✓"), updated.name),
+    }
+    Ok(())
+}
+
+/// `fctl admin users`: everyone on the instance.
+pub async fn list_users(api: &fctl_client::Api, json: bool) -> Result<()> {
+    let list = api.users().await?;
+    if json {
+        return style::print_json(&list);
+    }
+    for u in list.users {
+        let role = match u.role {
+            InstanceRole::Owner => "owner",
+            r => r.as_str(),
+        };
+        println!(
+            "{:<28} {:<32} {:<7} {:<8} {}",
+            style::bold(&u.name),
+            u.email,
+            role,
+            if u.status == fctl_proto::api::UserStatus::Active {
+                style::accent("active")
+            } else {
+                style::red("disabled")
+            },
+            match (u.two_factor, u.passkeys) {
+                (false, 0) => style::dim("no 2fa"),
+                (true, 0) => style::accent("2fa"),
+                (false, n) => style::accent(&passkeys(n)),
+                (true, n) => style::accent(&format!("2fa, {}", passkeys(n))),
+            }
+        );
+        let mut more = Vec::new();
+        if !u.emails.is_empty() {
+            more.push(format!("also {}", u.emails.join(", ")));
+        }
+        more.push(match u.workspaces {
+            0 => "in no workspace".to_owned(),
+            1 => "in 1 workspace".to_owned(),
+            n => format!("in {n} workspaces"),
+        });
+        more.push(match u.last_active_at {
+            Some(t) => format!("active {}", style::ago(t)),
+            None => "never signed in".to_owned(),
+        });
+        println!("  {}", style::dim(&more.join(" · ")));
     }
     Ok(())
 }
@@ -631,8 +702,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             };
             let req = UpdateUserRequest {
                 role: Some(role),
-                status: None,
-                name: None,
+                ..Default::default()
             };
             let updated = api.update_user(target.id.as_str(), &req).await?;
             if json {
@@ -814,47 +884,41 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             print_github(&list);
         }
-        AdminCmd::Users => {
-            let list = api.users().await?;
+        AdminCmd::Users { cmd } => {
+            crate::cmd::provision::users(
+                &api,
+                cmd.unwrap_or(crate::cmd::provision::UsersCmd::List),
+                json,
+            )
+            .await?;
+        }
+        AdminCmd::Tokens { cmd } => {
+            crate::cmd::provision::tokens(
+                &api,
+                cmd.unwrap_or(crate::cmd::provision::AdminTokensCmd::List),
+                json,
+            )
+            .await?;
+        }
+        AdminCmd::ResetLink { user } => {
+            let out = api.reset_link(&user).await?;
             if json {
-                return style::print_json(&list);
+                return style::print_json(&out);
             }
-            for u in list.users {
-                let role = match u.role {
-                    InstanceRole::Owner => "owner",
-                    r => r.as_str(),
-                };
-                println!(
-                    "{:<28} {:<32} {:<7} {:<8} {}",
-                    style::bold(&u.name),
-                    u.email,
-                    role,
-                    if u.status == fctl_proto::api::UserStatus::Active {
-                        style::accent("active")
-                    } else {
-                        style::red("disabled")
-                    },
-                    match (u.two_factor, u.passkeys) {
-                        (false, 0) => style::dim("no 2fa"),
-                        (true, 0) => style::accent("2fa"),
-                        (false, n) => style::accent(&passkeys(n)),
-                        (true, n) => style::accent(&format!("2fa, {}", passkeys(n))),
-                    }
-                );
-                let mut more = Vec::new();
-                if !u.emails.is_empty() {
-                    more.push(format!("also {}", u.emails.join(", ")));
+            match out.get("url").and_then(|u| u.as_str()) {
+                Some(url) => {
+                    println!("{url}");
+                    eprintln!(
+                        "{}",
+                        style::dim(
+                            "Works once, for an hour: whoever opens it sets their password and signs in as them. Hand it to them alone."
+                        )
+                    );
                 }
-                more.push(match u.workspaces {
-                    0 => "in no workspace".to_owned(),
-                    1 => "in 1 workspace".to_owned(),
-                    n => format!("in {n} workspaces"),
-                });
-                more.push(match u.last_active_at {
-                    Some(t) => format!("active {}", style::ago(t)),
-                    None => "never signed in".to_owned(),
-                });
-                println!("  {}", style::dim(&more.join(" · ")));
+                None => println!(
+                    "{} Emailed them a link that sets their password; it works for an hour",
+                    style::accent("✓")
+                ),
             }
         }
         AdminCmd::EarlyAccess { cmd } => match cmd.unwrap_or(EarlyAccessCmd::List) {

@@ -1379,7 +1379,44 @@ fctl admin set --verify-sensitive-actions on   # sensitive actions take a passke
 fctl admin set --gravatar off              # nobody's Gravatar: fctl removes the copies and looks nothing up
 fctl admin set --export-interval 1d        # people export their data once a day (once a week by default; off: at any time)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
+fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
+fctl admin tokens                          # admin tokens, where the instance takes them
+fctl admin tokens create "Okta provisioning" --days 365   # prints it once
+fctl admin tokens revoke "Okta provisioning"
 ```
+
+### Provisioning people with an admin token
+
+Where a self-hosted instance's deployment turns them on
+(`FCTL_ADMIN_TOKENS=1`, [Self-hosting](self-hosting.md#provision-people-with-admin-tokens);
+never on app.fctl.sh), an instance admin makes admin tokens, and a script
+or your identity provider creates people's accounts with one, sets their
+names, address, commit email, picture and Claude token, and adds them to
+any workspace and project. With the token as `FCTL_TOKEN`:
+
+```sh
+export FCTL_TOKEN=fctl_adm_…
+fctl admin users create ada@acme.dev --given-name Ada --family-name Lovelace
+echo "$PASSWORD" | fctl admin users create grace@acme.dev --given-name Grace --family-name Hopper --password-stdin
+fctl admin users show ada@acme.dev         # their workspaces, projects and Claude token (never the token itself)
+fctl admin users set ada@acme.dev --email ada.lovelace@acme.dev   # their primary address; the old one stops signing in
+fctl admin users set ada@acme.dev --family-name Byron --preferred-name Ada --commit-email 1234+ada@users.noreply.github.com
+fctl admin users set ada@acme.dev --avatar ada.png   # or --avatar none
+echo "$SETUP_TOKEN" | fctl admin users set ada@acme.dev --claude-token - --claude-label "Acme seat"   # or --claude-token none
+fctl admin users add ada@acme.dev -w acme -w platform:admin -p web:editor -p api:maintainer
+fctl admin users remove ada@acme.dev -p api -w platform
+fctl admin disable ada@acme.dev            # stops their sessions; then
+fctl admin delete-user ada@acme.dev --confirm ada@acme.dev
+```
+
+The token acts as the admin who made it, on the people endpoints of the
+admin API alone, until it expires, someone revokes it, or they stop being
+an active admin. It changes no roles, nor the primary instance owner's
+account, and only the primary instance owner's tokens change admins'.
+`--claude-token -` reads the token from stdin, so that it stays out of
+your shell's history. A new account has no password until someone sets
+one: `--password-stdin`, Google sign-in where the instance has it, or the
+link `fctl admin reset-link` makes.
 
 A new workspace or project takes the slug its name makes, and when
 another has it or it is reserved, that slug with a random ending of six

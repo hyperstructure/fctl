@@ -172,6 +172,12 @@ id_type!(
     "enr"
 );
 id_type!(
+    /// An instance admin token, with which programs provision people
+    /// (`fctl_adm_…`).
+    AdminTokenId,
+    "adt"
+);
+id_type!(
     /// A webhook: an address fctl posts a workspace's or a project's
     /// events to.
     WebhookId,

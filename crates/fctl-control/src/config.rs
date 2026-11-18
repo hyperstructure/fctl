@@ -10,6 +10,7 @@
 //! | `FCTL_HTTPS_ONLY` | var | `1` where plain HTTP redirects to HTTPS (app.fctl.sh; `fctl_domain::https`) |
 //! | `FCTL_WEBHOOK_HTTP` | var | `1` where webhooks may post over plain `http://` too (self-hosted; never app.fctl.sh) |
 //! | `FCTL_WEBHOOK_PRIVATE_HOSTS` | var | IP ranges and host names on a private network webhooks may post to (self-hosted; never app.fctl.sh; `fctl_domain::hooks::Reach`) |
+//! | `FCTL_ADMIN_TOKENS` | var | `1` where instance admins make admin tokens, which provision people (self-hosted; never app.fctl.sh; `fctl_domain::admin_tokens`) |
 //! | `FCTL_MASTER_KEY` | secret | 32 random bytes, base64; encrypts credentials and signs state |
 //! | `FCTL_SETUP_TOKEN` | secret | One-time token for creating the owner account |
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
@@ -109,6 +110,11 @@ pub struct Config {
     /// The entries of `FCTL_WEBHOOK_PRIVATE_HOSTS` it couldn't read and
     /// left out, which an address it refuses names.
     pub webhook_reach_unread: Vec<String>,
+    /// Instance admins make admin tokens, and those provision people
+    /// (`FCTL_ADMIN_TOKENS`, `fctl_domain::admin_tokens`): a self-hosted
+    /// instance's deployment may turn them on, app.fctl.sh's never does.
+    /// Off, none works and none can be made.
+    pub admin_tokens: bool,
     pub github: Option<GithubConfig>,
     /// The GitHub App review agents post their reviews as, where it's
     /// installed on the reviewed repository (`fctl-review`), so that people
@@ -238,6 +244,7 @@ impl Config {
             setup_token: var(env, "FCTL_SETUP_TOKEN"),
             webhook_reach,
             webhook_reach_unread,
+            admin_tokens: var(env, "FCTL_ADMIN_TOKENS").is_some_and(|v| v == "1" || v == "true"),
             github,
             github_review,
             linear,

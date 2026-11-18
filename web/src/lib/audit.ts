@@ -78,8 +78,13 @@ const REFUSALS: Record<string, string> = {
   unreachable: ": the app doesn't reach some of the repositories they named",
 };
 
-/** What an entry's actor did, in words and the things it names. */
+/** What an entry's actor did, in words and the things it names: with an admin token, it says so. */
 export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPart[] {
+  const parts = sentence(e, names);
+  return str((e.data as Data | undefined)?.admin_token) ? [...parts, " with an admin token"] : parts;
+}
+
+function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
   const d = (e.data ?? {}) as Data;
   const t = e.target;
   const named = (v: unknown, fallback: string): AuditPart => {
@@ -167,6 +172,8 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
       return ["changed ", ...projects("settings")];
     case "project.member_added":
       return ["added ", user(d.user), " to ", project(), role(d.role)];
+    case "project.member_removed":
+      return ["removed ", user(d.user), " from ", project()];
     case "project.repo_added":
       return [
         "added ",
@@ -266,6 +273,8 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
             " from the workspace, as their address isn't allowed any more",
           ]
         : ["left the workspace"];
+    case "workspace.member_added":
+      return ["added ", user(t, str(d.email) ?? "someone"), " to the workspace", role(d.role)];
     case "workspace.member_removed":
       return ["removed ", user(t, str(d.email) ?? "someone"), " from the workspace"];
     case "workspace.member_role":
@@ -341,6 +350,14 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
     case "user.updated":
       if (str(d.status)) return [d.status === "disabled" ? "disabled " : "enabled ", user(t)];
       return str(d.role) ? ["made ", user(t), ` ${withArticle(String(d.role))}`] : ["changed ", user(t)];
+    case "user.created":
+      return ["created the account of ", named(d.email, "someone")];
+    case "user.email_changed":
+      return ["changed the address of ", user(t), str(d.to) ? " to " : "", named(d.to, "")];
+    case "user.avatar_set":
+      return ["set the picture of ", user(t)];
+    case "user.avatar_removed":
+      return ["removed the picture of ", user(t)];
     case "user.deleted":
       return d.self ? ["deleted their account"] : ["deleted the account of ", named(d.email, "someone")];
     case "user.exported":
@@ -389,6 +406,10 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
       return ["flagged the passkey ", named(d.name, ""), ": its counter went back"];
     case "token.created":
       return ["created the access token ", named(d.name, "")];
+    case "admin_token.created":
+      return ["created the admin token ", named(d.name, "")];
+    case "admin_token.revoked":
+      return ["revoked the admin token ", named(d.name, "")];
     case "identity.linked":
       return ["linked their ", d.provider === "google" ? "Google" : named(d.provider, "other"), " sign-in"];
     case "identity.unlinked":
@@ -421,6 +442,10 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
       return ["connected a Claude subscription"];
     case "claude.removed":
       return ["removed a Claude connection"];
+    case "claude.token_set":
+      return ["set the Claude token of ", user(t)];
+    case "claude.token_removed":
+      return ["removed the Claude token of ", user(t)];
     case "claude.on_runners_added":
       return ["kept their Claude token on their runners"];
     case "claude.stand_in_on":

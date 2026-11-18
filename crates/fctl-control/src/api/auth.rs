@@ -44,6 +44,7 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
                 .linear
                 .as_ref()
                 .is_some_and(|l| l.webhook_secret.is_some()),
+            admin_tokens: ctx.cfg.admin_tokens,
         },
     })
 }
@@ -704,30 +705,22 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
         .await?;
         return http::ok(&waits_for(challenge));
     }
-    batch(
-        &ctx.db,
-        vec![
-            q(
-                &ctx.db,
-                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-                &[s(&phc), n(ctx.now), s(&user.id)],
-            )?,
-            // This link and any other the account has: the password they
-            // would replace is a new one.
-            q(
-                &ctx.db,
-                "UPDATE password_resets SET used_at = ? WHERE token_hash = ? OR (user_id = ? AND used_at IS NULL)",
-                &[n(ctx.now), s(&hash), s(&user.id)],
-            )?,
-            q(
-                &ctx.db,
-                "DELETE FROM tokens WHERE user_id = ?",
-                &[s(&user.id)],
-            )?,
-            auth::refuse_device_codes(&ctx.db, &user.id)?,
-        ],
-    )
-    .await?;
+    let mut statements = vec![
+        q(
+            &ctx.db,
+            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            &[s(&phc), n(ctx.now), s(&user.id)],
+        )?,
+        // This link and any other the account has: the password they
+        // would replace is a new one.
+        q(
+            &ctx.db,
+            "UPDATE password_resets SET used_at = ? WHERE token_hash = ? OR (user_id = ? AND used_at IS NULL)",
+            &[n(ctx.now), s(&hash), s(&user.id)],
+        )?,
+    ];
+    statements.extend(auth::sign_out_everywhere(&ctx.db, &user.id, None)?);
+    batch(&ctx.db, statements).await?;
     auth::start_web_session(ctx, &user, false).await?;
     ctx.audit("user.password_reset", Some(&user.id), None);
     password_reset_notice(ctx, &user).await?;

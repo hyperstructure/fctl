@@ -102,7 +102,7 @@ pub fn remove(ctx: &Ctx, user_id: &str) -> AppResult<Vec<crate::db::Query>> {
 /// Keeps a picture as someone's avatar: an upload always, Google's only
 /// while they have none, and their Gravatar only while they have none of
 /// their own and still let it.
-async fn store(
+pub async fn store(
     db: &D1Database,
     now: i64,
     user_id: &str,

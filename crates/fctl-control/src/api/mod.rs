@@ -1,5 +1,6 @@
 pub mod account;
 pub mod admin;
+pub mod admin_tokens;
 pub mod attachments;
 pub mod auth;
 pub mod autopilots;
@@ -18,6 +19,7 @@ pub mod memories;
 pub mod notifications;
 pub mod passkeys;
 pub mod projects;
+pub mod provision;
 pub mod published;
 pub mod repos;
 pub mod retrospectives;

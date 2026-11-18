@@ -42,4 +42,11 @@ linear?: boolean,
  * It takes Linear's webhook (`LINEAR_WEBHOOK_SECRET`): what people
  * delegate to fctl in Linear starts sessions.
  */
-linear_webhook?: boolean, };
+linear_webhook?: boolean, 
+/**
+ * Instance admins make admin tokens ([`AdminToken`]), which programs
+ * provision people with: where the deployment turns them on
+ * (`FCTL_ADMIN_TOKENS`), as a self-hosted instance's may, never
+ * app.fctl.sh's. Absent from control planes before them.
+ */
+admin_tokens?: boolean, };

@@ -37,12 +37,48 @@ pub async fn users(ctx: &Ctx) -> AppResult<Response> {
     })
 }
 
+/// Someone on the instance, by their user id or any of their addresses.
+async fn user(ctx: &Ctx, who: &str) -> AppResult<UserRow> {
+    let found = if who.contains('@') {
+        auth::user_by_email(ctx, &who.trim().to_lowercase()).await?
+    } else {
+        auth::user_by_id(ctx, who).await?
+    };
+    found.ok_or_else(|| not_found("User"))
+}
+
+/// `PATCH /api/v1/admin/users/{user}`: instance admins change roles,
+/// statuses and full names; admin tokens statuses, names, addresses and
+/// commit emails (`fctl_domain::admin_tokens`), never roles.
 pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateUserRequest = http::body(req).await?;
     let actor = ctx.admin()?.clone();
-    let target = auth::user_by_id(ctx, id)
-        .await?
-        .ok_or_else(|| not_found("User"))?;
+    let target = user(ctx, id).await?;
+    let token = ctx.admin_token().is_some();
+    // What is someone's own takes an admin token, which never changes who
+    // runs the instance.
+    let own = body.given_name.is_some()
+        || body.family_name.is_some()
+        || body.preferred_name.is_some()
+        || body.email.is_some()
+        || body.commit_email.is_some();
+    if token && body.role.is_some() {
+        return Err(forbidden(
+            "Admin tokens don't change roles: an instance admin does, signed in (Admin → People, or `fctl admin role`).",
+        ));
+    }
+    if own && !token {
+        return Err(crate::error::AppError(
+            fctl_domain::admin_tokens::needs_token(ctx.cfg.admin_tokens),
+        ));
+    }
+    if token {
+        fctl_domain::admin_tokens::check_target(actor.role(), target.role())
+            .map_err(crate::error::AppError)?;
+        if fctl_domain::account::is_tombstone(&target.email) {
+            return Err(not_found("User"));
+        }
+    }
     if let Some(role) = body.role
         && role != target.role()
     {
@@ -93,11 +129,52 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
             ));
         }
     }
-    let name = body
-        .name
+    // With first or last names (admin tokens), the full name is made of
+    // them, and of the parts they had for what the request leaves out.
+    let person = if body.given_name.is_some() || body.family_name.is_some() {
+        let Some(given) = body.given_name.as_deref().or(target.given_name.as_deref()) else {
+            return Err(validation(
+                "given_name",
+                "Send their first names too: fctl doesn't know them yet",
+            ));
+        };
+        Some(validate::person_name(
+            Some(given),
+            body.family_name
+                .as_deref()
+                .or(target.family_name.as_deref()),
+            None,
+        )?)
+    } else {
+        None
+    };
+    let name = match &person {
+        Some(p) => Some(p.full.clone()),
+        None => body
+            .name
+            .as_deref()
+            .map(|v| validate::name("name", v))
+            .transpose()?,
+    };
+    let preferred = body
+        .preferred_name
         .as_deref()
-        .map(|v| validate::name("name", v))
+        .map(validate::preferred_name)
         .transpose()?;
+    let email = body.email.as_deref().map(validate::email).transpose()?;
+    let commit_email = body
+        .commit_email
+        .as_deref()
+        .map(validate::commit_email)
+        .transpose()?;
+    if let Some(email) = &email
+        && *email != target.email
+        && auth::user_by_email(ctx, email)
+            .await?
+            .is_some_and(|other| other.id != target.id)
+    {
+        return Err(conflict("This address belongs to another account"));
+    }
     if body
         .role
         .is_some_and(|role| verify::makes_admin(target.role(), role))
@@ -134,11 +211,58 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     }
     if target.role() == InstanceRole::Admin && body.role == Some(InstanceRole::Member) {
         demote_allowed(ctx, &target.id).await?;
+        // Their admin tokens acted as an admin: they stopped working, and go.
+        q(
+            &ctx.db,
+            "DELETE FROM admin_tokens WHERE user_id = ?",
+            &[s(&target.id)],
+        )?
+        .run()
+        .await?;
+    }
+    if let Some(p) = &person {
+        q(
+            &ctx.db,
+            "UPDATE users SET given_name = ?, family_name = ?, updated_at = ? WHERE id = ?",
+            &[
+                os(p.given.as_deref()),
+                os(p.family.as_deref()),
+                n(ctx.now),
+                s(&target.id),
+            ],
+        )?
+        .run()
+        .await?;
+    }
+    if let Some(preferred) = &preferred {
+        q(
+            &ctx.db,
+            "UPDATE users SET preferred_name = ?, updated_at = ? WHERE id = ?",
+            &[os(preferred.as_deref()), n(ctx.now), s(&target.id)],
+        )?
+        .run()
+        .await?;
+    }
+    if let Some(email) = &email {
+        crate::api::provision::set_email(ctx, &target, email).await?;
+    }
+    if let Some(commit_email) = &commit_email {
+        let now = auth::user_by_id(ctx, &target.id)
+            .await?
+            .ok_or_else(|| not_found("User"))?;
+        crate::api::emails::set_commit_email(ctx, &now, &now.email, commit_email.as_deref())
+            .await?;
     }
     ctx.audit(
         "user.updated",
         Some(&target.id),
-        Some(serde_json::json!({ "role": body.role.map(|r| r.as_str()), "status": body.status.map(|s| s.as_str()) })),
+        Some(serde_json::json!({
+            "role": body.role.map(|r| r.as_str()),
+            "status": body.status.map(|s| s.as_str()),
+            "name": name,
+            "preferred_name": preferred.as_ref().map(|p| p.as_deref().unwrap_or_default()),
+            "commit_email": commit_email.as_ref().map(|c| c.as_deref().unwrap_or_default()),
+        })),
     );
     let updated = auth::user_by_id(ctx, &target.id)
         .await?
@@ -165,9 +289,7 @@ async fn demote_allowed(ctx: &Ctx, user_id: &str) -> AppResult<()> {
 
 pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let actor = ctx.admin()?.clone();
-    let target = auth::user_by_id(ctx, id)
-        .await?
-        .ok_or_else(|| not_found("User"))?;
+    let target = user(ctx, id).await?;
     if target.id == actor.id {
         return Err(conflict("You cannot delete yourself"));
     }
@@ -205,9 +327,7 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 /// instance sends email, else for the admin to hand over.
 pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let actor = ctx.admin()?.clone();
-    let target = auth::user_by_id(ctx, id)
-        .await?
-        .ok_or_else(|| not_found("User"))?;
+    let target = user(ctx, id).await?;
     if target.role() != InstanceRole::Member && actor.role() != InstanceRole::Owner {
         return Err(forbidden(
             "Only the primary instance owner can reset an admin's password",

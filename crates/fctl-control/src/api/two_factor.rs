@@ -469,33 +469,25 @@ async fn apply_reset(ctx: &Ctx, user: &UserRow, row: &ChallengeRow) -> AppResult
             "This reset link has expired. Ask for a new one.",
         )));
     }
-    batch(
-        &ctx.db,
-        vec![
-            q(
-                &ctx.db,
-                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-                &[s(phc), n(ctx.now), s(&user.id)],
-            )?,
-            q(
-                &ctx.db,
-                "UPDATE password_resets SET used_at = ? WHERE token_hash = ? OR (user_id = ? AND used_at IS NULL)",
-                &[n(ctx.now), s(reset_hash), s(&user.id)],
-            )?,
-            q(
-                &ctx.db,
-                "DELETE FROM tokens WHERE user_id = ?",
-                &[s(&user.id)],
-            )?,
-            crate::auth::refuse_device_codes(&ctx.db, &user.id)?,
-            q(
-                &ctx.db,
-                "DELETE FROM sign_in_challenges WHERE user_id = ?",
-                &[s(&user.id)],
-            )?,
-        ],
-    )
-    .await
+    let mut statements = vec![
+        q(
+            &ctx.db,
+            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            &[s(phc), n(ctx.now), s(&user.id)],
+        )?,
+        q(
+            &ctx.db,
+            "UPDATE password_resets SET used_at = ? WHERE token_hash = ? OR (user_id = ? AND used_at IS NULL)",
+            &[n(ctx.now), s(reset_hash), s(&user.id)],
+        )?,
+        q(
+            &ctx.db,
+            "DELETE FROM sign_in_challenges WHERE user_id = ?",
+            &[s(&user.id)],
+        )?,
+    ];
+    statements.extend(crate::auth::sign_out_everywhere(&ctx.db, &user.id, None)?);
+    batch(&ctx.db, statements).await
 }
 
 // ───────────────────────────── codes ─────────────────────────────

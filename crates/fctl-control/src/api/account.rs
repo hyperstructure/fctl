@@ -302,6 +302,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
     for table in [
         "identities",
         "tokens",
+        "admin_tokens",
         "claude_credentials",
         "claude_login_jobs",
         "password_resets",

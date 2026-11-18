@@ -30,6 +30,7 @@ const VARS = [
   "FCTL_EMAIL_FROM",
   "FCTL_WEBHOOK_HTTP",
   "FCTL_WEBHOOK_PRIVATE_HOSTS",
+  "FCTL_ADMIN_TOKENS",
 ];
 
 const MASTER_KEY = /^[A-Za-z0-9+/]{43}=$/;
@@ -196,9 +197,21 @@ export function webhookReach(env) {
     );
 }
 
+/**
+ * Whether instance admins make admin tokens, which provision people: FCTL_ADMIN_TOKENS is 1 (or
+ * true) or 0; anything else stops the server, rather than the Worker reading it as off.
+ */
+export function adminTokens(env) {
+  const on = value(env, "FCTL_ADMIN_TOKENS");
+  if (on !== undefined && !["0", "1", "true", "false"].includes(on))
+    throw new ConfigError(`FCTL_ADMIN_TOKENS must be 1 or 0 (got ${on})`);
+  return on === "1" || on === "true";
+}
+
 /** Everything but the master key, which lives in the data directory (`masterKey`). */
 export function readConfig(env) {
   webhookReach(env);
+  adminTokens(env);
   const url = publicUrl(value(env, "FCTL_PUBLIC_URL") ?? "http://localhost:8787");
   const vars = { FCTL_PUBLIC_URL: url };
   for (const name of VARS) {

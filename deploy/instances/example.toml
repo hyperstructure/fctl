@@ -21,6 +21,10 @@ public_url = "https://fctl.example.com"
 # The Worker then runs for every request, the app's files included, and
 # Cloudflare counts each as a Worker request. Without it, plain HTTP works too.
 # https_only = true
+# Optional: let instance admins make admin tokens, with which your own
+# programs create people's accounts and add them to workspaces and projects
+# (docs/self-hosting.md#provision-people-with-admin-tokens).
+# admin_tokens = true
 
 [d1]
 database_name = "fctl"
