@@ -854,7 +854,7 @@ impl HooksObject {
             .collect();
         self.exec(
             "UPDATE deliveries SET state = ?, attempts = ?, next_at = ?, done_at = ?, last = ?, history = ?, \
-             headers = ?, url = ?, resends = resends + ?, reason = NULL WHERE id = ?",
+             headers = ?, url = ?, reason = NULL WHERE id = ?",
             vec![
                 sv(state.as_str()),
                 iv(i64::from(number)),
@@ -864,41 +864,45 @@ impl HooksObject {
                 sv(&serde_json::to_string(&history).unwrap_or_default()),
                 sv(&serde_json::to_string(&headers).unwrap_or_default()),
                 sv(&hook.url),
-                iv(i64::from(by == By::Resend)),
                 sv(id),
             ],
         );
-        self.exec(
-            "INSERT INTO sends (webhook_id, at, manual) VALUES (?, ?, ?)",
-            vec![sv(&hook.id), iv(now), iv(i64::from(by != By::Fctl))],
-        );
+        // A person's test or resend counted itself as it was asked for
+        // (`reserve`).
+        if by == By::Fctl {
+            self.exec(
+                "INSERT INTO sends (webhook_id, at, manual) VALUES (?, ?, 0)",
+                vec![sv(&hook.id), iv(now)],
+            );
+        }
         let last = serde_json::to_string(&WebhookAttempt {
             response: None,
             ..attempt
         })
         .unwrap_or_default();
+        // How the webhook stands goes by fctl's own attempts: any that went
+        // through says it answers, but a person's test or resend that failed
+        // starts no failing, which would turn it off three days on.
         if ok {
             self.exec(
                 "INSERT INTO health (webhook_id, failing_since, dropped, last) VALUES (?, NULL, 0, ?) \
                  ON CONFLICT (webhook_id) DO UPDATE SET failing_since = NULL, dropped = 0, last = excluded.last",
                 vec![sv(&hook.id), sv(&last)],
             );
-        } else {
+        } else if by == By::Fctl {
             self.exec(
                 "INSERT INTO health (webhook_id, failing_since, last) VALUES (?, ?, ?) \
                  ON CONFLICT (webhook_id) DO UPDATE SET failing_since = COALESCE(failing_since, excluded.failing_since), \
                  last = excluded.last",
                 vec![sv(&hook.id), iv(now), sv(&last)],
             );
-            if by == By::Fctl {
-                let since = self.number(
-                    "SELECT failing_since AS n FROM health WHERE webhook_id = ?",
-                    vec![sv(&hook.id)],
-                );
-                if rules::turns_off(Some(since).filter(|s| *s > 0), now) {
-                    let why = posted.error.as_deref().unwrap_or("no answer");
-                    self.turn_off(hook, &rules::off_reason(why), now).await;
-                }
+            let since = self.number(
+                "SELECT failing_since AS n FROM health WHERE webhook_id = ?",
+                vec![sv(&hook.id)],
+            );
+            if rules::turns_off(Some(since).filter(|s| *s > 0), now) {
+                let why = posted.error.as_deref().unwrap_or("no answer");
+                self.turn_off(hook, &rules::off_reason(why), now).await;
             }
         }
         self.delivery_row(id)
@@ -982,6 +986,16 @@ impl HooksObject {
         .with_retry_after(u32::try_from(wait_s).unwrap_or(60)))
     }
 
+    /// Counts a person's test or resend against the webhook's hour as it's
+    /// asked for, before it waits on anything, so that those asked for at
+    /// once all count (`manual_room`).
+    fn reserve(&self, webhook_id: &str, now: i64) {
+        self.exec(
+            "INSERT INTO sends (webhook_id, at, manual) VALUES (?, ?, 1)",
+            vec![sv(webhook_id), iv(now)],
+        );
+    }
+
     async fn resend(&self, b: HookDelivery) -> std::result::Result<WebhookDelivery, ApiError> {
         let now = now_ms();
         let d = self
@@ -1004,6 +1018,13 @@ impl HooksObject {
             ));
         }
         self.manual_room(&b.webhook_id, now)?;
+        // Counted now, before anything waits: another resend that comes
+        // meanwhile counts this one.
+        self.reserve(&b.webhook_id, now);
+        self.exec(
+            "UPDATE deliveries SET resends = resends + 1 WHERE id = ?",
+            vec![sv(&d.id)],
+        );
         let hook = self.hook(&b.workspace_id, &b.webhook_id).await?;
         let d = self
             .attempt(&hook, &d.id, b.by, By::Resend)
@@ -1021,6 +1042,7 @@ impl HooksObject {
             ApiError::validation("event", format!("fctl has no event called {}", b.kind))
         })?;
         self.manual_room(&b.webhook_id, now)?;
+        self.reserve(&b.webhook_id, now);
         let hook = self.hook(&b.workspace_id, &b.webhook_id).await?;
         let places = self.places(&b.workspace_id).await.map_err(|e| e.0)?;
         // The webhook's own project, else the first it hears of, else the

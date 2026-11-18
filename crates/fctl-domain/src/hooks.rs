@@ -541,6 +541,19 @@ pub fn check_url(input: &str, dev: bool) -> Result<String> {
     Ok(url.into())
 }
 
+/// A webhook's address as those who don't manage it see it: where it goes,
+/// without its path or query, which can hold a credential (Slack's do).
+pub fn shortened(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(u) => match (u.host_str(), u.port()) {
+            (Some(host), Some(port)) => format!("{}://{host}:{port}/…", u.scheme()),
+            (Some(host), None) => format!("{}://{host}/…", u.scheme()),
+            _ => "…".to_owned(),
+        },
+        Err(_) => "…".to_owned(),
+    }
+}
+
 /// The host of a webhook's address, which it goes by without a name.
 pub fn host_of(url: &str) -> String {
     url::Url::parse(url)
@@ -692,7 +705,7 @@ pub fn verify(
     let key = key(secret).ok_or(Unverified::Secret)?;
     let timestamp = timestamp.trim();
     let ts: i64 = timestamp.parse().map_err(|_| Unverified::Timestamp)?;
-    if (now_s - ts).abs() > TOLERANCE_S {
+    if now_s.abs_diff(ts) > TOLERANCE_S.unsigned_abs() {
         return Err(Unverified::TooOld);
     }
     // Each signature is checked in constant time (`verify_slice`).
@@ -2045,6 +2058,45 @@ mod tests {
                 false
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn those_who_dont_manage_a_webhook_see_where_it_goes_not_its_credential() {
+        assert_eq!(
+            shortened("https://hooks.slack.com/services/T0/B0/secret?x=1"),
+            "https://hooks.slack.com/…"
+        );
+        assert_eq!(
+            shortened("https://example.com:8443/hook"),
+            "https://example.com:8443/…"
+        );
+        assert_eq!(shortened("nonsense"), "…");
+        assert_eq!(
+            host_of(&shortened("https://hooks.slack.com/services/x")),
+            "hooks.slack.com"
+        );
+    }
+
+    #[test]
+    fn a_timestamp_at_the_ends_of_i64_is_too_old_not_an_overflow() {
+        let secret = secret(&[7u8; 32]);
+        let k = key(&secret).unwrap_or_default();
+        let header = sign(&k, "evt_1", 1, b"{}");
+        assert_eq!(
+            verify(
+                &secret,
+                "evt_1",
+                &i64::MIN.to_string(),
+                b"{}",
+                &header,
+                1_614_265_330
+            ),
+            Err(Unverified::TooOld)
+        );
+        assert_eq!(
+            verify(&secret, "evt_1", &i64::MAX.to_string(), b"{}", &header, -1),
+            Err(Unverified::TooOld)
         );
     }
 

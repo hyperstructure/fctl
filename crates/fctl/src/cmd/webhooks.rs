@@ -751,7 +751,7 @@ fn print_webhook(w: &Webhook, names: &std::collections::HashMap<String, String>)
         println!(
             "  {}",
             style::amber(&format!(
-                "Every attempt has failed since {}: fctl turns it off after 3 days of that.",
+                "fctl's attempts have all failed since {}: it turns it off after 3 days of that.",
                 style::ago(since)
             ))
         );
@@ -884,12 +884,16 @@ fn duration(s: &str) -> Result<i64> {
     let n: i64 = n
         .parse()
         .with_context(|| format!("{s:?} isn't a duration: use 30m, 6h or 2d"))?;
-    let ms = match unit {
-        "m" => n * 60_000,
-        "h" | "" => n * 3_600_000,
-        "d" => n * 86_400_000,
+    let per: i64 = match unit {
+        "m" => 60_000,
+        "h" | "" => 3_600_000,
+        "d" => 86_400_000,
         _ => bail!("{s:?} isn't a duration: use 30m, 6h or 2d"),
     };
+    // Past 30 days is all of the log; past what fits, it isn't a duration.
+    let ms = n
+        .checked_mul(per)
+        .with_context(|| format!("{s:?} is longer than any log keeps: use at most 30d"))?;
     Ok(ms.min(rules::KEPT_MS))
 }
 
@@ -960,5 +964,6 @@ mod tests {
         assert_eq!(duration("6h").ok(), Some(21_600_000));
         assert_eq!(duration("90d").ok(), Some(rules::KEPT_MS));
         assert!(duration("soon").is_err());
+        assert!(duration("1000000000000d").is_err());
     }
 }

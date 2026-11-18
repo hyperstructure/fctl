@@ -55,7 +55,7 @@ address outside fctl.
   shown once as the webhook is added, and later to those who manage it;
   rotating it keeps the old one signing too for a day, so that a
   receiver switches without missing a delivery. Adding a webhook,
-  pointing one elsewhere and reading its secret are sensitive actions
+  pointing one elsewhere, and reading or rotating its secret are sensitive actions
   ([ADR 0039](0039-sensitive-actions-take-a-passkey-or-a-code.md)).
 - **A Durable Object per workspace sends them** (`HooksObject`), from a
   queue in its storage, so that nothing a receiver does slows a session

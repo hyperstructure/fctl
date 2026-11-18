@@ -104,7 +104,13 @@ impl HookRow {
                 name: self.project_name.clone().unwrap_or_default(),
             }),
             name: self.name.clone(),
-            url: self.url.clone(),
+            // An address can hold a credential (Slack's do, in their path):
+            // those who don't manage it see where it goes, not all of it.
+            url: if can_manage {
+                self.url.clone()
+            } else {
+                fctl_domain::hooks::shortened(&self.url)
+            },
             events: self.events(),
             projects: self.projects().into_iter().map(ProjectId).collect(),
             started_by: self.started_by(),
@@ -436,6 +442,8 @@ mod tests {
         let web = web.to_webhook(None, false);
         assert_eq!(web.project.map(|p| p.slug), Some("web".to_owned()));
         assert!(web.events.is_empty() && !web.can_manage);
+        // Those who don't manage it see where it goes, not its path.
+        assert_eq!(web.url, "https://example.com/…");
         let off = off.to_webhook(None, true);
         assert!(!off.enabled);
         assert_eq!(
@@ -494,10 +502,10 @@ mod tests {
     }
 }
 
-/// Tells a workspace's HooksObject that `webhook_id` was turned on again:
-/// it fails afresh from now, rather than from before it was off, so that
-/// the next failure doesn't turn it off again at once.
-pub async fn turned_on(env: &Env, workspace_id: &str, webhook_id: &str) {
+/// Tells a workspace's HooksObject that `webhook_id` was turned on again,
+/// or now points elsewhere: it fails afresh from now, rather than from
+/// before, so that its next failure doesn't turn it off at once.
+pub async fn afresh(env: &Env, workspace_id: &str, webhook_id: &str) {
     forget_cached(workspace_id);
     let told: AppResult<serde_json::Value> = async {
         let stub = internal::hooks_stub(env, workspace_id)?;

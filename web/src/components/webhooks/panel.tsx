@@ -234,7 +234,7 @@ function Row({
   const problem = w.disabled_reason
     ? `fctl turned it off. ${w.disabled_reason}`
     : state === "failing" && h?.failing_since
-      ? `Every attempt has failed since ${agoShortWords(h.failing_since)}${h.last?.status ? ` (HTTP ${h.last.status})` : ""}: fctl tries each again over about 21 hours.`
+      ? `fctl's attempts have all failed since ${agoShortWords(h.failing_since)}${h.last?.status ? ` (HTTP ${h.last.status})` : ""}: it tries each again over about 21 hours.`
       : undefined;
   const body = (
     <>

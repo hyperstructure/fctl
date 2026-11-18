@@ -7,7 +7,8 @@ import type { WebhookAttempt } from "./WebhookAttempt";
  */
 export type WebhookHealth = { 
 /**
- * Its newest attempt.
+ * Its newest attempt of fctl's own, or a person's test or resend that
+ * went through.
  */
 last?: WebhookAttempt, 
 /**
@@ -23,8 +24,10 @@ failed: number,
  */
 pending: number, 
 /**
- * Since when every attempt failed; absent while the last one went
- * through.
+ * Since when every attempt of fctl's own failed; absent once one, or a
+ * person's test or resend, went through. A person's that failed starts
+ * nothing, and turning the webhook on again or pointing it elsewhere
+ * starts it afresh.
  */
 failing_since?: number, 
 /**

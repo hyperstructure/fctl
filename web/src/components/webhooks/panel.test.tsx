@@ -162,7 +162,7 @@ describe("a workspace's webhooks", () => {
     expect(text(c)).toContain(
       "Posts to hooks.slack.com when pull requests are ready for review or an agent asks something, in Web, for sessions started by people.",
     );
-    expect(text(c)).toContain("Every attempt has failed since");
+    expect(text(c)).toContain("fctl's attempts have all failed since");
     expect(text(c)).toContain(
       "fctl turned it off. Every delivery failed for 3 days, the last with HTTP 502.",
     );

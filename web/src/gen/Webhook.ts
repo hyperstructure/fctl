@@ -23,7 +23,10 @@ project?: HookPlace,
  */
 name?: string, 
 /**
- * Where fctl posts its events: `https://`, a public host.
+ * Where fctl posts its events: `https://`, a public host. For those
+ * who don't manage it (`can_manage`), its scheme and host alone
+ * (`https://hooks.slack.com/…`): its path or query can hold a
+ * credential.
  */
 url: string, 
 /**

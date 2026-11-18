@@ -226,8 +226,8 @@ schedule's session finishes, a dashboard follows sessions and reviews.
 
    It shows the webhook's signing secret (`whsec_…`) once: keep it where
    your receiver reads it. Those who manage the webhook read it again on
-   its page (`fctl webhooks secret NAME`), which takes confirming it's
-   you where the instance asks for that.
+   its page (`fctl webhooks secret NAME`), and rotate it, which take
+   confirming it's you where the instance asks for that.
 2. **Choose what it hears of**: every event or some ([Webhook
    events](#webhook-events)), for a workspace's webhook its projects, and
    for sessions' events whose sessions: those people and tools start,
@@ -358,8 +358,10 @@ A request counts when the receiver answers with a 2xx status within 10
 seconds; fctl doesn't follow redirects. Otherwise it goes again after 10
 seconds, then a minute, 5 minutes, 30, 2 hours, 6 and 12 (later where
 the answer's `Retry-After` asks), 8 attempts over about 21 hours. A
-webhook whose attempts all failed for three days turns itself off and
-says why; turn it on again once its address answers. Its page and `fctl
+webhook whose own attempts all failed for three days turns itself off
+and says why; turn it on again once its address answers (a test or a
+resend that fails doesn't count toward the three days, and turning it on
+again or pointing it elsewhere starts them afresh). Its page and `fctl
 webhooks deliveries NAME --failed` list what went out in the last 30 days
 (its newest 1,000), each with the request as fctl posted it, every
 attempt and the start of each answer. Resend one (five times each), or

@@ -370,8 +370,9 @@ pub async fn update(ctx: &Ctx, req: &mut Request, id: &str) -> AppResult<Respons
     )?
     .run()
     .await?;
-    if turned_on {
-        rows::turned_on(&ctx.env, &row.workspace_id, &row.id).await;
+    // Turned on again, or pointed elsewhere: it fails afresh from now.
+    if turned_on || moved {
+        rows::afresh(&ctx.env, &row.workspace_id, &row.id).await;
     } else {
         rows::changed(&ctx.env, &row.workspace_id, None, false).await;
     }
@@ -441,9 +442,12 @@ pub async fn secret(ctx: &Ctx, id: &str) -> AppResult<Response> {
 
 /// `POST /api/v1/webhooks/{id}/secret`: a new secret, which signs from
 /// now on; the one before signs too for a day, so that the receiver can
-/// switch without missing a delivery.
+/// switch without missing a delivery. It answers with the secret, so it
+/// takes confirming it's you, as reading one does.
 pub async fn rotate(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let row = managed(ctx, id).await?;
+    // Its answer is the new secret: it takes what reading one takes.
+    ctx.verified(Sensitive::AddWebhook)?;
     let keys = ctx.keys()?;
     let secret = rules::secret(&fctl_domain::random_bytes::<32>());
     let until = ctx.now + rules::SECRET_OVERLAP_MS;

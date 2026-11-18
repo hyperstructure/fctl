@@ -66,7 +66,10 @@ pub struct Webhook {
     pub project: Option<HookPlace>,
     /// What people call it; absent: its address's host.
     pub name: Option<String>,
-    /// Where fctl posts its events: `https://`, a public host.
+    /// Where fctl posts its events: `https://`, a public host. For those
+    /// who don't manage it (`can_manage`), its scheme and host alone
+    /// (`https://hooks.slack.com/…`): its path or query can hold a
+    /// credential.
     pub url: String,
     /// The events it wants, by their type (`session.finished`); empty:
     /// every event, also those a later version adds.
@@ -109,7 +112,8 @@ pub struct Webhook {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct WebhookHealth {
-    /// Its newest attempt.
+    /// Its newest attempt of fctl's own, or a person's test or resend that
+    /// went through.
     pub last: Option<WebhookAttempt>,
     /// Deliveries in the last 24 hours that it took.
     pub delivered: u32,
@@ -117,8 +121,10 @@ pub struct WebhookHealth {
     pub failed: u32,
     /// Deliveries waiting now: for their first attempt or a retry.
     pub pending: u32,
-    /// Since when every attempt failed; absent while the last one went
-    /// through.
+    /// Since when every attempt of fctl's own failed; absent once one, or a
+    /// person's test or resend, went through. A person's that failed starts
+    /// nothing, and turning the webhook on again or pointing it elsewhere
+    /// starts it afresh.
     pub failing_since: Option<Millis>,
     /// Events dropped because 1,000 deliveries waited for it already,
     /// since the last one it took.

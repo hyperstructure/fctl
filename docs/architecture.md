@@ -3663,9 +3663,13 @@ what happens to as it happens, signed with each one's secret
    development one (`FCTL_DEV`, `Features::local_webhooks`). A
    self-hosted control plane can't check where a name resolves, so a name
    that resolves to its own network reaches it there. Adding one, pointing
-   one elsewhere and reading its secret are sensitive actions
+   one elsewhere, and reading or rotating its secret are sensitive actions
    (`Sensitive::AddWebhook`); limited access tokens and autopilots reach
-   none of it but the list of events. Rotating the secret keeps the old
+   none of it but the list of events. A project's page lists the
+   workspace's webhooks that send its events to its owners and
+   maintainers, with their addresses shortened to scheme and host
+   (`hooks::shortened`) for those who don't manage them, since a path can
+   hold a credential (Slack's do). Rotating the secret keeps the old
    one in `previous_secret` for a day (`SECRET_OVERLAP_MS`), and every
    request then carries both signatures. Changes are audited
    (`webhook.created`, `updated`, `deleted`, `secret_read`,
@@ -3739,10 +3743,14 @@ what happens to as it happens, signed with each one's secret
    answer's status, headers and first 4 KB. A 2xx delivers it; anything
    else tries again after 10 seconds, a minute, 5, 30, 2 hours, 6 and 12
    (`RETRIES_MS`; later where `Retry-After` asks, up to 12 hours). A
-   webhook all of whose attempts failed for three days (`OFF_AFTER_MS`,
+   webhook all of whose own attempts failed for three days (`OFF_AFTER_MS`,
    `health.failing_since`) turns itself off: D1 says why
    (`disabled_reason`), its waiting deliveries fail, and the workspace's
-   audit log records it. Turned on again, it fails afresh from then.
+   audit log records it. A person's test or resend that fails starts no
+   failing, one that goes through ends it, and a webhook turned on again
+   or pointed elsewhere fails afresh from then. Tests and resends count
+   against their limits as they're asked for, before they post, so that
+   many asked for at once can't pass them.
 5. **What went out** stays in the HooksDO, not D1: each delivery's
    request as last posted, its last 20 attempts and the last answer, for
    30 days and the newest 1,000 of each webhook (`KEPT_MS`, `KEPT`,

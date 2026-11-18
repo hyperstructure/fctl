@@ -872,8 +872,8 @@ fctl webhooks verify --secret whsec_… --id evt_01KC… --timestamp 1763400000 
 default); `--projects`, a workspace's projects by slug or id, or `all`;
 `--started-by`, whose sessions' events (`people`, `schedules`,
 `autopilot`, `tickets`), or `all`. Addresses are `https://` on the public
-internet. Adding a webhook, pointing one elsewhere and reading its secret
-are sensitive actions, which take confirming it's you where the instance
+internet. Adding a webhook, pointing one elsewhere, and reading or
+rotating its secret are sensitive actions, which take confirming it's you where the instance
 asks for that. `fctl webhooks verify` checks a request you saved as a
 receiver does, with the secret in `--secret` or `FCTL_WEBHOOK_SECRET`. A
 workspace has at most 20 webhooks.

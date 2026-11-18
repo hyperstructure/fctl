@@ -291,9 +291,9 @@ function Problems({
       {w.enabled && h?.failing_since && (
         <Banner tone="warn">
           <span className="block">
-            Every attempt has failed since {when(h.failing_since)}
-            {h.last ? `, the last with ${attemptWords(h.last)}` : ""}. fctl tries each delivery again 7 times
-            over about 21 hours, and turns the webhook off once its attempts have all failed for 3 days.
+            fctl's attempts have all failed since {when(h.failing_since)}
+            {h.last ? `, the last with ${attemptWords(h.last)}` : ""}. It tries each delivery again 7 times
+            over about 21 hours, and turns the webhook off once they have all failed for 3 days.
           </span>
           {h.failed > 0 && (
             <span className="mt-2 flex flex-wrap items-center gap-3">
@@ -363,8 +363,8 @@ function Deliveries({
           </h3>
           <p className="mt-1 text-[13px] text-ink-3">
             {h
-              ? `${h.delivered} delivered${h.failed ? `, ${h.failed} failed` : ""} in the last day${h.pending ? `, ${h.pending} waiting now` : ""}. Kept for 30 days.`
-              : "What went out to it in the last 30 days."}
+              ? `${h.delivered} delivered${h.failed ? `, ${h.failed} failed` : ""} in the last day${h.pending ? `, ${h.pending} waiting now` : ""}. Its newest 1,000 of the last 30 days are kept.`
+              : "What went out to it in the last 30 days, its newest 1,000 at most."}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

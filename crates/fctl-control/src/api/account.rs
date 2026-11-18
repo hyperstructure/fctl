@@ -385,7 +385,12 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         );
         ctx.defer(async move {
             for w in sole {
-                crate::hooks::purge(&env, &w).await?;
+                if let Err(e) = crate::hooks::purge(&env, &w).await {
+                    worker::console_error!(
+                        "forgetting {w}'s webhooks' deliveries: {}",
+                        e.0.message
+                    );
+                }
             }
             Ok(())
         });
