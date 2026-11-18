@@ -11,7 +11,7 @@ verify_sensitive_actions?: boolean, gravatar?: boolean,
 /**
  * 0 to 8760.
  */
-export_interval_hours?: number, service_account_consent?: boolean, 
+export_interval_hours?: number, service_account_consent?: boolean, members_create_workspaces?: boolean, 
 /**
  * 0: any number.
  */

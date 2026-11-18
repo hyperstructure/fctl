@@ -202,7 +202,10 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
         if list.workspaces.is_empty() {
             println!(
                 "{}",
-                style::amber("No workspace yet: create one with `fctl workspaces create <name>`.")
+                style::amber(&format!(
+                    "No workspace yet. {}",
+                    super::workspaces::no_workspace(list.can_create)
+                ))
             );
         } else {
             println!(

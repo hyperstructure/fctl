@@ -210,8 +210,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "max_workspaces"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -260,6 +260,14 @@ pub enum AdminCmd {
         /// want; off takes confirming it's you.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         service_account_consent: Option<bool>,
+        /// Let everyone create workspaces of their own, as their primary
+        /// admin. On by default. Off, only instance admins and the primary
+        /// instance owner create them, and everyone else joins the ones they
+        /// are invited or added to, as an organization that provisions its
+        /// people into its own workspaces may want. Workspaces that exist
+        /// stay as they are.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        members_create_workspaces: Option<bool>,
         /// The most workspaces each person can be a member of, created or
         /// joined: 5 by default, or any for any number. The primary instance
         /// owner can be in any number whatever it says. Lowering it takes
@@ -658,9 +666,25 @@ fn print_settings(s: &InstanceSettings) {
             "A workspace's service accounts start sessions for any of its people, without asking them."
         })
     );
+    println!(
+        "New workspaces         {}",
+        if s.members_create_workspaces {
+            style::accent("anyone")
+        } else {
+            style::dim("admins only")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.members_create_workspaces {
+            "Everyone creates workspaces of their own."
+        } else {
+            "Only instance admins create workspaces; everyone else joins the ones they are invited or added to."
+        })
+    );
     let most = fctl_domain::workspace::max_workspaces_words(s.max_workspaces);
     println!(
-        "Workspaces             {}",
+        "Workspace limit        {}",
         if s.max_workspaces == 0 {
             style::dim(&most)
         } else {
@@ -1206,6 +1230,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             gravatar,
             export_interval,
             service_account_consent,
+            members_create_workspaces,
             max_workspaces,
         } => {
             let settings = api
@@ -1217,6 +1242,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     gravatar,
                     export_interval_hours: export_interval,
                     service_account_consent,
+                    members_create_workspaces,
                     max_workspaces,
                 })
                 .await?;

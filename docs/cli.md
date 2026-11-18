@@ -1437,6 +1437,7 @@ fctl admin set --verify-sensitive-actions on   # sensitive actions take a passke
 fctl admin set --gravatar off              # nobody's Gravatar: fctl removes the copies and looks nothing up
 fctl admin set --export-interval 1d        # people export their data once a day (once a week by default; off: at any time)
 fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (on by default)
+fctl admin set --members-create-workspaces off # only instance admins create workspaces (on by default: everyone)
 fctl admin set --max-workspaces 50         # each person can be in 50 workspaces (5 by default; any: any number)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)

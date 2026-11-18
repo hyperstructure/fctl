@@ -395,13 +395,6 @@ choose under **Admin → Settings → Data exports** (or `fctl admin set
 --export-interval 1d`; `off` lets them export at any time, and a year is
 the longest wait).
 
-Each person can be a member of five workspaces, those they create and
-those they join, and you, as the primary instance owner, of any number. To
-let people be in more, or fewer, choose under **Admin → Settings →
-Workspaces** (or `fctl admin set --max-workspaces 50`; `any` lets everyone
-be in any number). Lowering it takes nobody out of a workspace: those in
-more create and join no more until they have left some.
-
 An organization that runs fctl for its own people may want a portal or a
 bot of its own to start agents for them, with a workspace's [service
 accounts](automation.md#service-accounts). By default a service account
@@ -414,6 +407,23 @@ Service accounts then start sessions for any member of their workspace,
 on that member's Claude subscription, also for those who said no; each
 member still sees which act for them, and what they answered counts again
 once you turn it back on.
+
+Anyone who signs in creates workspaces of their own, as their primary
+admin. An organization that puts its people in its own workspaces, under
+**Admin → People** or with [admin
+tokens](#provision-people-with-admin-tokens), can keep that to its admins:
+turn off **Admin → Settings → Workspaces → Everyone creates workspaces**
+(or `fctl admin set --members-create-workspaces off`). Only instance
+admins and the primary instance owner then create workspaces; everyone
+else joins the ones they are invited or added to, and the app offers them
+none to create. The workspaces that exist stay as they are.
+
+Each person can be a member of five workspaces, those they create and
+those they join, and you, as the primary instance owner, of any number. To
+let people be in more, or fewer, choose under **Admin → Settings →
+Workspaces** (or `fctl admin set --max-workspaces 50`; `any` lets everyone
+be in any number). Lowering it takes nobody out of a workspace: those in
+more create and join no more until they have left some.
 
 ## Provision people with admin tokens
 

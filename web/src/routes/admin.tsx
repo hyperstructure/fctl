@@ -1758,24 +1758,43 @@ function InstanceSettings() {
       </Section>
       <Section
         title="Workspaces"
-        description="How many workspaces each person can be a member of: those they create and those they join."
+        description="Who creates new ones, and how many each person can be a member of. Those that exist stay as they are."
       >
-        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
-          <span>
-            Each person can be in
-            <span className="block text-[12.5px] text-ink-4">
-              The primary instance owner can be in any number. Lowering it takes nobody out of a workspace:
-              those in more create and join no more until they have left some.
+        <div className="flex flex-col gap-6">
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Everyone creates workspaces
+              <span className="block text-[12.5px] leading-relaxed text-ink-4">
+                {(s?.members_create_workspaces ?? true)
+                  ? "Anyone who signs in creates workspaces of their own, as their primary admin."
+                  : "Only instance admins create workspaces. Everyone else joins the ones they are invited or added to: for an organization that puts its people in workspaces of its own."}
+              </span>
             </span>
-          </span>
-          <Select
-            size="sm"
-            aria-label="How many workspaces each person can be in"
-            className="shrink-0"
-            value={s && String(s.max_workspaces)}
-            options={workspaceLimits(s?.max_workspaces)}
-            onChange={(v) => save.mutate({ max_workspaces: Number(v) })}
-          />
+            <Switch
+              checked={s?.members_create_workspaces ?? true}
+              disabled={!s || save.isPending}
+              onChange={(v) => save.mutate({ members_create_workspaces: v })}
+              label="Everyone creates workspaces"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Each person can be in
+              <span className="block text-[12.5px] leading-relaxed text-ink-4">
+                Those they create and those they join; the primary instance owner can be in any number.
+                Lowering it takes nobody out of a workspace: those in more create and join no more until they
+                have left some.
+              </span>
+            </span>
+            <Select
+              size="sm"
+              aria-label="How many workspaces each person can be in"
+              className="shrink-0"
+              value={s && String(s.max_workspaces)}
+              options={workspaceLimits(s?.max_workspaces)}
+              onChange={(v) => save.mutate({ max_workspaces: Number(v) })}
+            />
+          </div>
         </div>
       </Section>
       <ReservedSlugs />
@@ -1950,6 +1969,10 @@ function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest
     return s.service_account_consent
       ? "Service accounts act only for the people who allowed them"
       : "Service accounts act for anyone in their workspace, without asking";
+  if (b.members_create_workspaces !== undefined)
+    return s.members_create_workspaces
+      ? "Everyone can create workspaces"
+      : "Only instance admins can create workspaces now";
   return s.publish_screenshots
     ? "Projects can now publish screenshots"
     : "Published screenshots are off and offline";
@@ -2047,6 +2070,7 @@ function SignInSettings({
     gravatar: true,
     export_interval_hours: 168,
     service_account_consent: true,
+    members_create_workspaces: true,
     max_workspaces: 5,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];

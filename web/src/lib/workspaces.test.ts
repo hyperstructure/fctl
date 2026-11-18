@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import {
   claudeOptions,
+  createsAnother,
   createsProjects,
   limitReached,
+  mayCreate,
   roomForAnother,
   runnersOf,
   workspaceCount,
@@ -179,5 +181,24 @@ describe("the workspace limit", () => {
     expect(workspaceCount(list(120, true, 0))).toBe(
       "You are in 120 workspaces, and you can be in any number.",
     );
+  });
+});
+
+describe("who creates workspaces", () => {
+  const list = (n: number, can_create?: boolean) => ({ workspaces: Array(n).fill({}), limit: 5, can_create });
+
+  it("is everyone, unless the instance lets only its admins", () => {
+    expect(mayCreate(list(0, true))).toBe(true);
+    expect(createsAnother(list(0, true))).toBe(true);
+    expect(mayCreate(list(0, false))).toBe(false);
+    expect(createsAnother(list(0, false))).toBe(false);
+    // A list from a control plane before the setting doesn't say: everyone could.
+    expect(mayCreate(list(0))).toBe(true);
+    expect(createsAnother(list(2))).toBe(true);
+  });
+
+  it("holds those who may to the limit all the same", () => {
+    expect(createsAnother(list(5, true))).toBe(false);
+    expect(createsAnother({ ...list(5, true), unlimited: true })).toBe(true);
   });
 });

@@ -31,7 +31,7 @@ import { SETTINGS_PAGES } from "@/lib/settings";
 import { ariaShortcut, SHORTCUTS, type ShortcutId, useShortcut } from "@/lib/shortcuts";
 import { focusTaskBox } from "@/lib/task-box";
 import { getTheme, setTheme } from "@/lib/theme";
-import { createsProjects } from "@/lib/workspaces";
+import { createsProjects, mayCreate } from "@/lib/workspaces";
 import { Combo } from "./shortcuts";
 
 interface Entry {
@@ -198,14 +198,17 @@ export function CommandPalette({
         run: go(() => navigate({ to: "/new" })),
       });
     }
-    list.push(
-      {
+    // Only where the instance lets you create workspaces: everyone, unless it lets only its admins.
+    if (workspaces && mayCreate(workspaces)) {
+      list.push({
         id: "a-new-workspace",
         group: "Actions",
         label: "New workspace",
         icon: <Plus className="size-4" />,
         run: go(() => navigate({ to: "/w/new" })),
-      },
+      });
+    }
+    list.push(
       {
         id: "a-settings",
         group: "Actions",
