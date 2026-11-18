@@ -107,6 +107,15 @@ updates every Monday, triage every morning, benchmarks every night. Each
 run is a session of its own, on the subscription of whoever set it up, and
 other tools can start one with an access token.
 
+### [For organizations](docs/organizations.md)
+
+Run fctl for a whole company on machines it owns. Its identity provider
+creates people's accounts and puts them in their teams' workspaces with
+admin tokens; a portal or a chat bot of its own starts agents for its
+people with a service account, each session on its person's Claude
+subscription; and webhooks tell Slack, a deploy pipeline or a dashboard
+what agents do as it happens, signed, with retries.
+
 Read about [more features](https://fctl.sh/features/) on fctl.sh, and
 everything else in [the documentation](https://fctl.sh/docs/), whose
 source is in [docs/](docs/).
@@ -166,6 +175,8 @@ fctl host install                        # this machine runs its agents
 
 [Self-hosting](docs/self-hosting.md) has the full details: Kubernetes and
 Cloudflare, HTTPS, settings, GitHub, Linear, sign-in, email and backups.
+Running it for an organization, connected to its directory and its own
+tools? Read [fctl for organizations](docs/organizations.md).
 
 ## Developing
 

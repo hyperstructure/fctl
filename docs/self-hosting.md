@@ -41,6 +41,11 @@ IDs and secrets go to the control plane: as environment variables on your
 own machine, in the instance file and with `cargo xtask secrets` on
 Cloudflare.
 
+Running it for an organization's people?
+[fctl for organizations](organizations.md) shows the settings to change,
+how your directory provisions accounts, and how your own portals, bots and
+tools start agents and hear what they do.
+
 ## On your own machine or cluster
 
 The image runs the Worker and the web app that run on Cloudflare, on
