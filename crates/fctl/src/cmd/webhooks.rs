@@ -1046,6 +1046,10 @@ mod tests {
 
     #[test]
     fn verify_says_whether_the_secret_signed_it_and_whether_a_receiver_takes_it() {
+        // Not a real secret: Standard Webhooks' published example, as in
+        // fctl_domain::hooks' tests. GitHub's secret scanning flags it as a
+        // Stripe webhook signing secret, since Stripe's start with whsec_ as
+        // well.
         let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
         let key = rules::key(secret).unwrap_or_default();
         let body = br#"{"type":"session.started"}"#;

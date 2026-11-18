@@ -2576,7 +2576,12 @@ mod tests {
 
     #[test]
     fn posts_are_signed_as_standard_webhooks_sign_them() {
-        // Standard Webhooks' own example.
+        // Standard Webhooks' own example, which its libraries' tests use
+        // too (github.com/standard-webhooks/standard-webhooks): a published
+        // test secret, not a real one. GitHub's secret scanning flags it as
+        // a Stripe webhook signing secret, since Stripe's start with whsec_
+        // as well. Tests reuse it rather than make up another of its shape,
+        // which would raise an alert of its own.
         let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
         let id = "msg_p5jXN8AQM9LWM0D4loKWxJek";
         let body = br#"{"test": 2432232314}"#;
