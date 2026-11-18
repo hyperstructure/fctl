@@ -1,5 +1,5 @@
-// The service worker's notifications (public/sw.js), run in a stand-in for
-// its global scope.
+// The service worker (public/sw.js): its notifications, and that page loads
+// don't go through it, run in a stand-in for its global scope.
 import { describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import source from "../../public/sw.js?raw";
@@ -81,7 +81,7 @@ function worker(windows: FakeWindow[] = []) {
     const res = caches.stores.get("fctl-opening")?.get("/fctl-opening");
     return res ? ((await res.clone().json()) as { url: string; at: number }) : undefined;
   };
-  return { self, shown, push, click, opening, dispatch, caches };
+  return { self, shown, push, click, opening, dispatch, caches, listeners };
 }
 
 const message: G.PushMessage = {
@@ -162,9 +162,25 @@ describe("the service worker", () => {
   it("keeps the click's page when the app was installed with an older worker", async () => {
     const w = worker();
     w.caches.stores.set("fctl-offline-v1", new Map());
+    w.caches.stores.set("fctl-offline-v2", new Map());
     w.caches.stores.set("fctl-opening", new Map());
     await w.dispatch("activate", {});
     expect([...w.caches.stores.keys()]).toEqual(["fctl-opening"]);
+    expect(w.self.clients.claim).toHaveBeenCalled();
+  });
+
+  // With a fetch handler, a page load waits for the worker to start and answer, up to 70 s in
+  // WebKit, which the iPhone's Home Screen app spends black.
+  it("leaves page loads and requests to the browser", () => {
+    const w = worker();
+    expect(w.listeners.has("fetch")).toBe(false);
+    expect([...w.listeners.keys()].sort()).toEqual(["activate", "install", "notificationclick", "push"]);
+  });
+
+  it("takes over from an older worker as soon as it installs", async () => {
+    const w = worker();
+    await w.dispatch("install", {});
+    expect(w.self.skipWaiting).toHaveBeenCalled();
   });
 
   it("still opens the page when the window can't be focused", async () => {

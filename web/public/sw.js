@@ -1,19 +1,19 @@
-// The service worker. With it, browsers offer to install fctl as an app, a
-// page that cannot load offline shows offline.html instead of the browser's
-// error, and notifications reach this browser: it shows the ones the control
-// plane sends (Web Push; crates/fctl-control/src/push.rs, payloads are
-// PushMessage) and opens what a click is about. It caches nothing else (the
-// app needs the control plane anyway, and a deploy shows at once) and leaves
-// /api/ to the network: sign-in redirects and downloads never pass through
-// it. Registered in src/main.tsx, and by src/lib/push.ts when notifications
-// are turned on.
+// The service worker. It shows the notifications the control plane sends
+// (Web Push; crates/fctl-control/src/push.rs, payloads are PushMessage) and
+// opens what a click is about. Registered in src/main.tsx, and by
+// src/lib/push.ts when notifications are turned on. Browsers offer to install
+// the app on its manifest alone.
+//
+// It has no fetch handler, and must keep none. With one, a page load waits for
+// the worker to start and answer: in the app on an iPhone's Home Screen whose
+// page iOS ended in the background, WebKit waits up to 70 s for a worker that
+// doesn't answer before it loads the page from the network itself
+// (ServiceWorkerFetchTask's timeout), and the screen stays black meanwhile.
+// Every request a page makes would wait on it too, with no limit. Without one,
+// browsers load pages and requests straight from the network, without
+// starting the worker. A page that can't load offline shows the browser's own
+// error page.
 
-// Bump it with every change to offline.html: browsers install the worker again,
-// and so fetch the page anew, only when this file changes.
-const CACHE = "fctl-offline-v2";
-// public/offline.html, at the URL Workers static assets serve it from (they
-// redirect /offline.html there, and a navigation cannot take a redirect).
-const OFFLINE = "/offline";
 // What the last click on a notification opens, kept for the app to pick up
 // (src/lib/push.ts takeOpening): an iPhone's Home Screen app may open at its
 // start page whatever openWindow asks for, and may miss a message sent as it
@@ -22,30 +22,17 @@ const OPENING = "fctl-opening";
 const OPENING_KEY = "/fctl-opening";
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.add(new Request(OFFLINE, { cache: "reload" })))
-      .then(() => self.skipWaiting()),
-  );
+  event.waitUntil(self.skipWaiting());
 });
 
+// Workers before this one kept a copy of the offline page (fctl-offline-v1,
+// v2): only the click's page stays.
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((key) => key !== CACHE && key !== OPENING).map((key) => caches.delete(key))),
-      )
+      .then((keys) => Promise.all(keys.filter((key) => key !== OPENING).map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
-  );
-});
-
-self.addEventListener("fetch", (event) => {
-  const { request } = event;
-  if (request.mode !== "navigate" || new URL(request.url).pathname.startsWith("/api/")) return;
-  event.respondWith(
-    fetch(request).catch(() => caches.match(OFFLINE).then((page) => page || Response.error())),
   );
 });
 

@@ -671,11 +671,15 @@ fctl.sh has its own 404 and 5xx pages, in hyperstructure/fctl-site.
 People install the app on their phones and computers.
 `public/manifest.webmanifest` describes it, the `brand-assets` plugin in
 `vite.config.ts` serves the favicon and icons from the design package, and
-`public/sw.js` shows `public/offline.html` when a page cannot load offline,
-and shows notifications. The service worker registers by itself only in
-production builds (turning notifications on registers it anywhere): to try
-installing, run `cargo xtask dev --no-vite` and open http://127.0.0.1:8787
-(Chrome's DevTools → Application shows the manifest and the worker). In the
+`public/sw.js` shows notifications. The service worker has no fetch
+handler, and must keep none: with one, every page load waits for the worker
+to start and answer, and WebKit waits up to 70 seconds for one that doesn't
+before it loads the page itself, while the app on an iPhone's Home Screen
+stays black. Browsers offer to install the app on its manifest alone. The
+service worker registers by itself only in production builds (turning
+notifications on registers it anywhere): to try installing, run
+`cargo xtask dev --no-vite` and open http://127.0.0.1:8787 (Chrome's
+DevTools → Application shows the manifest and the worker). In the
 installed app on a phone, the page reaches under the notch and the home
 indicator, so anything fixed to an edge of the screen keeps clear of them
 with `env(safe-area-inset-*)`, as the message box does. At the top, use
