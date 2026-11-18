@@ -64,11 +64,12 @@ import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
-import { githubLevel, lowerAccess, onGithub, tracksTickets } from "@/lib/github-access";
+import { githubLevel, lowerAccess, onGithub, tracksTickets, within } from "@/lib/github-access";
 import { siteUrl } from "@/lib/install";
 import { asked, type Choice, effortLabel, modelLabel, projectChoice } from "@/lib/models";
 import { keys, queryClient, useMe, useProjectRepos } from "@/lib/queries";
 import {
+  anyoneStarts,
   browserZone,
   canSchedule,
   capProblem,
@@ -76,6 +77,7 @@ import {
   cronProblem,
   cronRepeat,
   DEFAULT_REPEAT,
+  defaultAccess,
   describeCaps,
   describeCron,
   describeEvent,
@@ -1661,6 +1663,14 @@ function Editor({
     effort: schedule?.effort ?? draft?.effort ?? own.effort,
     github: lowerAccess(schedule?.github_access ?? draft?.github ?? own.github, own.github),
   }));
+  // Until someone picks what its agents may do on GitHub, it goes by its default for what it waits
+  // for (`defaultAccess`): triage for an event anyone on GitHub can start, else the project's.
+  const [githubPicked, setGithubPicked] = useState(() =>
+    schedule
+      ? schedule.github_access !== undefined &&
+        schedule.github_access !== defaultAccess(schedule.event, own.github)
+      : draft?.github !== undefined && draft.github !== own.github,
+  );
   const [hidden, setHidden] = useState(schedule?.hide_sessions ?? draft?.hide ?? false);
   const [zone, setZone] = useState(schedule?.timezone ?? here);
   const [pickZone, setPickZone] = useState(false);
@@ -1689,6 +1699,12 @@ function Editor({
   }, [schedule, draft]);
 
   const expression = mode === "repeat" ? repeatCron(repeat) : cron;
+  // What its agents may do on GitHub: as picked, else its default for what it waits for, which goes
+  // as asked only where it isn't that default, so that the default follows it.
+  const waitsFor = mode === "event" ? toEvent(event) : undefined;
+  const fallback = defaultAccess(waitsFor, own.github);
+  const picked: Choice = githubPicked ? choice : { ...choice, github: fallback };
+  const githubAsked = picked.github !== fallback ? picked.github : undefined;
   const atTime = mode === "once" ? fromWall(zone, once.date, once.time) : Number.NaN;
   const whenProblem =
     mode === "asked"
@@ -1711,7 +1727,7 @@ function Editor({
 
   const save = useMutation({
     mutationFn: async () => {
-      const asks = asked(project, choice);
+      const asks = asked(project, picked);
       // Without a time, it runs when asked: a new one gets neither, a change clears the cron. A time
       // ends what it waited for on GitHub, and an event its time.
       const timing =
@@ -1731,6 +1747,7 @@ function Editor({
           timezone: zone,
           ...timing,
           ...asks,
+          github_access: githubAsked,
           hide_sessions: hidden || undefined,
         };
         return api.createSchedule(project.id, body);
@@ -1742,7 +1759,7 @@ function Editor({
         ...timing,
         model: asks.model ?? "",
         effort: asks.effort ?? "",
-        github_access: asks.github_access ?? "",
+        github_access: githubAsked ?? "",
         hide_sessions: hidden,
       };
       return api.updateSchedule(schedule.id, body);
@@ -1817,6 +1834,7 @@ function Editor({
                 }
                 setHidden(!!i.hide);
                 setChoice((c) => ({ ...c, github: lowerAccess(i.github ?? own.github, own.github) }));
+                setGithubPicked(i.github !== undefined);
               }}
               className={cn(
                 "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] transition-colors duration-150 [&_svg]:size-3.5",
@@ -1869,8 +1887,11 @@ function Editor({
           <TextareaControls textarea={textarea} className="flex-wrap justify-end gap-3 pt-1 pr-3 pb-3 pl-3">
             <StartChoices
               project={project}
-              choice={choice}
-              onPick={(c) => setChoice((x) => ({ ...x, ...c }))}
+              choice={picked}
+              onPick={(c) => {
+                if (c.github) setGithubPicked(true);
+                setChoice((x) => ({ ...x, ...c }));
+              }}
             />
           </TextareaControls>
         </div>
@@ -1919,6 +1940,7 @@ function Editor({
           <EventFields
             project={project}
             value={event}
+            access={picked.github}
             onChange={setEvent}
             problem={eventProblem(event)}
             failure={failure?.field?.startsWith("event") ? failure : undefined}
@@ -2403,12 +2425,15 @@ const writes = (r: G.ProjectRepo) => r.primary || r.access === "write";
 function EventFields({
   project,
   value,
+  access,
   onChange,
   problem,
   failure,
 }: {
   project: G.Project;
   value: EventForm;
+  /** What its agents may do on GitHub, as the form has it. */
+  access: G.GithubAccess;
   onChange: (v: EventForm) => void;
   /** What keeps it from saving (`eventProblem`), said under the field it concerns. */
   problem?: EventProblem;
@@ -2596,7 +2621,18 @@ function EventFields({
         <p className="text-[12px] leading-relaxed text-ink-4">
           Whoever opens an issue or a pull request may be someone who can't instruct your agents, so they take
           what GitHub says as information, not instructions.
+          {anyoneStarts({ kind, by: value.by }) &&
+            within(access, "triage") &&
+            ` Anyone on GitHub can open one, so its agents ${access === "read" ? "only read" : "triage"} unless you let them do more on GitHub.`}
         </p>
+        {anyoneStarts({ kind, by: value.by }) && !within(access, "triage") && (
+          <p className="flex gap-1.5 text-[12.5px] leading-relaxed text-amber" role="status">
+            <TriangleAlert className="mt-[3px] size-3.5 shrink-0" aria-hidden="true" />
+            Anyone on GitHub can open one, and what they write reaches an agent that{" "}
+            {access === "push" ? "can push" : "reviews and comments"}. Triage only keeps it to labels and
+            comments.
+          </p>
+        )}
         {unheard.find((u) => u.kind === kind) && (
           <p className="flex gap-1.5 text-[12.5px] leading-relaxed text-amber" role="status">
             <TriangleAlert className="mt-[3px] size-3.5 shrink-0" aria-hidden="true" />

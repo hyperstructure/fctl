@@ -171,7 +171,9 @@ pub struct SessionArgs {
     #[arg(long)]
     pub effort: Option<String>,
     /// What their agents may do on GitHub (push, comment, triage, read);
-    /// `default` for as much as the project allows.
+    /// `default` for its default: triage on an event anyone on GitHub can
+    /// start (issues opened, pull requests opened by anyone), else as much
+    /// as the project allows.
     #[arg(long)]
     pub github: Option<String>,
     /// The branch they start from; `default` for the project's.
@@ -750,12 +752,15 @@ fn local_zone() -> String {
         .unwrap_or_else(|| "UTC".into())
 }
 
-/// A setting given at creation: `default` (or nothing) for the project's.
+/// A setting given at creation: `default` (or nothing) for its default,
+/// the project's, but triage for `--github` on an event anyone on GitHub
+/// can start.
 fn chosen(v: Option<String>) -> Option<String> {
     v.filter(|v| !v.trim().eq_ignore_ascii_case("default") && !v.trim().is_empty())
 }
 
-/// A setting given in a change: `default` becomes `""`, the project's.
+/// A setting given in a change: `default` becomes `""`, its default (as
+/// [`chosen`] has it).
 fn blank(v: Option<String>) -> Option<String> {
     v.map(|v| {
         if v.trim().eq_ignore_ascii_case("default") {
@@ -768,7 +773,7 @@ fn blank(v: Option<String>) -> Option<String> {
 
 fn access(v: &str) -> Result<GithubAccess> {
     GithubAccess::parse(v.trim())
-        .context("Use push, comment, triage or read, or default for the project's")
+        .context("Use push, comment, triage or read, or default for its default: triage on an event anyone on GitHub can start, else the project's")
 }
 
 /// A file's text, or stdin's for `-`.

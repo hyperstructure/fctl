@@ -322,6 +322,59 @@ describe("Schedules that run on events", () => {
     expect(createSchedule.mock.calls[0]?.[1]).not.toHaveProperty("cron");
   });
 
+  /** The form of a new schedule that waits for issues opened, anyone's, with its task. */
+  function onIssuesOpened() {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    press(named(tab, "Start from scratch"));
+    const textarea = tab.querySelector("textarea");
+    act(() => {
+      if (!textarea) return;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        textarea,
+        "Fix what the issue asks.",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    press(named(tab, "On an event"));
+    return tab;
+  }
+  const onGithubSays = (tab: HTMLElement) =>
+    tab.querySelector("[role=combobox][aria-label='On GitHub'] > .grid > span:not([aria-hidden])")
+      ?.textContent;
+
+  it("triage what anyone on GitHub can start, unless someone lets them do more", async () => {
+    const tab = onIssuesOpened();
+    // Anyone can open an issue: its agents triage, though the project's push.
+    expect(onGithubSays(tab)).toBe("Triage only");
+    expect(tab.textContent).toContain(
+      "Anyone on GitHub can open one, so its agents triage unless you let them do more on GitHub.",
+    );
+    createSchedule.mockReturnValue(new Promise(() => {}));
+    press(named(tab, "Set up schedule"));
+    await settle();
+    // Its default goes as nothing, so that it follows what it waits for.
+    expect(createSchedule.mock.calls[0]?.[1]).toMatchObject({ event: { kind: "issue_opened" } });
+    expect(createSchedule.mock.calls[0]?.[1]?.github_access).toBeUndefined();
+  });
+
+  it("say what anyone's text reaches once its agents may push, and ask for it", async () => {
+    const tab = onIssuesOpened();
+    act(() => tab.querySelector<HTMLElement>("[role=combobox][aria-label='On GitHub']")?.click());
+    const push = [...tab.querySelectorAll<HTMLElement>("[role=option]")].find((o) =>
+      o.textContent?.includes("Can push"),
+    );
+    act(() => push?.click());
+    expect(onGithubSays(tab)).toBe("Can push");
+    expect(tab.textContent).toContain(
+      "Anyone on GitHub can open one, and what they write reaches an agent that can push. Triage only keeps it to labels and comments.",
+    );
+    createSchedule.mockReturnValue(new Promise(() => {}));
+    press(named(tab, "Set up schedule"));
+    await settle();
+    expect(createSchedule.mock.calls[0]?.[1]?.github_access).toBe("push");
+  });
+
   it("cap the sessions their events start, 3 an hour and 10 a day unless changed", async () => {
     queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
     const tab = render(<SchedulesTab project={onGithub} />);

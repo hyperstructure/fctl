@@ -48,8 +48,10 @@ timezone: string,
  */
 model?: string, effort?: string, base_branch?: string, 
 /**
- * What its sessions' agents may do on GitHub; absent: as much as the
- * project allows. One this version doesn't know reads as `read`.
+ * What its sessions' agents may do on GitHub: what it set, else
+ * `triage` for a schedule anyone on GitHub can start (issues opened,
+ * pull requests opened by anyone); absent: as much as the project
+ * allows. One this version doesn't know reads as `read`.
  */
 github_access?: GithubAccess, 
 /**
