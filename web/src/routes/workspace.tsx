@@ -262,6 +262,8 @@ export function WorkspacePage() {
         <>
           <PageTabs
             label="Workspace"
+            // Its admins see nine: closer, they fit a computer's column.
+            dense={admin}
             open={tab}
             link={(t) => ({
               to: "/w/$slug",

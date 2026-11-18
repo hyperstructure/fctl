@@ -133,16 +133,21 @@ export function AnswerControl({
   );
 }
 
-/** What allowing a service account lets it do, and what it can't, for the people it asks. */
-export function allowingMeans(workspace: string): { key: string; text: string }[] {
+/**
+ * What allowing a service account lets it do, and what it can't, for the people it asks: one
+ * (`several` false) or several at once, in `workspace`, or each in its own (none).
+ */
+export function allowingMeans(workspace?: string, several = false): { key: string; text: string }[] {
   return [
     {
       key: "yours",
-      text: `It starts sessions for you in ${workspace}'s projects you work in: they're yours, on your Claude subscription, and you follow them as you follow your own.`,
+      text: `${several ? "Each starts" : "It starts"} sessions for you in ${workspace ? `${workspace}'s` : "its workspace's"} projects you work in: they're yours, on your Claude subscription, and you follow them as you follow your own.`,
     },
     {
       key: "steer",
-      text: "It messages, interrupts and stops their agents for you, and reads what they do.",
+      text: several
+        ? "They message, interrupt and stop their agents for you, and read what they do."
+        : "It messages, interrupts and stops their agents for you, and reads what they do.",
     },
     {
       key: "not",

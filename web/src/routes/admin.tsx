@@ -1957,7 +1957,7 @@ function ServiceAccountSettings({
         open={confirm}
         onClose={() => setConfirm(false)}
         title="Let service accounts act for anyone, without asking?"
-        description="Every workspace's service accounts then start sessions for any of its members, on their own Claude subscription, whether or not they allowed it, also for those who said no. Turn it on again, and what each person answered counts again."
+        description="Every workspace's service accounts then start sessions for any of its members, on their own Claude subscription, those who said no included. Turn it on again, and what each person answered counts again."
       >
         <div className="flex flex-col gap-5">
           <Banner tone="warn">

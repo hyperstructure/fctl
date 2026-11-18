@@ -15,7 +15,7 @@ import {
   UserRoundCog,
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { Avatar, Banner, Button, CodeBox, Field, Skeleton, Textarea } from "@/components/ui";
+import { Avatar, Banner, Button, CodeBox, Field, Meta, Skeleton, Textarea } from "@/components/ui";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -263,7 +263,7 @@ function Intro({
             </p>
           </div>
         </div>
-        <Preview workspace={w.slug} consent={consent} />
+        <Preview workspace={w.slug} name={w.name} consent={consent} />
       </div>
     </div>
   );
@@ -272,9 +272,9 @@ function Intro({
 /**
  * What a service account does, drawn: a portal's request for Ada as it goes out, the session it
  * started, hers, and under it whom it acts for: those who allowed it. Made up, in the world the
- * app's previews share (the login redirect of web#12), with this workspace's slug.
+ * app's previews share (the login redirect of web#12), with this workspace's slug and name.
  */
-function Preview({ workspace, consent }: { workspace: string; consent: boolean }) {
+function Preview({ workspace, name, consent }: { workspace: string; name: string; consent: boolean }) {
   const card = "overflow-hidden rounded-xl border border-line bg-surface";
   const people: [string, string, "allowed" | "asked" | "declined"][] = [
     ["Ada Lovelace", "Allowed it", "allowed"],
@@ -319,7 +319,7 @@ function Preview({ workspace, consent }: { workspace: string; consent: boolean }
             </div>
             <div className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-4">
               <UserRoundCog className="size-3" />
-              Ada Lovelace, through Acme portal
+              Ada Lovelace, through {name} portal
             </div>
           </div>
         </div>
@@ -484,7 +484,7 @@ export function Made({
             {again
               ? "Its old secret stopped working: give your program this one. You keep it from now on."
               : a.consent
-                ? `fctl asks ${w.name}'s ${asked === 1 ? "person" : `${asked} people`} to let it start sessions for them. It starts none for anyone until they do.`
+                ? `fctl asks ${w.name}'s ${asked} ${asked === 1 ? "person" : "people"} to let it start sessions for them. It starts none for anyone until they do.`
                 : `It starts sessions for anyone in ${w.name} from now on.`}
           </p>
         </div>
@@ -534,7 +534,7 @@ function Members({
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
         Programs of {w.name}'s own that start sessions for its people, through fctl's API.{" "}
         {consent
-          ? "Each starts sessions for you only if you allow it: they're yours, on your Claude subscription, and you follow them as you follow your own. Change your answer whenever you like."
+          ? "Each starts sessions for you only if you allow it: they're yours, on your Claude subscription, and you follow them as you follow your own. It messages, interrupts and stops their agents for you, and nothing else. Change your answer whenever you like."
           : "This instance's admins chose that people don't choose: they start sessions for anyone here, on their own Claude subscription."}
       </p>
       <ul className="border-t border-line">
@@ -551,23 +551,30 @@ function Members({
                   {a.description}
                 </p>
               )}
-              <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[12px] text-ink-4">
-                <span className={cn(a.consent && !a.answer && "text-blue")}>{answerWords(a)}</span>
-                {a.created_by && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="inline-flex items-center gap-1">
-                      made by <Avatar user={a.created_by} size={14} /> {a.created_by.name}
-                    </span>
-                  </>
-                )}
-                {a.answered_at && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span>answered {agoShortWords(a.answered_at)}</span>
-                  </>
-                )}
-              </p>
+              {/* Where the facts wrap, the next line starts with one, not with a dot. */}
+              <Meta
+                parts={[
+                  {
+                    key: "answer",
+                    node: answerWords(a),
+                    className: cn("text-[12px]", a.consent && !a.answer && "text-blue"),
+                  },
+                  a.created_by && {
+                    key: "maker",
+                    node: (
+                      <span className="inline-flex items-center gap-1">
+                        made by <Avatar user={a.created_by} size={14} /> {a.created_by.name}
+                      </span>
+                    ),
+                    className: "text-[12px]",
+                  },
+                  !!a.answered_at && {
+                    key: "answered",
+                    node: `answered ${agoShortWords(a.answered_at)}`,
+                    className: "text-[12px]",
+                  },
+                ]}
+              />
             </div>
             <div className="flex shrink-0 items-center max-sm:w-full max-sm:justify-end">
               <AnswerControl account={a} />

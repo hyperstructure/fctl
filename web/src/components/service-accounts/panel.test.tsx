@@ -273,6 +273,24 @@ describe("what service accounts ask you", () => {
     expect(answerServiceAccount).toHaveBeenCalledWith("sva_portal", true);
   });
 
+  it("says once what allowing means where several ask, each with its answers", () => {
+    const w = workspace("member");
+    const c = render(
+      <ServiceAccountAsks
+        asks={[
+          { workspace: w, account: account() },
+          { workspace: w, account: account({ id: "sva_bot", name: "Slack bot", description: undefined }) },
+        ]}
+      />,
+    );
+    expect(text(c)).toContain("2 service accounts ask to start agents for you in Acme");
+    expect(text(c)).toContain("Each starts sessions for you in Acme's projects you work in");
+    expect(text(c).match(/Nothing else/g)).toHaveLength(1);
+    expect([...c.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Allow")).toHaveLength(
+      2,
+    );
+  });
+
   it("warns on an invitation what joining means, as the instance decides", () => {
     const invitation = {
       workspace: ref,

@@ -193,10 +193,10 @@ pub fn stopped(keeper_admin: bool, keeper: Option<&str>, workspace: &str) -> Opt
     }
     Some(match keeper {
         Some(name) => format!(
-            "{name}, who made its secret, is no longer an admin of {workspace}: an admin makes it a new secret to start it again."
+            "{name}, who made its secret, is no longer an admin of {workspace}. An admin makes it a new secret to start it again."
         ),
         None => format!(
-            "The admin who made its secret is no longer on the instance: an admin of {workspace} makes it a new secret to start it again."
+            "The admin who made its secret is no longer on the instance. An admin of {workspace} makes it a new secret to start it again."
         ),
     })
 }

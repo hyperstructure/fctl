@@ -11,15 +11,91 @@ import { ago } from "@/lib/format";
 import type { Ask } from "@/lib/service-accounts";
 import { AnswerControl, allowingMeans } from "./parts";
 
-/** The service accounts that ask you, on the Agent Floor: each until you answer. */
+/**
+ * The service accounts that ask you, on the Agent Floor: each until you answer. One is a card of its
+ * own; several share one, which says once what allowing each means.
+ */
 export function ServiceAccountAsks({ asks }: { asks: Ask[] }) {
   if (!asks.length) return null;
   return (
-    <section aria-label="Service accounts that ask you" className="flex animate-rise flex-col gap-2">
-      {asks.map((a) => (
-        <AskCard key={a.account.id} ask={a} />
-      ))}
+    <section aria-label="Service accounts that ask you" className="animate-rise">
+      {asks.length === 1 && asks[0] ? <AskCard ask={asks[0]} /> : <Asks asks={asks} />}
     </section>
+  );
+}
+
+/** Several service accounts that ask you: what allowing each means, once, then each with its answers. */
+function Asks({ asks }: { asks: Ask[] }) {
+  const places = new Set(asks.map((a) => a.workspace.id));
+  const only = places.size === 1 ? asks[0]?.workspace : undefined;
+  return (
+    <div className="@container rounded-xl border border-blue/25 bg-blue-soft px-4 py-3.5">
+      <div className="flex items-start gap-3 @xl:gap-4">
+        <span
+          aria-hidden="true"
+          className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-raised text-blue shadow-[inset_0_0_0_1px_var(--c-line)]"
+        >
+          <UserRoundCog className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[14.5px] text-ink">
+            {asks.length} service accounts ask to start agents for you
+            {only && (
+              <>
+                {" "}
+                in{" "}
+                <Link
+                  to="/w/$slug"
+                  params={{ slug: only.slug }}
+                  search={{ tab: "service-accounts" }}
+                  className="font-medium underline-offset-2 hover:underline"
+                >
+                  {only.name}
+                </Link>
+              </>
+            )}
+          </div>
+          <ul className="mt-2 flex flex-col gap-1 text-[12.5px] leading-relaxed text-ink-3">
+            {allowingMeans(only?.name, true).map((m) => (
+              <li key={m.key} className="flex items-start gap-1.5">
+                <Check className="mt-[3px] size-3 shrink-0 text-ink-4" aria-hidden="true" />
+                <span>{m.text}</span>
+              </li>
+            ))}
+          </ul>
+          <ul className="mt-3 border-t border-blue/20">
+            {asks.map(({ workspace: w, account: a }) => (
+              <li
+                key={a.id}
+                className="flex flex-col gap-2.5 border-b border-blue/15 py-3 last:border-b-0 last:pb-0.5 @xl:flex-row @xl:items-start @xl:gap-4"
+              >
+                <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                  <div className="text-[13.5px] text-ink">
+                    <span className="font-medium">{a.name}</span>
+                    {!only && <span className="text-ink-3"> in {w.name}</span>}
+                  </div>
+                  {a.description && (
+                    <p className="mt-0.5 text-[13px] leading-relaxed text-ink-2">“{a.description}”</p>
+                  )}
+                  {a.created_by && (
+                    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[12px] text-ink-4">
+                      <span className="inline-flex items-center gap-1">
+                        made by <Avatar user={a.created_by} size={14} /> {a.created_by.name}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="whitespace-nowrap">{ago(a.created_at)}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex shrink-0 justify-end">
+                  <AnswerControl account={a} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
   );
 }
 
