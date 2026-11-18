@@ -989,12 +989,16 @@ impl HooksObject {
         }
         .await;
         match turned {
-            Ok(_) => {
-                self.exec(
-                    "UPDATE deliveries SET state = 'failed', next_at = NULL, done_at = ?, reason = ? \
-                     WHERE webhook_id = ? AND state = 'pending'",
-                    vec![iv(now), sv("Its webhook was turned off."), sv(&hook.id)],
-                );
+            Ok(changed) => {
+                // Not those of one that someone who manages it turned on
+                // again in the meantime, which now keeps it.
+                if changed > 0 || hook.kept {
+                    self.exec(
+                        "UPDATE deliveries SET state = 'failed', next_at = NULL, done_at = ?, reason = ? \
+                         WHERE webhook_id = ? AND state = 'pending'",
+                        vec![iv(now), sv("Its webhook was turned off."), sv(&hook.id)],
+                    );
+                }
                 self.changed(&hook.workspace_id);
                 hook_rows::forget_cached(&hook.workspace_id);
             }
@@ -1587,14 +1591,19 @@ async fn post(
             )
         }
         Err(_) if signal.aborted() => done(None, Some(rules::timeout_error()), None, None),
-        Err(e) => done(
-            None,
-            Some(format!(
+        Err(e) => {
+            let mut why = format!(
                 "fctl couldn't reach it: {}",
-                rules::clip(&e.to_string(), 300)
-            )),
-            None,
-            None,
-        ),
+                rules::clip(&e.to_string(), 300).trim_end_matches('.')
+            );
+            // The network for webhooks answers an address it doesn't
+            // connect to as it does a name that doesn't resolve.
+            if via.is_some() {
+                why.push_str(
+                    ". This server's webhooks connect only to public addresses and those FCTL_WEBHOOK_PRIVATE_HOSTS lists, wherever a host name resolves",
+                );
+            }
+            done(None, Some(why), None, None)
+        }
     }
 }
