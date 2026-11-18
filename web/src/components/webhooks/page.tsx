@@ -357,14 +357,20 @@ function Deliveries({
   return (
     <section aria-labelledby="deliveries-heading" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-        <div className="min-w-0">
+        {/* The summary takes a line for each sentence beside the filters, before they move below it. */}
+        <div className="min-w-0 flex-1 basis-64">
           <h3 id="deliveries-heading" className="text-[15px] font-semibold tracking-[-0.005em] text-ink">
             Deliveries
           </h3>
-          <p className="mt-1 text-[13px] text-ink-3">
-            {h
-              ? `${h.delivered} delivered${h.failed ? `, ${h.failed} failed` : ""} in the last day${h.pending ? `, ${h.pending} waiting now` : ""}. Its newest 1,000 of the last 30 days are kept.`
-              : "What went out to it in the last 30 days, its newest 1,000 at most."}
+          <p className="mt-1 text-[13px] leading-relaxed text-pretty text-ink-3">
+            {h ? (
+              <>
+                {`${h.delivered} delivered${h.failed ? `, ${h.failed} failed` : ""} in the last day${h.pending ? `, ${h.pending} waiting now` : ""}.`}{" "}
+                <span className="block">Its newest 1,000 of the last 30 days are kept.</span>
+              </>
+            ) : (
+              "What went out to it in the last 30 days, its newest 1,000 at most."
+            )}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
