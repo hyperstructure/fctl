@@ -2666,6 +2666,27 @@ pub struct DrainRequest {
 pub struct RunnerDetail {
     pub runner: Runner,
     pub sessions: Vec<RunnerSession>,
+    /// The autopilots that are on whose own session keeps its sandbox on
+    /// the runner: their wakes resume that session here, between turns
+    /// too, and even while the runner drains. Absent from older control
+    /// planes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<RunnerAutopilot>>", optional))]
+    pub autopilots: Vec<RunnerAutopilot>,
+}
+
+/// An autopilot whose own session's sandbox is on a runner.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RunnerAutopilot {
+    /// Its own session, as it stands: it may run here now, or have
+    /// stopped between wakes.
+    pub session: RunnerSession,
+    /// The project's autopilot, or its workspace's.
+    pub scope: crate::autopilot::AutopilotScope,
+    /// When fctl wakes it next, unless something needs it sooner.
+    pub wake_at: Option<Millis>,
 }
 
 /// A session a runner runs.

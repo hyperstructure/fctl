@@ -562,7 +562,8 @@ fctl host doctor && fctl host status
 ```
 
 `fctl host drain --wait` empties it for maintenance and `fctl host undrain`
-takes sessions again. [Getting started](getting-started.md#5-bring-a-machine-online)
+takes sessions again. Autopilots whose session's sandbox is on it still
+wake there; both commands list them. [Getting started](getting-started.md#5-bring-a-machine-online)
 and [Hosts](cli.md#hosts) have the rest.
 
 ### Reports

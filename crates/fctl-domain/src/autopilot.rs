@@ -552,6 +552,20 @@ pub fn fresh(own: OwnSession, handoff_at: Option<u32>, asked: bool, now: Millis)
     }
 }
 
+/// Whether its next wake, at `wake_at`, goes to its own session as it is,
+/// which resumes it where its sandbox is, rather than to a fresh session
+/// that may start on any runner ([`fresh`]). `asked`: people asked for a
+/// fresh one.
+pub fn wakes_in_own(
+    own: OwnSession,
+    handoff_at: Option<u32>,
+    asked: bool,
+    wake_at: Millis,
+) -> bool {
+    fresh(own, handoff_at, asked, wake_at).is_none()
+        && (own.status.accepts_messages() || own.status.resumes_for_messages())
+}
+
 /// Whether a wake waits for its own session's turn to end, rather than
 /// reach it now: people asked for a fresh session to take over from it
 /// (`reasons` has [`AutopilotWakeReason::Fresh`]) while it works. All it
@@ -2930,6 +2944,61 @@ mod tests {
             fresh_for(own(SessionStatus::Idle, HOUR_MS, Some(900_000))),
             None
         );
+    }
+
+    #[test]
+    fn its_next_wake_resumes_its_own_session_only_when_it_carries_on() {
+        let now = 100 * HOUR_MS;
+        let own = |status, context_tokens| OwnSession {
+            status,
+            started_at: now - 10 * HOUR_MS,
+            context_tokens,
+        };
+        let soon = now + HOUR_MS;
+        assert!(wakes_in_own(
+            own(SessionStatus::Stopped, None),
+            None,
+            false,
+            soon
+        ));
+        assert!(wakes_in_own(
+            own(SessionStatus::Idle, None),
+            None,
+            false,
+            soon
+        ));
+        assert!(wakes_in_own(
+            own(SessionStatus::Running, None),
+            None,
+            false,
+            soon
+        ));
+        // By then its shift has ended, or people asked: a fresh one starts.
+        assert!(!wakes_in_own(
+            own(SessionStatus::Stopped, None),
+            None,
+            false,
+            now + 3 * HOUR_MS
+        ));
+        assert!(!wakes_in_own(
+            own(SessionStatus::Stopped, None),
+            None,
+            true,
+            soon
+        ));
+        // Full, or failed.
+        assert!(!wakes_in_own(
+            own(SessionStatus::Stopped, Some(300_000)),
+            Some(250_000),
+            false,
+            soon
+        ));
+        assert!(!wakes_in_own(
+            own(SessionStatus::Failed, None),
+            None,
+            false,
+            soon
+        ));
     }
 
     #[test]

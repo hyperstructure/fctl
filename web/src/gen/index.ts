@@ -296,6 +296,7 @@ export type { ReviewState } from "./ReviewState";
 export type { Risk } from "./Risk";
 export type { RunScheduleRequest } from "./RunScheduleRequest";
 export type { Runner } from "./Runner";
+export type { RunnerAutopilot } from "./RunnerAutopilot";
 export type { RunnerClaudeToken } from "./RunnerClaudeToken";
 export type { RunnerDetail } from "./RunnerDetail";
 export type { RunnerDisk } from "./RunnerDisk";

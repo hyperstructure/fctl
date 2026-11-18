@@ -273,6 +273,19 @@ pub struct Stop {
     pub destroy: bool,
 }
 
+/// Asks FleetDO for the sessions whose sandboxes a runner keeps: those a
+/// resume starts there (`POST /homes`).
+#[derive(Serialize, Deserialize)]
+pub struct Homes {
+    pub runner_id: String,
+}
+
+/// The sessions whose sandboxes a runner keeps, by id.
+#[derive(Serialize, Deserialize, Default)]
+pub struct HomeSessions {
+    pub sessions: Vec<String>,
+}
+
 /// Drains a runner, or stops draining it.
 #[derive(Serialize, Deserialize)]
 pub struct Drain {
