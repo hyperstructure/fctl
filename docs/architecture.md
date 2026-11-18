@@ -2190,9 +2190,11 @@ another tool, runs one
    `GET`/`PATCH`/`DELETE /api/v1/schedules/{id}`): a name, the task its
    runs' agents get, when it runs (a time, an event or neither), and the
    model, effort level, base
-   branch and GitHub access its sessions start with, else the project's,
-   and never more on GitHub than the project allows now
-   (`limits::effective`). People who start sessions in the project set
+   branch and GitHub access its sessions start with, else the project's
+   (but triage for the GitHub access of one that anyone on GitHub can
+   start, item 6's `triggers::default_github`), and never more on GitHub
+   than the project allows now (`limits::effective`). People who start
+   sessions in the project set
    them up, on their own Claude subscription: the schedule's owner. The
    owner, and the project's maintainers and owners, change it; a change by
    anyone else, a resume or **Run it on my subscription** runs it on

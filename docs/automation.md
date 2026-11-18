@@ -61,8 +61,9 @@ Floor's in a wide window, turns what you wrote there into one.
   why; resuming it runs it on the subscription of whoever resumes it.
 - **What it may do.** Its sessions start with the model, effort level and
   GitHub access it sets, or the project's, and never more on GitHub than
-  the project allows now. Schedules run at most every 15 minutes, and a
-  project keeps at most 50.
+  the project allows now; one that anyone on GitHub can start runs at
+  **Triage only** unless it sets more ([Run on events](#run-on-events)).
+  Schedules run at most every 15 minutes, and a project keeps at most 50.
 
 ```sh
 fctl schedules add "Weekly dependencies" -p web --cron "0 9 * * 1" \
