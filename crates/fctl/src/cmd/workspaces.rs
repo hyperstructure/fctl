@@ -427,6 +427,17 @@ pub enum WorkspacesCmd {
     },
 }
 
+/// What someone who is in no workspace can do: create one, where the
+/// instance lets them (`WorkspaceList::can_create`), or ask its admins
+/// for one.
+pub fn no_workspace(can_create: bool) -> &'static str {
+    if can_create {
+        "Create one with `fctl workspaces create <name>`."
+    } else {
+        "This instance's admins create workspaces: ask one to add you to one."
+    }
+}
+
 /// The workspace a command is about: the one named, the default one, or
 /// your only one.
 pub async fn resolve(api: &Api, named: Option<String>) -> Result<Workspace> {
@@ -437,7 +448,8 @@ pub async fn resolve(api: &Api, named: Option<String>) -> Result<Workspace> {
     match list.workspaces.as_slice() {
         [only] => Ok(only.clone()),
         [] => bail!(
-            "You aren't in a workspace yet. Create one with `fctl workspaces create <name>`, or join one you are invited to."
+            "You aren't in a workspace yet. {} Or join one you are invited to (`fctl workspaces join`).",
+            no_workspace(list.can_create)
         ),
         more => bail!(
             "Which workspace? Pass --workspace, or set a default with `fctl workspaces use <workspace>`. Yours: {}",
@@ -578,7 +590,8 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             if list.workspaces.is_empty() && list.invitations.is_empty() {
                 println!(
-                    "You aren't in a workspace yet. Create one with `fctl workspaces create <name>`."
+                    "You aren't in a workspace yet. {}",
+                    no_workspace(list.can_create)
                 );
             }
             for w in &list.workspaces {

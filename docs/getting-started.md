@@ -94,7 +94,8 @@ work in belong to workspaces: one for your company's repositories, one for
 your own, one for a side project with friends. An invitation to a workspace
 shows on your Agent Floor, where you join it; or choose **New workspace** in
 the sidebar (`fctl workspaces create "Side project"`) and be its primary
-admin. Each workspace has its own people, admins, runners, GitHub accounts
+admin. (An organization's own instance may keep creating workspaces to its
+admins: then ask one of them for the workspace you need.) Each workspace has its own people, admins, runners, GitHub accounts
 and audit log, and can require two-factor sign-in of its members. You can be
 in up to five, and the primary instance owner in any number. Until a new
 workspace has them, its page asks its admins for people, a runner, a GitHub

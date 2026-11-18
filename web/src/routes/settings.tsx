@@ -101,7 +101,7 @@ import { useTickAt } from "@/lib/tick";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
 import { planOf } from "@/lib/usage";
-import { claudeOptions, roleLabel, roomForAnother, workspaceCount } from "@/lib/workspaces";
+import { claudeOptions, createsAnother, roleLabel, workspaceCount } from "@/lib/workspaces";
 
 const LINK_ERRORS: Record<string, string> = {
   google_linked_elsewhere: "That Google account is already linked to another user.",
@@ -697,7 +697,7 @@ function Workspaces({ me }: { me: G.Me }) {
       title="Workspaces"
       description="The ones you are in, each with its own people, projects, runners and GitHub accounts."
       actions={
-        data && roomForAnother(data) ? (
+        data && createsAnother(data) ? (
           <Link to="/w/new">
             <Button size="sm" icon={<Plus className="size-3.5" />}>
               New workspace

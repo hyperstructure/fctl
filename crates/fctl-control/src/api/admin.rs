@@ -1012,6 +1012,9 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.service_account_consent {
         settings.service_account_consent = on;
     }
+    if let Some(on) = body.members_create_workspaces {
+        settings.members_create_workspaces = on;
+    }
     if let Some(on) = body.verify_sensitive_actions {
         settings.verify_sensitive_actions = on;
     }

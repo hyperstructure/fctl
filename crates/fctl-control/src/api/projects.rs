@@ -214,16 +214,17 @@ async fn target_workspace(
         .iter()
         .filter(|w| !admin || w.role().is_some_and(WorkspaceRole::is_admin))
         .collect();
+    // Whether to suggest creating a workspace: not where the instance lets
+    // only its admins.
+    let creates = fctl_domain::workspace::creates_workspaces(user.role(), &ctx.settings());
     match (candidates.as_slice(), mine.is_empty()) {
         ([only], _) => ws::load(ctx, &only.id).await,
         ([], true) => Err(validation(
             "workspace",
-            "Create a workspace first, or ask to join one: projects belong to workspaces",
+            fctl_domain::workspace::in_no_workspace(creates),
         )),
         // A member of workspaces they don't administer.
-        ([], false) => Err(forbidden(
-            "Only a workspace's admins create its projects, and you are an admin of none of yours. Ask one of them to create it, or create a workspace of your own.",
-        )),
+        ([], false) => Err(forbidden(fctl_domain::workspace::admin_of_none(creates))),
         _ => Err(validation(
             "workspace",
             "Choose the workspace the project belongs to",

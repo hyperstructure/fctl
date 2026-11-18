@@ -1623,6 +1623,14 @@ pub struct InstanceSettings {
     /// that runs its own instance may want. On by default; turning it off
     /// takes confirming it's you.
     pub service_account_consent: bool,
+    /// Everyone who signs in creates workspaces of their own, as their
+    /// primary admin, as many as the workspace limit lets them be in. Off,
+    /// only instance admins and the primary instance owner create them, and
+    /// everyone else joins the ones they are invited or added to, as an
+    /// organization that provisions its people into its own workspaces may
+    /// want. On by default; app.fctl.sh keeps it on. Workspaces that exist
+    /// stay as they are.
+    pub members_create_workspaces: bool,
 }
 
 impl Default for InstanceSettings {
@@ -1635,6 +1643,7 @@ impl Default for InstanceSettings {
             gravatar: true,
             export_interval_hours: 168,
             service_account_consent: true,
+            members_create_workspaces: true,
         }
     }
 }
@@ -1653,6 +1662,7 @@ pub struct UpdateInstanceSettingsRequest {
     /// 0 to 8760.
     pub export_interval_hours: Option<u32>,
     pub service_account_consent: Option<bool>,
+    pub members_create_workspaces: Option<bool>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -1822,6 +1832,14 @@ pub struct WorkspaceList {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub unlimited: bool,
+    /// You may create workspaces (`POST /api/v1/workspaces`), within
+    /// `limit`: everyone may, unless the instance lets only its admins
+    /// ([`InstanceSettings::members_create_workspaces`]). False for a token
+    /// limited to some projects, which creates none. True from control
+    /// planes before it.
+    #[serde(default = "yes")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub can_create: bool,
 }
 
 /// `POST /api/v1/workspaces`: you become its primary admin.
@@ -4838,6 +4856,23 @@ mod tests {
         let update: UpdateWorkspaceRequest = serde_json::from_str(r#"{"name":"Side"}"#)?;
         assert_eq!(update.skip_invites, None);
         assert!(!serde_json::to_string(&update)?.contains("skip_invites"));
+        Ok(())
+    }
+
+    #[test]
+    fn everyone_creates_workspaces_unless_admins_said_otherwise() -> Result<(), serde_json::Error> {
+        // Settings saved before the setting, and lists from control planes
+        // before it, let everyone.
+        let stored: InstanceSettings = serde_json::from_str(r#"{"gravatar":false}"#)?;
+        assert!(stored.members_create_workspaces);
+        let old: WorkspaceList = serde_json::from_value(serde_json::json!({
+            "workspaces": [], "invitations": [], "limit": 5
+        }))?;
+        assert!(old.can_create);
+        // An update from an older client leaves it as it is.
+        let update: UpdateInstanceSettingsRequest = serde_json::from_str(r#"{"gravatar":true}"#)?;
+        assert_eq!(update.members_create_workspaces, None);
+        assert!(!serde_json::to_string(&update)?.contains("members_create_workspaces"));
         Ok(())
     }
 

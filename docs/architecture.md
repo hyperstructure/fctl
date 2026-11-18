@@ -668,7 +668,16 @@ primary instance owner in any number (`workspace_limit`,
 [ADR 0058](adr/0058-the-primary-instance-owner-can-be-in-any-number-of-workspaces.md)):
 admins are held to five as members are, and an owner who hands the role
 over keeps every workspace they are in but joins no more while they are in
-five or more. Anyone on the instance creates one, as its primary admin.
+five or more. Anyone on the instance creates one, as its primary admin,
+unless its admins keep that to themselves: with
+`InstanceSettings::members_create_workspaces` off (Admin → Settings →
+Workspaces, `fctl admin set --members-create-workspaces off`; on by
+default, and on app.fctl.sh), only instance admins and the primary instance
+owner create workspaces (`fctl_domain::workspace::check_create`), for an
+organization that puts its people in workspaces of its own. Everyone else
+joins the ones they are invited or added to, and `GET /api/v1/workspaces`
+tells them they can't create one (`can_create`), so the app offers them
+none to create. The workspaces that exist stay as they are.
 
 - **Who sees what.** Every project belongs to one workspace, and only its
   members see it (`fctl_domain::workspace::project_role`): its admins own

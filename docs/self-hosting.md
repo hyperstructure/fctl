@@ -408,6 +408,16 @@ on that member's Claude subscription, also for those who said no; each
 member still sees which act for them, and what they answered counts again
 once you turn it back on.
 
+Anyone who signs in creates workspaces of their own, as their primary
+admin. An organization that puts its people in its own workspaces, under
+**Admin → People** or with [admin
+tokens](#provision-people-with-admin-tokens), can keep that to its admins:
+turn off **Admin → Settings → Workspaces → Everyone creates workspaces**
+(or `fctl admin set --members-create-workspaces off`). Only instance
+admins and the primary instance owner then create workspaces; everyone
+else joins the ones they are invited or added to, and the app offers them
+none to create. The workspaces that exist stay as they are.
+
 ## Provision people with admin tokens
 
 To create people's accounts from your identity provider, your HR system or

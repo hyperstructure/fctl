@@ -63,4 +63,14 @@ export_interval_hours: number,
  * that runs its own instance may want. On by default; turning it off
  * takes confirming it's you.
  */
-service_account_consent: boolean, };
+service_account_consent: boolean, 
+/**
+ * Everyone who signs in creates workspaces of their own, as their
+ * primary admin, as many as the workspace limit lets them be in. Off,
+ * only instance admins and the primary instance owner create them, and
+ * everyone else joins the ones they are invited or added to, as an
+ * organization that provisions its people into its own workspaces may
+ * want. On by default; app.fctl.sh keeps it on. Workspaces that exist
+ * stay as they are.
+ */
+members_create_workspaces: boolean, };
