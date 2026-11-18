@@ -737,7 +737,10 @@ the branches, or the branches whose checks it watches (default: the
 default branch), and `--by` to what `anyone`, `writers` (people who may
 write to the repository, and fctl's agents) or `agents` (fctl's) opened
 (default: anyone, but writers for `pr-opened`); with `fctl schedules
-edit`, they change what it waits for and keep the rest. A schedule's
+edit`, they change what it waits for and keep the rest. One that anyone
+on GitHub can start, issues opened or pull requests opened by `anyone`,
+triages unless `--github` says more: what an outsider wrote reaches an
+agent that pushes only where you ask for that. A schedule's
 events start at most 3 sessions an hour (the last 60 minutes) and 10 a
 day (the last 24 hours) unless `--max-per-hour` (up to 100) and
 `--max-per-day` (up to 1,000) say otherwise; past either they start none,

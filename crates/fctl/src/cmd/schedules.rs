@@ -171,7 +171,9 @@ pub struct SessionArgs {
     #[arg(long)]
     pub effort: Option<String>,
     /// What their agents may do on GitHub (push, comment, triage, read);
-    /// `default` for as much as the project allows.
+    /// `default` for its default: triage on an event anyone on GitHub can
+    /// start (issues opened, pull requests opened by anyone), else as much
+    /// as the project allows.
     #[arg(long)]
     pub github: Option<String>,
     /// The branch they start from; `default` for the project's.

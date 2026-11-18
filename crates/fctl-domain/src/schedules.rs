@@ -292,16 +292,19 @@ pub fn rights(role: Option<ProjectRole>, owner: bool) -> Rights {
 
 /// What a schedule's sessions may do on GitHub once someone sets it up,
 /// changes it, resumes it or takes it over with an access token capped
-/// there at `token`: its own access (`None`: the project's as each run
-/// starts), at most the token's, since its runs start after the token is
-/// gone. Without a cap, or with one that holds nothing back, as it was.
+/// there at `token`: its own access (`None`: its default as each run
+/// starts, `default`, which is triage for a schedule anyone on GitHub can
+/// start, `crate::triggers::default_github`, else the project's), at most
+/// the token's, since its runs start after the token is gone. Without a
+/// cap, or with one that holds nothing back, as it was.
 pub fn github_within(
     access: Option<GithubAccess>,
+    default: Option<GithubAccess>,
     token: Option<GithubAccess>,
 ) -> Option<GithubAccess> {
     match token.filter(|t| *t < GithubAccess::Push) {
         None => access,
-        Some(t) => Some(access.map_or(t, |a| a.min(t))),
+        Some(t) => Some(access.or(default).map_or(t, |a| a.min(t))),
     }
 }
 
@@ -661,15 +664,27 @@ mod tests {
         use GithubAccess::*;
         // Without a cap, or with one that holds nothing back: its own, or
         // the project's.
-        assert_eq!(github_within(None, None), None);
-        assert_eq!(github_within(Some(Comment), None), Some(Comment));
-        assert_eq!(github_within(None, Some(Push)), None);
+        assert_eq!(github_within(None, None, None), None);
+        assert_eq!(github_within(Some(Comment), None, None), Some(Comment));
+        assert_eq!(github_within(None, None, Some(Push)), None);
+        // Its default stays its default, which follows what it waits for.
+        assert_eq!(github_within(None, Some(Triage), None), None);
         // A token that may only comment keeps it there, whatever it had,
         // and the project's too.
-        assert_eq!(github_within(None, Some(Comment)), Some(Comment));
-        assert_eq!(github_within(Some(Push), Some(Comment)), Some(Comment));
-        assert_eq!(github_within(Some(Read), Some(Comment)), Some(Read));
-        assert_eq!(github_within(Some(Push), Some(Read)), Some(Read));
+        assert_eq!(github_within(None, None, Some(Comment)), Some(Comment));
+        assert_eq!(
+            github_within(Some(Push), None, Some(Comment)),
+            Some(Comment)
+        );
+        assert_eq!(github_within(Some(Read), None, Some(Comment)), Some(Read));
+        assert_eq!(github_within(Some(Push), None, Some(Read)), Some(Read));
+        // Nor does a cap lift a default below it: a schedule anyone on
+        // GitHub can start triages, under a token that may comment.
+        assert_eq!(
+            github_within(None, Some(Triage), Some(Comment)),
+            Some(Triage)
+        );
+        assert_eq!(github_within(None, Some(Triage), Some(Read)), Some(Read));
     }
 
     #[test]

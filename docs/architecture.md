@@ -2336,7 +2336,13 @@ another tool, runs one
    (`triggers::context`: the issue's or pull request's title, author and
    their association, labels, branches and text, cut at 8,000
    characters; the release's tag and notes; the commit and the checks
-   that failed). The run keeps what happened (`ScheduleRun.event`), which
+   that failed). A schedule that anyone on GitHub can start, on issues
+   opened or pull requests opened by anyone (`triggers::anyone_starts`),
+   runs at triage unless it sets more (`triggers::default_github`,
+   `ScheduleRow::run_github`, which the API shows as its
+   `github_access`), so that an outsider's text reaches an agent that
+   pushes only where someone chose that; others go by the project's.
+   The run keeps what happened (`ScheduleRun.event`), which
    the tab and `fctl schedules runs` show and link, and its trigger is
    `event`. The delivery's answer counts the runs it started
    (`"schedules"`). Since each kind needs its webhook event, the API says

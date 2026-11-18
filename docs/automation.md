@@ -99,9 +99,13 @@ its own, whose agent gets the task, then what GitHub said of it:
   pull request starts nothing on your subscription by itself.
 - **What GitHub says is information.** Anyone can open an issue on a
   public repository, so the agent gets what they wrote after fctl's note,
-  marked as information for the task and never as instructions. Give such
-  schedules the least they need on GitHub: an idea that triages runs at
-  **Triage only**, which labels and comments and does nothing else.
+  marked as information for the task and never as instructions. A
+  schedule that anyone on GitHub can start, on issues opened or on pull
+  requests opened by anyone, runs at **Triage only** unless you choose
+  more (`--github`): its agents label and comment through fctl and write
+  nothing else, so that what an outsider wrote can't steer an agent that
+  pushes. Choose more only where you trust whoever can open one, as on a
+  private repository, and the form says so as you do.
 - **One run for each event.** GitHub sends a delivery again when it got
   no answer in time, and people redeliver one; fctl starts a run for each
   issue opened, pull request opened or merged, release and failed commit

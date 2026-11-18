@@ -103,17 +103,24 @@ fn optional(
     }
 }
 
-/// What a schedule's agents may do on GitHub, as asked: at most what the
-/// project allows, and the caller's access token. Asked for nothing, the
-/// project's as each run starts, within the token's cap.
+/// What a schedule that waits for `event` lets its agents do on GitHub, as
+/// asked: at most what the project allows, and the caller's access token.
+/// Asked for nothing, its default as each run starts (triage for one that
+/// anyone on GitHub can start, else the project's), within the token's
+/// cap.
 fn github(
     ctx: &Ctx,
     asked: Option<GithubAccess>,
     project: &crate::model::ProjectRow,
+    event: Option<&ScheduleEvent>,
 ) -> AppResult<Option<GithubAccess>> {
     let token = token_github(ctx);
     let Some(asked) = asked else {
-        return Ok(sch::github_within(None, token));
+        return Ok(sch::github_within(
+            None,
+            fctl_domain::triggers::default_github(event),
+            token,
+        ));
     };
     fctl_domain::limits::session_github(Some(asked), project.settings().github_access, token)
         .map(Some)
@@ -157,7 +164,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     let base_branch = optional(body.base_branch.as_deref(), |v| {
         validate::branch("base_branch", v)
     })?;
-    let github_access = github(ctx, body.github_access, &p.row)?;
+    let github_access = github(ctx, body.github_access, &p.row, when.event())?;
     let count: Option<Count> = q(
         &ctx.db,
         "SELECT COUNT(*) AS n FROM schedules WHERE project_id = ?",
@@ -323,14 +330,18 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
                     "Use push, comment, triage or read, or \"\" for the project's",
                 )
             })?;
-            github(ctx, Some(asked), &p.row)?
+            github(ctx, Some(asked), &p.row, when.event())?
         }
         None => row.github(),
     };
     // A change, a resume or a take-over with a token capped on GitHub keeps
     // the schedule within the cap: its runs start after the token is gone.
     let github_access = if changes || resumes || takes_over {
-        sch::github_within(github_access, token_github(ctx))
+        sch::github_within(
+            github_access,
+            fctl_domain::triggers::default_github(when.event()),
+            token_github(ctx),
+        )
     } else {
         github_access
     };
@@ -538,7 +549,7 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
         _ => (ScheduleTrigger::Person, StartedBy::Person(&user.name)),
     };
     let github_access =
-        fctl_domain::limits::effective(row.github(), p.row.settings().github_access)
+        fctl_domain::limits::effective(row.run_github(), p.row.settings().github_access)
             .min(token_github(ctx).unwrap_or_default());
     let zone = schedules::zone(&row.timezone);
     let previous = schedules::previous(&ctx.db, &row.id).await?;

@@ -309,10 +309,21 @@ impl ScheduleRow {
             .unwrap_or_else(|| "Its owner".into())
     }
 
-    /// What its sessions' agents may do on GitHub; `None`: as much as the
-    /// project allows.
+    /// What its sessions' agents may do on GitHub, as it says; `None`: its
+    /// default ([`Self::run_github`]).
     pub fn github(&self) -> Option<GithubAccess> {
         self.github_access.as_deref().and_then(GithubAccess::parse)
+    }
+
+    /// What its sessions' agents may do on GitHub as its runs start: what
+    /// it says, else triage for one that anyone on GitHub can start
+    /// (`fctl_domain::triggers::default_github`), so that what they wrote
+    /// reaches an agent that pushes only where the schedule asks for it;
+    /// `None`: as much as the project allows. Runs hold it to the
+    /// project's too.
+    pub fn run_github(&self) -> Option<GithubAccess> {
+        self.github()
+            .or_else(|| fctl_domain::triggers::default_github(self.event().as_ref()))
     }
 
     pub fn to_api(&self, last_run: Option<ScheduleRun>, problem: Option<String>) -> Schedule {
@@ -328,7 +339,7 @@ impl ScheduleRow {
             model: self.model.clone(),
             effort: self.effort.clone(),
             base_branch: self.base_branch.clone(),
-            github_access: self.github(),
+            github_access: self.run_github(),
             hide_sessions: self.hide_sessions,
             enabled: self.enabled,
             state: sch::state(self.enabled, self.timed(), self.next_run_at),
@@ -943,7 +954,8 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
                 p.number
             ));
         }
-        let github = fctl_domain::limits::effective(row.github(), project.settings().github_access);
+        let github =
+            fctl_domain::limits::effective(row.run_github(), project.settings().github_access);
         let previous_at = previous.as_ref().map(|p| sch::stamp(zone, p.at));
         let text = sch::prompt(
             &row.prompt,
@@ -1330,6 +1342,50 @@ mod tests {
                 ("shr_1".to_owned(), None)
             ]
         );
+        Ok(())
+    }
+
+    /// A schedule that anyone on GitHub can start triages unless it says
+    /// more, as its runs start and as the API shows it; others go by the
+    /// project.
+    #[wasm_bindgen_test]
+    async fn what_anyone_can_start_triages_unless_it_says() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at) \
+             VALUES ('prj_web', 'web', 'Web', 'usr_ada', 0, 0)",
+            "INSERT INTO schedules (id, project_id, name, prompt, owner_id, created_at, updated_at, event_kind, event_filter, github_access) VALUES \
+             ('sch_issues', 'prj_web', 'Fix issues', 'Fix it.', 'usr_ada', 0, 0, 'issue_opened', NULL, NULL), \
+             ('sch_pushes', 'prj_web', 'Fix issues, pushing', 'Fix it.', 'usr_ada', 0, 0, 'issue_opened', NULL, 'push'), \
+             ('sch_prs', 'prj_web', 'Check pull requests', 'Check it.', 'usr_ada', 0, 0, 'pull_request_opened', '{\"by\":\"anyone\"}', NULL), \
+             ('sch_writers', 'prj_web', 'Check writers', 'Check it.', 'usr_ada', 0, 0, 'pull_request_opened', NULL, NULL), \
+             ('sch_labeled', 'prj_web', 'Work on labeled', 'Do it.', 'usr_ada', 0, 0, 'issue_labeled', '{\"labels\":[\"fctl\"]}', NULL), \
+             ('sch_weekly', 'prj_web', 'Weekly', 'Update.', 'usr_ada', 0, 0, NULL, NULL, NULL)",
+            "UPDATE schedules SET cron = '0 9 * * 1' WHERE id = 'sch_weekly'",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        let access = |id: &'static str| {
+            let db = &db;
+            async move {
+                let r = row(db, id)
+                    .await?
+                    .ok_or_else(|| crate::error::internal("no schedule"))?;
+                Ok::<_, crate::error::AppError>((
+                    r.run_github(),
+                    r.to_api(None, None).github_access,
+                ))
+            }
+        };
+        let triage = Some(GithubAccess::Triage);
+        assert_eq!(access("sch_issues").await?, (triage, triage));
+        assert_eq!(access("sch_prs").await?, (triage, triage));
+        let push = Some(GithubAccess::Push);
+        assert_eq!(access("sch_pushes").await?, (push, push));
+        for id in ["sch_writers", "sch_labeled", "sch_weekly"] {
+            assert_eq!(access(id).await?, (None, None), "{id}");
+        }
         Ok(())
     }
 

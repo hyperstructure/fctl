@@ -16,7 +16,7 @@ use crate::follow_ups::{is_person, may_write};
 use crate::reviews::by_app;
 use crate::webhooks::Commit;
 use fctl_proto::api::{ScheduleEvent, ScheduleEventBy, ScheduleEventKind, ScheduleRunEvent};
-use fctl_proto::session::RepoRef;
+use fctl_proto::session::{GithubAccess, RepoRef};
 use fctl_proto::{ApiError, Millis};
 use serde_json::Value;
 
@@ -110,6 +110,27 @@ pub fn by_of(e: &ScheduleEvent) -> ScheduleEventBy {
         (_, Kind::PullRequestOpened) => ScheduleEventBy::Writers,
         _ => ScheduleEventBy::Anyone,
     }
+}
+
+/// Whether anyone on GitHub can start a run of a schedule that waits for
+/// `e`, without anyone who may write to the repository doing anything
+/// first: an issue opened, or a pull request opened, by anyone
+/// ([`by_of`]). On a public repository that's anyone at all, and what
+/// they wrote reaches the run's agent.
+pub fn anyone_starts(e: &ScheduleEvent) -> bool {
+    matches!(e.kind, Kind::IssueOpened | Kind::PullRequestOpened)
+        && by_of(e) == ScheduleEventBy::Anyone
+}
+
+/// What the agents of a schedule that waits for `e` may do on GitHub when
+/// it doesn't say: triage for one anyone on GitHub can start
+/// ([`anyone_starts`]), which labels and comments through fctl and writes
+/// nothing else, so that what an outsider wrote can't steer an agent that
+/// pushes unless the schedule asks for it; `None` otherwise, as much as
+/// the project allows. Never more than the project allows, as runs hold
+/// it to that too.
+pub fn default_github(e: Option<&ScheduleEvent>) -> Option<GithubAccess> {
+    e.filter(|e| anyone_starts(e)).map(|_| GithubAccess::Triage)
 }
 
 // ───────────────────────────── what a schedule waits for ─────────────────────────────
@@ -1595,6 +1616,41 @@ mod tests {
         let mut anyone = event(Kind::PullRequestOpened);
         anyone.by = Some(ScheduleEventBy::Anyone);
         assert_eq!(takes(&anyone, &outsider, &writable, app), Takes::Yes);
+    }
+
+    #[test]
+    fn what_anyone_starts_triages_unless_it_says() {
+        // Issues opened, anyone's by default; pull requests opened when it
+        // takes anyone's.
+        assert!(anyone_starts(&event(Kind::IssueOpened)));
+        assert_eq!(
+            default_github(Some(&event(Kind::IssueOpened))),
+            Some(GithubAccess::Triage)
+        );
+        let mut prs = event(Kind::PullRequestOpened);
+        assert!(!anyone_starts(&prs));
+        prs.by = Some(ScheduleEventBy::Anyone);
+        assert!(anyone_starts(&prs));
+        assert_eq!(default_github(Some(&prs)), Some(GithubAccess::Triage));
+        // Writers' and agents' only, or what a writer does first (a label,
+        // a merge, a release, a branch's checks): the project's.
+        let mut writers = event(Kind::IssueOpened);
+        writers.by = Some(ScheduleEventBy::Writers);
+        let mut agents = event(Kind::IssueOpened);
+        agents.by = Some(ScheduleEventBy::Agents);
+        for e in [
+            writers,
+            agents,
+            event(Kind::IssueLabeled),
+            event(Kind::PullRequestMerged),
+            event(Kind::ReleasePublished),
+            event(Kind::ChecksFailed),
+        ] {
+            assert!(!anyone_starts(&e), "{:?}", e.kind);
+            assert_eq!(default_github(Some(&e)), None, "{:?}", e.kind);
+        }
+        // A schedule that waits for no event: the project's.
+        assert_eq!(default_github(None), None);
     }
 
     #[test]

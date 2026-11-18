@@ -450,7 +450,9 @@ fctl schedules runs "Weekly dependencies" -p my-app
   `issue-labeled` with `--label`, `pr-opened`, `pr-merged`, `release`,
   `checks-failed`), and `--repo`, `--label`, `--branch` and `--by`
   narrow that down; its agent gets what GitHub said of it as
-  information. `--paused` sets it up without running it.
+  information, and one that anyone on GitHub can start (issues opened,
+  pull requests opened `--by anyone`) triages unless `--github` says
+  more. `--paused` sets it up without running it.
 - Runs go on the subscription of the schedule's owner, who set it up; a
   change by someone else moves it to theirs. A run is skipped while the
   last one still works (on events, the last on the same issue, pull

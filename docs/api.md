@@ -288,7 +288,11 @@ last 24 hours (absent: 3 and 10; at most 100 and 1,000, and an hour no
 more than a day): past either they start none, the run says why and
 until when, and so does the schedule's `problem` until then. A schedule
 always shows both. A `PATCH` with an `event` replaces what it waits for,
-and keeps the caps it doesn't give.
+and keeps the caps it doesn't give. A schedule that anyone on GitHub can
+start (`issue_opened`, or `pull_request_opened` with `"by": "anyone"`)
+runs at `triage` when it sets no `github_access`, which it then shows;
+set one (`"push"`) for more. Without one, others run at as much as the
+project allows, which they show as absent.
 
 A run is `{"id": "srn_…", "outcome": "started" | "skipped" | "failed",
 "reason", "trigger": "time" | "person" | "token" | "event", "by",
