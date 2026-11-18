@@ -321,6 +321,9 @@ const HOOKS_PULLS: &str = "hooks_pulls";
 /// once they have stayed ready for `READY_SETTLE_MS`.
 const HOOKS_READY: &str = "hooks_ready";
 const HOOKS_READY_AT: &str = "hooks_ready_at";
+/// When the session, waiting for a message since, counts as finished for
+/// its webhooks (`FINISHED_SETTLE_MS` on), unless it works again first.
+const HOOKS_FINISHED_AT: &str = "hooks_finished_at";
 
 /// Whether `s` is one of the sessions an autopilot started.
 fn crew(s: &Session) -> bool {
@@ -544,6 +547,7 @@ impl DurableObject for SessionObject {
         self.index_now(now_ms()).await;
         self.expire_images(now_ms()).await;
         self.see_if_done(now_ms()).await;
+        self.finished_to_webhooks(now_ms()).await;
         self.ready_to_webhooks(now_ms()).await;
         Response::ok("ok")
     }
@@ -4605,9 +4609,15 @@ impl SessionObject {
             if let Some(before) = before {
                 let base = self.public_url();
                 for kind in hooks::moved(before, stood) {
-                    let message = (kind == HookKind::SessionFinished)
-                        .then(|| self.meta("last_result"))
-                        .flatten();
+                    // Said once it has waited a moment (`finished_to_webhooks`):
+                    // as background work ends, it waits for a message only
+                    // until the turn that takes the work's result starts.
+                    if kind == HookKind::SessionFinished {
+                        let at = now + hooks::FINISHED_SETTLE_MS;
+                        self.set_meta(HOOKS_FINISHED_AT, &at.to_string());
+                        self.arm_soon(at);
+                        continue;
+                    }
                     events.push(hooks::session_event(
                         kind,
                         s,
@@ -4615,11 +4625,13 @@ impl SessionObject {
                         now,
                         SessionExtra {
                             previous_status: Some(before.status),
-                            message,
-                            follow_up: None,
+                            ..Default::default()
                         },
                     ));
                 }
+            }
+            if !stood.waiting {
+                self.delete_meta(HOOKS_FINISHED_AT);
             }
         }
         let pulls: Vec<(&str, Option<&str>)> = s
@@ -4659,20 +4671,59 @@ impl SessionObject {
                 {
                     let at = now + hooks::READY_SETTLE_MS;
                     self.set_meta(HOOKS_READY_AT, &format!("{at}\n{key}"));
-                    let storage = self.state.storage();
-                    self.state.wait_until(async move {
-                        match storage.get_alarm().await {
-                            Ok(Some(set)) if set <= at => {}
-                            _ => {
-                                let _ = storage.set_alarm((at - now_ms()).max(0)).await;
-                            }
-                        }
-                    });
+                    self.arm_soon(at);
                 }
             }
             _ => self.delete_meta(HOOKS_READY_AT),
         }
         self.to_webhooks(s, events);
+    }
+
+    /// Has the alarm go off by `at`, from code that can't wait for it.
+    fn arm_soon(&self, at: i64) {
+        let storage = self.state.storage();
+        self.state.wait_until(async move {
+            match storage.get_alarm().await {
+                Ok(Some(set)) if set <= at => {}
+                _ => {
+                    let _ = storage.set_alarm((at - now_ms()).max(0)).await;
+                }
+            }
+        });
+    }
+
+    /// The session waited for a message since `hooks_moved` saw it start
+    /// to, without working again: its webhooks hear that its agent finished
+    /// (`session.finished`), with the start of its reply.
+    async fn finished_to_webhooks(&self, now: i64) {
+        let Some(at) = self
+            .meta(HOOKS_FINISHED_AT)
+            .and_then(|v| v.parse::<i64>().ok())
+        else {
+            return;
+        };
+        if at > now {
+            self.arm(at).await;
+            return;
+        }
+        self.delete_meta(HOOKS_FINISHED_AT);
+        let Some(s) = self.summary().filter(|s| s.review.is_none()) else {
+            return;
+        };
+        if !hooks::Stood::of(&s).waiting {
+            return;
+        }
+        let e = hooks::session_event(
+            HookKind::SessionFinished,
+            &s,
+            &self.public_url(),
+            now,
+            SessionExtra {
+                message: self.meta("last_result"),
+                ..Default::default()
+            },
+        );
+        self.to_webhooks(&s, vec![e]);
     }
 
     /// The session's pull requests stayed ready for review since

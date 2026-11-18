@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   Trash2,
   Users,
+  Webhook,
 } from "lucide-react";
 import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
@@ -56,6 +57,7 @@ import {
 } from "@/components/ui";
 import { ROW, ROW_COVER } from "@/components/ui/list-row";
 import { Unavailable } from "@/components/unavailable";
+import { WebhooksPanel } from "@/components/webhooks/panel";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { WorkspaceColorField } from "@/components/workspace/color-field";
 import { LinearTab } from "@/components/workspace/linear";
@@ -84,7 +86,15 @@ import {
 import { repoSummary } from "@/lib/repos";
 import { BASE_ROLES, claudeOptions, createsProjects, roleLabel } from "@/lib/workspaces";
 
-export type WorkspaceTab = "projects" | "people" | "runners" | "github" | "linear" | "settings" | "audit";
+export type WorkspaceTab =
+  | "projects"
+  | "people"
+  | "runners"
+  | "github"
+  | "linear"
+  | "webhooks"
+  | "settings"
+  | "audit";
 
 const TABS: { tab: WorkspaceTab; label: string; admin?: boolean; linear?: boolean }[] = [
   { tab: "projects", label: "Projects" },
@@ -92,6 +102,7 @@ const TABS: { tab: WorkspaceTab; label: string; admin?: boolean; linear?: boolea
   { tab: "runners", label: "Runners" },
   { tab: "github", label: "GitHub" },
   { tab: "linear", label: "Linear", linear: true },
+  { tab: "webhooks", label: "Webhooks", admin: true },
   { tab: "settings", label: "Settings" },
   { tab: "audit", label: "Audit log", admin: true },
 ];
@@ -108,6 +119,7 @@ const ICONS: Record<WorkspaceTab, (className: string) => ReactNode> = {
   github: (className) => <GithubIcon className={className} />,
   // Linear's mark is filled: a little smaller, it weighs as much as the outlined icons.
   linear: (className) => <LinearIcon className={cn(className, "scale-[0.85]")} />,
+  webhooks: (className) => <Webhook className={className} aria-hidden="true" />,
   settings: (className) => <Settings className={className} aria-hidden="true" />,
   audit: (className) => <History className={className} aria-hidden="true" />,
 };
@@ -120,7 +132,15 @@ function refresh() {
 
 export function WorkspacePage() {
   const { slug } = useParams({ from: "/app/w/$slug" });
-  const { tab: asked = "projects", github, account, reason, linear } = useSearch({ from: "/app/w/$slug" });
+  const {
+    tab: asked = "projects",
+    github,
+    account,
+    reason,
+    linear,
+    webhook,
+  } = useSearch({ from: "/app/w/$slug" });
+  const navigate = useNavigate();
   const ws = useWorkspace(slug);
   const w = ws.data;
   const { data: instance } = useInstance();
@@ -244,6 +264,19 @@ export function WorkspacePage() {
             {w && tab === "runners" && <Runners w={w} />}
             {w && tab === "github" && <Github w={w} returned={github} account={account} reason={reason} />}
             {w && tab === "linear" && <LinearTab w={w} returned={linear} />}
+            {w && tab === "webhooks" && admin && (
+              <WebhooksPanel
+                scope={{ kind: "workspace", workspace: w }}
+                open={webhook}
+                onOpen={(id) =>
+                  void navigate({
+                    to: "/w/$slug",
+                    params: { slug },
+                    search: { tab: "webhooks", webhook: id },
+                  })
+                }
+              />
+            )}
             {w && tab === "settings" && <WorkspaceSettings w={w} />}
             {w && tab === "audit" && admin && <Audit w={w} />}
           </div>

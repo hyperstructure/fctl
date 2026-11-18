@@ -30,15 +30,14 @@ use fctl_proto::{
     ApiError, ErrorCode, ProjectId, SessionId, WebhookDeliveryId, WebhookEventId, WebhookId,
 };
 use futures::StreamExt;
-use futures::future::{Either, join_all, select};
+use futures::future::join_all;
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::time::Duration;
 use worker::{
-    AbortController, Delay, DurableObject, Env, Fetch, Method, Request, RequestInit,
-    RequestRedirect, Response, Result, SqlStorage, SqlStorageValue, State, durable_object,
+    DurableObject, Env, Fetch, Method, Request, RequestInit, RequestRedirect, Response, Result,
+    SqlStorage, SqlStorageValue, State, durable_object,
 };
 
 /// How long the object goes by the webhooks and the names it read from D1,
@@ -324,6 +323,12 @@ impl DurableObject for HooksObject {
             "/changed" => {
                 let b = body!(HooksChanged);
                 self.changed(&b.workspace_id);
+                if let Some(id) = b.fresh {
+                    self.exec(
+                        "UPDATE health SET failing_since = NULL, dropped = 0 WHERE webhook_id = ?",
+                        vec![sv(&id)],
+                    );
+                }
                 Ok(serde_json::json!({ "ok": true }))
             }
             "/forget" => {
@@ -1255,6 +1260,13 @@ impl HooksObject {
             return;
         }
         self.set_meta("trimmed_at", &now.to_string());
+        // A person's attempt that never finished (the object went away under
+        // it) waits for nothing: it failed.
+        self.exec(
+            "UPDATE deliveries SET state = 'failed', done_at = ?1, reason = 'Its attempt didn''t finish.' \
+             WHERE state = 'pending' AND next_at IS NULL AND created_at < ?2",
+            vec![iv(now), iv(now - HOUR)],
+        );
         self.exec(
             "DELETE FROM deliveries WHERE state != 'pending' AND created_at < ?",
             vec![iv(now - rules::KEPT_MS)],
@@ -1324,9 +1336,12 @@ async fn post(url: &str, headers: &[(String, String)], body: &str) -> Posted {
             );
         }
     };
-    let controller = AbortController::default();
-    let signal = controller.signal();
-    let exchange = async move {
+    // The answer and its body within the timeout: AbortSignal.timeout
+    // aborts both (workerd's setTimeout isn't what `worker::Delay` takes).
+    let signal = worker::AbortSignal::from(web_sys::AbortSignal::timeout_with_u32(
+        u32::try_from(rules::TIMEOUT_MS).unwrap_or(10_000),
+    ));
+    let exchange = async {
         let mut res = Fetch::Request(req).send_with_signal(&signal).await?;
         let status = res.status_code();
         let headers: Vec<WebhookHeader> = res
@@ -1353,11 +1368,8 @@ async fn post(url: &str, headers: &[(String, String)], body: &str) -> Posted {
         }
         Ok::<_, worker::Error>((status, headers, retry_after, body, truncated))
     };
-    let timeout = Delay::from(Duration::from_millis(
-        u64::try_from(rules::TIMEOUT_MS).unwrap_or(10_000),
-    ));
-    match select(Box::pin(exchange), Box::pin(timeout)).await {
-        Either::Left((Ok((status, headers, retry_after, body, truncated)), _)) => {
+    match exchange.await {
+        Ok((status, headers, retry_after, body, truncated)) => {
             let text = String::from_utf8_lossy(&body).into_owned();
             let error = (!rules::delivered(status)).then(|| rules::status_error(status));
             done(
@@ -1371,7 +1383,8 @@ async fn post(url: &str, headers: &[(String, String)], body: &str) -> Posted {
                 retry_after.as_deref().and_then(rules::retry_after),
             )
         }
-        Either::Left((Err(e), _)) => done(
+        Err(_) if signal.aborted() => done(None, Some(rules::timeout_error()), None, None),
+        Err(e) => done(
             None,
             Some(format!(
                 "fctl couldn't reach it: {}",
@@ -1380,9 +1393,5 @@ async fn post(url: &str, headers: &[(String, String)], body: &str) -> Posted {
             None,
             None,
         ),
-        Either::Right(_) => {
-            controller.abort();
-            done(None, Some(rules::timeout_error()), None, None)
-        }
     }
 }

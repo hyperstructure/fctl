@@ -337,6 +337,7 @@ pub async fn changed(env: &Env, workspace_id: &str, webhook_id: Option<&str>, fo
                 workspace_id: workspace_id.to_owned(),
                 webhook_id: webhook_id.map(str::to_owned),
                 project_id: None,
+                fresh: None,
             },
         )
         .await
@@ -362,6 +363,7 @@ pub async fn forget_project(env: &Env, workspace_id: &str, project_id: &str) -> 
             workspace_id: workspace_id.to_owned(),
             webhook_id: None,
             project_id: Some(project_id.to_owned()),
+            fresh: None,
         },
     )
     .await?;
@@ -486,5 +488,33 @@ mod tests {
         run_sql(&db, "DELETE FROM workspaces WHERE id = 'wsp_1'").await?;
         assert_eq!(count(&db, "wsp_1").await?, 0);
         Ok(())
+    }
+}
+
+/// Tells a workspace's HooksObject that `webhook_id` was turned on again:
+/// it fails afresh from now, rather than from before it was off, so that
+/// the next failure doesn't turn it off again at once.
+pub async fn turned_on(env: &Env, workspace_id: &str, webhook_id: &str) {
+    forget_cached(workspace_id);
+    let told: AppResult<serde_json::Value> = async {
+        let stub = internal::hooks_stub(env, workspace_id)?;
+        internal::post(
+            &stub,
+            "/changed",
+            &HooksChanged {
+                workspace_id: workspace_id.to_owned(),
+                webhook_id: None,
+                project_id: None,
+                fresh: Some(webhook_id.to_owned()),
+            },
+        )
+        .await
+    }
+    .await;
+    if let Err(e) = told {
+        worker::console_error!(
+            "telling {workspace_id}'s webhooks {webhook_id} is on: {}",
+            e.0.message
+        );
     }
 }

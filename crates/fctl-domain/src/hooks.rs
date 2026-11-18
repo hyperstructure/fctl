@@ -89,6 +89,10 @@ pub const SECRET_OVERLAP_MS: i64 = DAY;
 /// review's findings, posted as its check ends, reach the agent within
 /// seconds and set it to work again.
 pub const READY_SETTLE_MS: i64 = 2 * MINUTE;
+/// How long a session waits for a message before fctl says it finished: as
+/// its background work ends, it waits for one for a moment, until the turn
+/// that takes the work's result starts.
+pub const FINISHED_SETTLE_MS: i64 = 5_000;
 /// How long the start of an agent's reply that `session.finished` carries
 /// is, at most, in characters.
 pub const MESSAGE_MAX: usize = 2000;
@@ -321,7 +325,12 @@ impl Kind {
     }
 }
 
+/// `s` with a capital first letter, as a list starts an item; fctl's name
+/// stays as it is.
 fn capitalized(s: &str) -> String {
+    if s.starts_with("fctl ") {
+        return s.to_owned();
+    }
     let mut chars = s.chars();
     match chars.next() {
         Some(c) => c.to_uppercase().chain(chars).collect(),
@@ -1781,7 +1790,10 @@ mod tests {
                     .starts_with(&format!("{}.", k.group().id().trim_end_matches('s')))
                     || k.group() == Group::PullRequests && k.as_str().starts_with("pull_request.")
             );
-            assert!(k.label().chars().next().is_some_and(char::is_uppercase));
+            assert!(
+                k.label().chars().next().is_some_and(char::is_uppercase)
+                    || k.label().starts_with("fctl ")
+            );
             assert!(k.description().ends_with('.'));
         }
         assert_eq!(Kind::parse("session.nope"), None);
@@ -1795,6 +1807,7 @@ mod tests {
         );
         assert_eq!(c.events[0].kind, "session.started");
         assert_eq!(c.events[0].label, "A session starts");
+        assert_eq!(Kind::SchedulePaused.label(), "fctl pauses a schedule");
     }
 
     #[test]

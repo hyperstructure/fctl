@@ -363,6 +363,52 @@ export const api = {
     request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/asks/${enc(ask)}/decline`, b),
   /** What autopilots ask that you may answer, across your workspaces. */
   autopilotAsks: () => request<G.AutopilotAsksList>("GET", "/autopilots/asks"),
+  /** Every event webhooks get, in their groups. */
+  webhookEvents: () => request<G.WebhookEvents>("GET", "/webhook-events"),
+  /** A workspace's webhooks and its projects' (its admins). */
+  workspaceWebhooks: (workspace: string) =>
+    request<G.WebhookList>("GET", `/workspaces/${enc(workspace)}/webhooks`),
+  /** A project's own webhooks, and the workspace's that send its events. */
+  projectWebhooks: (project: string) => request<G.WebhookList>("GET", `/projects/${enc(project)}/webhooks`),
+  /** Adds one of a workspace's webhooks: the answer has its secret, once. */
+  createWorkspaceWebhook: (workspace: string, b: G.CreateWebhookRequest) =>
+    request<G.CreatedWebhook>("POST", `/workspaces/${enc(workspace)}/webhooks`, b),
+  /** Adds one of a project's own webhooks: the answer has its secret, once. */
+  createProjectWebhook: (project: string, b: G.CreateWebhookRequest) =>
+    request<G.CreatedWebhook>("POST", `/projects/${enc(project)}/webhooks`, b),
+  webhook: (id: string) => request<G.Webhook>("GET", `/webhooks/${enc(id)}`),
+  updateWebhook: (id: string, b: G.UpdateWebhookRequest) =>
+    request<G.Webhook>("PATCH", `/webhooks/${enc(id)}`, b),
+  /** Deletes a webhook, and what went out to it. */
+  deleteWebhook: (id: string) => request<G.Ok>("DELETE", `/webhooks/${enc(id)}`),
+  /** Its signing secret, which takes confirming it's you where the instance asks. */
+  webhookSecret: (id: string) => request<G.WebhookSecret>("GET", `/webhooks/${enc(id)}/secret`),
+  /** A new secret: the one before signs too for a day. */
+  rotateWebhookSecret: (id: string) => request<G.WebhookSecret>("POST", `/webhooks/${enc(id)}/secret`, {}),
+  /** Posts a sample of an event now, and answers how it went. */
+  testWebhook: (id: string, b: G.TestWebhookRequest) =>
+    request<G.WebhookDelivery>("POST", `/webhooks/${enc(id)}/test`, b),
+  /** A webhook's deliveries, newest first: in one state, of one event, before a cursor. */
+  webhookDeliveries: (
+    id: string,
+    q: { state?: G.WebhookDeliveryState; event?: string; before?: string; limit?: number } = {},
+  ) => {
+    const p = new URLSearchParams();
+    if (q.state) p.set("state", q.state);
+    if (q.event) p.set("event", q.event);
+    if (q.before) p.set("before", q.before);
+    p.set("limit", String(q.limit ?? 30));
+    return request<G.WebhookDeliveryList>("GET", `/webhooks/${enc(id)}/deliveries?${p}`);
+  },
+  /** One delivery: the request as fctl posted it, its attempts and the start of the last answer. */
+  webhookDelivery: (id: string, delivery: string) =>
+    request<G.WebhookDelivery>("GET", `/webhooks/${enc(id)}/deliveries/${enc(delivery)}`),
+  /** Posts a delivery again now, and answers how it went. */
+  resendWebhookDelivery: (id: string, delivery: string) =>
+    request<G.WebhookDelivery>("POST", `/webhooks/${enc(id)}/deliveries/${enc(delivery)}/resend`, {}),
+  /** The deliveries that failed since a time wait for an attempt again. */
+  resendFailedWebhookDeliveries: (id: string, b: G.ResendFailedRequest = {}) =>
+    request<G.ResentFailed>("POST", `/webhooks/${enc(id)}/deliveries/resend-failed`, b),
   /** A project's schedules, in the order they were made, each with its latest run. */
   schedules: (project: string) => request<G.ScheduleList>("GET", `/projects/${enc(project)}/schedules`),
   /** Sets up a schedule, on your Claude subscription. */

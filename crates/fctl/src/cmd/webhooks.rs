@@ -313,7 +313,7 @@ pub async fn run(server: Option<&str>, args: WebhooksArgs, json: bool) -> Result
                 println!(
                     "  {}",
                     style::dim(&format!(
-                        "Its previous secret signs too until {}",
+                        "Its previous secret stops signing {}",
                         style::until(until)
                     ))
                 );
@@ -382,7 +382,7 @@ pub async fn run(server: Option<&str>, args: WebhooksArgs, json: bool) -> Result
                 eprintln!(
                     "{}",
                     style::dim(&format!(
-                        "The one before it signs too until {}: switch the receiver to this one by then.",
+                        "The one before it stops signing {}: switch the receiver to this one before then.",
                         style::until(until)
                     ))
                 );

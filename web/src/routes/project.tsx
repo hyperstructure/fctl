@@ -118,7 +118,7 @@ function HeaderIcon({ project, manage }: { project: G.Project; manage: boolean }
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
-  const { tab: wanted, schedule, linear } = useSearch({ from: "/app/p/$slug" });
+  const { tab: wanted, schedule, linear, webhook } = useSearch({ from: "/app/p/$slug" });
   const project = useProject(slug);
   const p = project.data;
   const manage = manages(p?.role);
@@ -219,7 +219,9 @@ export function ProjectPage() {
         )}
         {p && view === "repositories" && <Repositories key={p.id} project={p} />}
         {p && view === "members" && <Members key={p.id} project={p} />}
-        {p && tab === "settings" && <ProjectSettings project={p} view={view} linear={linear} />}
+        {p && tab === "settings" && (
+          <ProjectSettings project={p} view={view} linear={linear} webhook={webhook} />
+        )}
       </div>
     </div>
   );

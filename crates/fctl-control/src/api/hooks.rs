@@ -370,7 +370,11 @@ pub async fn update(ctx: &Ctx, req: &mut Request, id: &str) -> AppResult<Respons
     )?
     .run()
     .await?;
-    rows::changed(&ctx.env, &row.workspace_id, None, false).await;
+    if turned_on {
+        rows::turned_on(&ctx.env, &row.workspace_id, &row.id).await;
+    } else {
+        rows::changed(&ctx.env, &row.workspace_id, None, false).await;
+    }
     let mut changes = serde_json::Map::new();
     if moved {
         changes.insert("url".into(), json!(url));

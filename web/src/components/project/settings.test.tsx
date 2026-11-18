@@ -139,12 +139,20 @@ function open(view: ProjectView, p = project()) {
 describe("a project's Settings", () => {
   it("lists every page for its maintainers, in groups, with General beside them", () => {
     const s = open("settings");
-    expect(s.nav()).toEqual(["General (open)", "Agents", "Pull requests", "Tickets", "Sandbox", "Secrets"]);
+    expect(s.nav()).toEqual([
+      "General (open)",
+      "Agents",
+      "Pull requests",
+      "Tickets",
+      "Sandbox",
+      "Secrets",
+      "Webhooks",
+    ]);
     expect(s.heading()).toBe("General");
-    // In groups: the project, how its agents work, where they run.
+    // In groups: the project, how its agents work, where they run, what it tells other tools.
     expect(
       s.container.querySelector('nav[aria-label="Shop\'s settings"]')?.querySelectorAll("ul").length,
-    ).toBe(3);
+    ).toBe(4);
   });
 
   it("shows the rest of the project the one page everyone reads, alone", () => {

@@ -593,6 +593,11 @@ pub struct HooksChanged {
     /// `/forget-project`: a deleted project, whose events go from the log.
     #[serde(default)]
     pub project_id: Option<String>,
+    /// A webhook that was turned on again: since when it fails starts
+    /// afresh, so that the three days it gets before fctl turns it off
+    /// again start now.
+    #[serde(default)]
+    pub fresh: Option<String>,
 }
 
 /// How some of a workspace's webhooks' deliveries went lately (`/health`).

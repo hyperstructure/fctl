@@ -80,6 +80,14 @@ export const keys = {
   autopilotFile: (project: string, name: string) => ["autopilot", project, "files", name] as const,
   /** What autopilots ask you, across your workspaces. */
   autopilotAsks: ["autopilot-asks"] as const,
+  /** Every event webhooks get. */
+  webhookEvents: ["webhook-events"] as const,
+  /** A workspace's or a project's webhooks, by its id. */
+  webhooks: (scope: "workspace" | "project", id: string) => ["webhooks", scope, id] as const,
+  /** One webhook, its deliveries (by what they're narrowed to) and one delivery, under its id. */
+  webhook: (id: string) => ["webhook", id] as const,
+  webhookDeliveries: (id: string, filter: object) => ["webhook", id, "deliveries", filter] as const,
+  webhookDelivery: (id: string, delivery: string) => ["webhook", id, "delivery", delivery] as const,
   /** A project's schedules, by project id. */
   schedules: (project: string) => ["schedules", project] as const,
   /** A schedule's runs, by schedule id. */

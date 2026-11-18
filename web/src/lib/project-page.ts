@@ -29,6 +29,7 @@ export const SETTINGS_PAGES = [
   "tickets",
   "sandbox",
   "secrets",
+  "webhooks",
 ] as const;
 export type ProjectSettingsPage = (typeof SETTINGS_PAGES)[number];
 
@@ -66,7 +67,7 @@ export interface SettingsEntry {
   label: string;
 }
 
-/** Settings' pages in their groups: the project, how its agents work, where they run. */
+/** Settings' pages in their groups: the project, how its agents work, where they run, what it tells other tools. */
 export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
   [{ page: "general", label: "General" }],
   [
@@ -78,6 +79,7 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
     { page: "sandbox", label: "Sandbox" },
     { page: "secrets", label: "Secrets" },
   ],
+  [{ page: "webhooks", label: "Webhooks" }],
 ];
 
 export const settingsLabel = (page: ProjectSettingsPage) =>
@@ -174,7 +176,7 @@ export function sandboxGist(s: G.ProjectSettings): string {
 /** What the list of Settings' pages says about each, under its name, from what has loaded. */
 export function settingsGists(
   project: G.Project,
-  loaded: { secrets?: number } = {},
+  loaded: { secrets?: number; webhooks?: number } = {},
 ): Partial<Record<ProjectSettingsPage, string>> {
   const s = project.settings;
   return {
@@ -189,5 +191,11 @@ export function settingsGists(
         : loaded.secrets === 0
           ? "None yet"
           : count(loaded.secrets, "secret", "secrets"),
+    webhooks:
+      loaded.webhooks === undefined
+        ? undefined
+        : loaded.webhooks === 0
+          ? "None yet"
+          : count(loaded.webhooks, "webhook", "webhooks"),
   };
 }

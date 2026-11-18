@@ -71,6 +71,12 @@ pub struct Features {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub linear_webhook: bool,
+    /// Webhooks may post to `http://` and local addresses too, as a
+    /// development instance's do (`FCTL_DEV`): elsewhere only to public
+    /// `https://` ones. Absent from control planes before webhooks.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub local_webhooks: bool,
 }
 
 /// `POST /api/v1/setup`: create the owner account with the setup token.

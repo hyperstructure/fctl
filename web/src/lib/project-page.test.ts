@@ -98,6 +98,7 @@ describe("a project's page", () => {
       "tickets",
       "sandbox",
       "secrets",
+      "webhooks",
     ]);
     expect(settingsPagesFor("maintainer")).toEqual(settingsPagesFor("owner"));
     expect(settingsPagesFor("editor")).toEqual(["tickets"]);
