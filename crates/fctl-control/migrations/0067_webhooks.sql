@@ -1,4 +1,4 @@
--- Webhooks (docs/architecture.md#webhooks, ADR 0083): addresses fctl
+-- Webhooks (docs/architecture.md#webhooks, ADR 0084): addresses fctl
 -- posts a workspace's events to as they happen, signed with each one's
 -- secret. A workspace's (project_id NULL: all its projects, or those in
 -- `projects`) or a project's own. What went out to each, and how, lives in

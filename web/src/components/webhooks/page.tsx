@@ -294,7 +294,7 @@ function Problems({
           <span className="block">
             fctl's attempts have all failed since {when(h.failing_since)}
             {h.last ? `, the last with ${attemptWords(h.last)}` : ""}. It tries each delivery again 7 times
-            over about 21 hours, and turns the webhook off once they have all failed for 3 days.
+            over about 21 hours, and turns the webhook off when one fails for good after 3 days of failures.
           </span>
           {h.failed > 0 && (
             <span className="mt-2 flex flex-wrap items-center gap-3">

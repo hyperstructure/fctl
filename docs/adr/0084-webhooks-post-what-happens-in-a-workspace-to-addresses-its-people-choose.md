@@ -76,7 +76,8 @@ address outside fctl.
   webhook and 1,000 waiting, and tries a failed one again 7 times over
   about 21 hours (10 seconds, then a minute, 5, 30, 2 hours, 6 and 12),
   sooner where the receiver's `Retry-After` asks for later. A webhook
-  whose deliveries all failed for 3 days turns itself off, and says so.
+  whose deliveries all failed for 3 days turns itself off as one fails
+  for good, and says so.
 - **Its people see what went out.** Those who manage a webhook see its
   deliveries of the last 30 days (the newest 1,000), each with the
   request as it was sent (headers and payload), every attempt and the

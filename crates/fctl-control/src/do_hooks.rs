@@ -921,7 +921,11 @@ impl HooksObject {
                 "SELECT failing_since AS n FROM health WHERE webhook_id = ?",
                 vec![sv(&hook.id)],
             );
-            if rules::turns_off(Some(since).filter(|s| *s > 0), now) {
+            if rules::turns_off(
+                Some(since).filter(|s| *s > 0),
+                now,
+                settled.state == WebhookDeliveryState::Failed,
+            ) {
                 let why = posted.error.as_deref().unwrap_or("no answer");
                 self.turn_off(hook, &rules::off_reason(why), now).await;
             }

@@ -385,7 +385,7 @@ receiver switches without missing a request.
 | `review.queued`, `review.started` | A review agent's review of a commit waits for a runner; a runner took it. |
 | `review.finished` | The review is on the pull request: `state` is `passed` (nothing to point out) or `commented`, with `findings`, `fixed` and `still_open`. |
 | `review.failed`, `review.cancelled` | It couldn't run or post; a newer commit took its place, or someone stopped it. |
-| `schedule.run_skipped` | A schedule's run started no session, and says why: its last run still at work, its owner's plan at its limit, its cap for the hour. |
+| `schedule.run_skipped` | A schedule's run at its time or on an event started no session, and says why: its last run still at work, its owner's plan at its limit, its cap of sessions an hour or a day reached, or a session that couldn't start. |
 | `schedule.paused` | fctl paused a schedule: its owner can no longer run it, or its project was archived. |
 
 A review agent's own session sends no sessions' events: its review's say
@@ -399,7 +399,7 @@ seconds; fctl doesn't follow redirects. Otherwise it goes again after 10
 seconds, then a minute, 5 minutes, 30, 2 hours, 6 and 12 (later where
 the answer's `Retry-After` asks), 8 attempts over about 21 hours. A
 webhook whose own attempts all failed for three days turns itself off
-and says why; turn it on again once its address answers (a test or a
+as a delivery fails for good, and says why; turn it on again once its address answers (a test or a
 resend that fails doesn't count toward the three days, and turning it on
 again or pointing it elsewhere starts them afresh). Its page and `fctl
 webhooks deliveries NAME --failed` list what went out in the last 30 days

@@ -3774,7 +3774,9 @@ what happens to as it happens, signed with each one's secret
    else tries again after 10 seconds, a minute, 5, 30, 2 hours, 6 and 12
    (`RETRIES_MS`; later where `Retry-After` asks, up to 12 hours). A
    webhook all of whose own attempts failed for three days (`OFF_AFTER_MS`,
-   `health.failing_since`) turns itself off: D1 says why
+   `health.failing_since`) turns itself off as a delivery fails for good
+   (`hooks::turns_off`; a first attempt after days without one has its
+   retries to go): D1 says why
    (`disabled_reason`), its waiting deliveries fail, and the workspace's
    audit log records it. A person's test or resend that fails starts no
    failing, one that goes through ends it, and a webhook turned on again

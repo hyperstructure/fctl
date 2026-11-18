@@ -317,7 +317,7 @@ impl Kind {
                 "A newer commit took the review's place, or someone stopped it, before it posted."
             }
             ScheduleRunSkipped => {
-                "A run at its time, on an event or that someone asked for started no session, with why: its last run still at work, a plan at its limit, its cap for the hour."
+                "A run at its time or on an event started no session, with why: its last run still at work, its owner's plan at its limit, its cap of sessions an hour or a day reached, or a session that couldn't start."
             }
             SchedulePaused => {
                 "Its owner can no longer run it, or its project was archived: it starts nothing until someone resumes it."
@@ -1205,9 +1205,11 @@ pub fn timeout_error() -> String {
 }
 
 /// Whether a webhook that has failed every attempt since `failing_since`
-/// turns itself off at `now`.
-pub fn turns_off(failing_since: Option<i64>, now: i64) -> bool {
-    failing_since.is_some_and(|since| now - since >= OFF_AFTER_MS)
+/// turns itself off at `now`, as a delivery failed for good (`gave_up`:
+/// its last attempt, after about 21 hours of them): a first attempt that
+/// fails after days without one has its retries to go yet.
+pub fn turns_off(failing_since: Option<i64>, now: i64, gave_up: bool) -> bool {
+    gave_up && failing_since.is_some_and(|since| now - since >= OFF_AFTER_MS)
 }
 
 /// Why fctl turned a webhook off, the last attempt having failed with
@@ -2821,9 +2823,12 @@ mod tests {
 
     #[test]
     fn a_webhook_that_failed_for_three_days_turns_itself_off() {
-        assert!(!turns_off(None, 10 * DAY));
-        assert!(!turns_off(Some(DAY), 3 * DAY));
-        assert!(turns_off(Some(DAY), 4 * DAY));
+        assert!(!turns_off(None, 10 * DAY, true));
+        assert!(!turns_off(Some(DAY), 3 * DAY, true));
+        assert!(turns_off(Some(DAY), 4 * DAY, true));
+        // A delivery's first attempt failing after days without one has its
+        // retries to go: only one that fails for good turns it off.
+        assert!(!turns_off(Some(DAY), 4 * DAY, false));
         assert_eq!(
             off_reason("HTTP 502"),
             "Every delivery failed for 3 days, the last with HTTP 502. Turn it on again once its address answers."
