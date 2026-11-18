@@ -312,8 +312,8 @@ function Problems({
       )}
       {h && h.dropped > 0 && (
         <Banner tone="warn">
-          {h.dropped} {h.dropped === 1 ? "event was" : "events were"} dropped: 1,000 deliveries waited for it
-          already. They'll go again once it takes what waits.
+          {h.dropped} {h.dropped === 1 ? "event was" : "events were"} dropped since it last took one: 1,000
+          deliveries waited for it already, so {h.dropped === 1 ? "it won't" : "they won't"} be sent.
         </Banner>
       )}
     </>
