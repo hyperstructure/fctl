@@ -157,6 +157,17 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         fctl_domain::limits::allows(limits.access, method.as_ref(), segs.as_slice())
             .map_err(AppError)?;
     }
+    // Admin tokens reach the admin API's people endpoints alone, and what
+    // reaches past what admins do signed in takes one
+    // (`fctl_domain::admin_tokens`).
+    if ctx.admin_token().is_some() {
+        fctl_domain::admin_tokens::allows(method.as_ref(), segs.as_slice()).map_err(AppError)?;
+    } else if fctl_domain::admin_tokens::only_tokens(method.as_ref(), segs.as_slice()) {
+        return Err(AppError(match ctx.auth {
+            Some(_) => fctl_domain::admin_tokens::needs_token(ctx.cfg.admin_tokens),
+            None => ApiError::unauthorized(),
+        }));
+    }
     // What agents ask of the control plane through their host, ahead of the
     // routes: an autopilot's requests to the API come this way, and go
     // through `dispatch` themselves (`route_autopilot`), which so runs once
@@ -242,9 +253,44 @@ async fn dispatch(
 
         // Admin
         (Get, ["admin", "users"]) => api::admin::users(ctx).await,
-        (Patch, ["admin", "users", id]) => api::admin::update_user(ctx, req, id).await,
-        (Delete, ["admin", "users", id]) => api::admin::delete_user(ctx, id).await,
-        (Post, ["admin", "users", id, "reset-link"]) => api::admin::reset_link(ctx, id).await,
+        (Patch, ["admin", "users", id]) => {
+            api::admin::update_user(ctx, req, &http::decode(id)).await
+        }
+        (Delete, ["admin", "users", id]) => api::admin::delete_user(ctx, &http::decode(id)).await,
+        (Post, ["admin", "users", id, "reset-link"]) => {
+            api::admin::reset_link(ctx, &http::decode(id)).await
+        }
+        // What admin tokens do (`fctl_domain::admin_tokens`).
+        (Post, ["admin", "users"]) => api::provision::create(ctx, req).await,
+        (Get, ["admin", "users", id]) => api::provision::get(ctx, &http::decode(id)).await,
+        (Put, ["admin", "users", id, "avatar"]) => {
+            api::provision::set_avatar(ctx, req, &http::decode(id)).await
+        }
+        (Delete, ["admin", "users", id, "avatar"]) => {
+            api::provision::remove_avatar(ctx, &http::decode(id)).await
+        }
+        (Put, ["admin", "users", id, "claude"]) => {
+            api::provision::set_claude(ctx, req, &http::decode(id)).await
+        }
+        (Delete, ["admin", "users", id, "claude"]) => {
+            api::provision::remove_claude(ctx, &http::decode(id)).await
+        }
+        (Put, ["admin", "users", id, "workspaces", workspace]) => {
+            api::provision::set_workspace(ctx, req, &http::decode(id), &http::decode(workspace))
+                .await
+        }
+        (Delete, ["admin", "users", id, "workspaces", workspace]) => {
+            api::provision::leave_workspace(ctx, &http::decode(id), &http::decode(workspace)).await
+        }
+        (Put, ["admin", "users", id, "projects", project]) => {
+            api::provision::set_project(ctx, req, &http::decode(id), &http::decode(project)).await
+        }
+        (Delete, ["admin", "users", id, "projects", project]) => {
+            api::provision::leave_project(ctx, &http::decode(id), &http::decode(project)).await
+        }
+        (Get, ["admin", "tokens"]) => api::admin_tokens::list(ctx).await,
+        (Post, ["admin", "tokens"]) => api::admin_tokens::create(ctx, req).await,
+        (Delete, ["admin", "tokens", id]) => api::admin_tokens::revoke(ctx, id).await,
         (Delete, ["admin", "users", id, "two-factor"]) => {
             api::two_factor::admin_reset(ctx, id).await
         }

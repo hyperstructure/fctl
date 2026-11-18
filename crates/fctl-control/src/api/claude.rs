@@ -227,9 +227,19 @@ pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
 
 pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let user = ctx.user()?.clone();
-    // The sessions that run on it stop with it: nobody's subscription runs
-    // them from then on, so they get no new tokens, and their runners act
-    // for them no more (`spec::check_runs`).
+    remove_credential(ctx, &user.id, id).await?;
+    ctx.audit("claude.removed", Some(id), None);
+    let user = auth::user_by_id(ctx, &user.id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
+    http::ok(&auth::me(ctx, &user).await?)
+}
+
+/// Removes `user_id`'s Claude connection `id`. The sessions that run on it
+/// stop with it: nobody's subscription runs them from then on, so they get
+/// no new tokens, and their runners act for them no more
+/// (`spec::check_runs`).
+pub async fn remove_credential(ctx: &Ctx, user_id: &str, id: &str) -> AppResult<()> {
     #[derive(serde::Deserialize)]
     struct Running {
         id: String,
@@ -241,14 +251,14 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         "SELECT s.id, s.runner_id FROM sessions s JOIN claude_credentials c ON c.id = s.credential_id \
          WHERE c.id = ? AND c.user_id = ? \
          AND s.status IN ('queued','provisioning','preparing','running','idle','paused')",
-        &[s(id), s(&user.id)],
+        &[s(id), s(user_id)],
     )?
     .all()
     .await?;
     let changed = q(
         &ctx.db,
         "DELETE FROM claude_credentials WHERE id = ? AND user_id = ?",
-        &[s(id), s(&user.id)],
+        &[s(id), s(user_id)],
     )?
     .run()
     .await?;
@@ -266,15 +276,11 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     q(
         &ctx.db,
         "UPDATE users SET default_credential_id = NULL WHERE id = ? AND default_credential_id = ?",
-        &[s(&user.id), s(id)],
+        &[s(user_id), s(id)],
     )?
     .run()
     .await?;
-    ctx.audit("claude.removed", Some(id), None);
-    let user = auth::user_by_id(ctx, &user.id)
-        .await?
-        .ok_or_else(|| not_found("User"))?;
-    http::ok(&auth::me(ctx, &user).await?)
+    Ok(())
 }
 
 /// Stops sessions (`id`, `runner_id`) whose Claude connection was removed,

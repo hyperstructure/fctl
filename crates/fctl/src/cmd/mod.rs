@@ -15,6 +15,7 @@ pub mod passkeys;
 pub mod project_members;
 pub mod project_secrets;
 pub mod projects;
+pub mod provision;
 pub mod publish;
 pub mod pulls;
 pub mod resolve;

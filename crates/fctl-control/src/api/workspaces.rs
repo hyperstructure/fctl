@@ -557,32 +557,7 @@ pub async fn set_member_role(
         ));
     }
     if from.is_admin() && !body.role.is_admin() {
-        // Runners for everyone's sessions take an admin: theirs run only
-        // their own sessions from now on, as a member's do, and the others'
-        // sessions on them stop and resume elsewhere.
-        #[derive(Deserialize)]
-        struct R {
-            runner_id: String,
-        }
-        let runners: Vec<R> = q(
-            &ctx.db,
-            "UPDATE runner_workspaces SET personal = 1 WHERE workspace_id = ? AND personal = 0 \
-             AND runner_id IN (SELECT id FROM runners WHERE created_by = ?) RETURNING runner_id",
-            &[s(a.id()), s(user_id)],
-        )?
-        .all()
-        .await?;
-        for r in &runners {
-            runner_changed(ctx, &r.runner_id);
-        }
-        // The invitations they sent count no more (`ws::INVITER_STILL_ADMIN`).
-        q(
-            &ctx.db,
-            "DELETE FROM workspace_invitations WHERE workspace_id = ? AND invited_by = ?",
-            &[s(a.id()), s(user_id)],
-        )?
-        .run()
-        .await?;
+        demoted(ctx, a.id(), user_id).await?;
     }
     ctx.audit_in(
         Some(a.id()),
@@ -592,6 +567,37 @@ pub async fn set_member_role(
     );
     ws::changed(ctx, vec![user_id.to_owned()]);
     members(ctx, a.id()).await
+}
+
+/// After one of a workspace's admins became a member: runners for
+/// everyone's sessions take an admin, so theirs run only their own
+/// sessions from now on, as a member's do, and the others' sessions on
+/// them stop and resume elsewhere; and the invitations they sent count no
+/// more (`ws::INVITER_STILL_ADMIN`).
+pub async fn demoted(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppResult<()> {
+    #[derive(Deserialize)]
+    struct R {
+        runner_id: String,
+    }
+    let runners: Vec<R> = q(
+        &ctx.db,
+        "UPDATE runner_workspaces SET personal = 1 WHERE workspace_id = ? AND personal = 0 \
+         AND runner_id IN (SELECT id FROM runners WHERE created_by = ?) RETURNING runner_id",
+        &[s(workspace_id), s(user_id)],
+    )?
+    .all()
+    .await?;
+    for r in &runners {
+        runner_changed(ctx, &r.runner_id);
+    }
+    q(
+        &ctx.db,
+        "DELETE FROM workspace_invitations WHERE workspace_id = ? AND invited_by = ?",
+        &[s(workspace_id), s(user_id)],
+    )?
+    .run()
+    .await?;
+    Ok(())
 }
 
 /// Stops `user_id`'s active sessions in a workspace they no longer are in:

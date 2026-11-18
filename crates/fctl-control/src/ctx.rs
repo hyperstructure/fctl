@@ -39,6 +39,10 @@ pub struct Authed {
     /// owner, the `user` here, within `limits` and what
     /// `fctl_domain::autopilot::allows` lets it do.
     pub autopilot: Option<AutopilotCaller>,
+    /// An instance admin token (`fctl_adm_…`, `token_id` its id), which
+    /// acts as the admin who made it, `user`, on the admin API's people
+    /// endpoints alone (`fctl_domain::admin_tokens`).
+    pub admin_token: bool,
 }
 
 /// The autopilot a request comes from.
@@ -85,6 +89,7 @@ impl Authed {
             settings,
             limits: None,
             autopilot: None,
+            admin_token: false,
         }
     }
 }
@@ -182,6 +187,12 @@ impl Ctx {
                 action.doing()
             ))));
         }
+        // An admin token provisions people unattended: making it took
+        // confirming (`Sensitive::NewAdminToken`), and it reaches nothing
+        // else that takes it.
+        if a.admin_token {
+            return Ok(());
+        }
         let factors = a.user.factors();
         if !verify::needed(&a.settings, factors, a.verified_at, self.now) {
             return Ok(());
@@ -207,6 +218,15 @@ impl Ctx {
     /// makes it.
     pub fn autopilot(&self) -> Option<&AutopilotCaller> {
         self.auth.as_ref().and_then(|a| a.autopilot.as_ref())
+    }
+
+    /// The id of the admin token the request comes with, when an admin
+    /// token makes it (`fctl_domain::admin_tokens`).
+    pub fn admin_token(&self) -> Option<&str> {
+        self.auth
+            .as_ref()
+            .filter(|a| a.admin_token)
+            .map(|a| a.token_id.as_str())
     }
 
     /// The instance's settings, as read with the caller's token (defaults
@@ -240,6 +260,15 @@ impl Ctx {
         let ip = self.ip.clone();
         let action = action.to_owned();
         let target = target.map(str::to_owned);
+        // What an admin token does says so, with which one.
+        let data = match (self.admin_token(), data) {
+            (Some(token), Some(serde_json::Value::Object(mut d))) => {
+                d.insert("admin_token".to_owned(), token.into());
+                Some(serde_json::Value::Object(d))
+            }
+            (Some(token), None) => Some(serde_json::json!({ "admin_token": token })),
+            (_, data) => data,
+        };
         let data = data.map(|d| d.to_string());
         self.defer(async move {
             q(

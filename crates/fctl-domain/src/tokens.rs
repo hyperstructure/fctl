@@ -30,6 +30,9 @@ pub enum SecretKind {
     Nonce,
     /// Withdraws a request for early access, in the browser that made it.
     AccessRequest,
+    /// An instance admin token, which provisions people
+    /// (`crate::admin_tokens`).
+    Admin,
 }
 
 impl SecretKind {
@@ -46,6 +49,7 @@ impl SecretKind {
             Self::SignInChallenge => "fctl_2fa_",
             Self::Nonce => "fctl_n_",
             Self::AccessRequest => "fctl_acr_",
+            Self::Admin => "fctl_adm_",
         }
     }
 
@@ -62,6 +66,7 @@ impl SecretKind {
             Self::SignInChallenge,
             Self::Nonce,
             Self::AccessRequest,
+            Self::Admin,
         ]
         .into_iter()
         .find(|k| secret.starts_with(k.prefix()))
@@ -178,6 +183,19 @@ mod tests {
         assert!(looks_like(&s, SecretKind::Enrollment));
         assert!(!looks_like(&s, SecretKind::Runner));
         assert_eq!(SecretKind::of(&s), Some(SecretKind::Enrollment));
+    }
+
+    #[test]
+    fn admin_tokens_are_told_apart_from_access_tokens() {
+        let s = new_secret(SecretKind::Admin);
+        assert!(s.starts_with("fctl_adm_"), "{s}");
+        assert!(looks_like(&s, SecretKind::Admin));
+        assert!(!looks_like(&s, SecretKind::Pat));
+        assert_eq!(SecretKind::of(&s), Some(SecretKind::Admin));
+        assert_eq!(
+            SecretKind::of("fctl_acr_x"),
+            Some(SecretKind::AccessRequest)
+        );
     }
 
     #[test]

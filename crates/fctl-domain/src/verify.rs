@@ -66,6 +66,9 @@ pub enum Sensitive {
     DeleteProject,
     /// Making an access token.
     NewToken,
+    /// Making an instance admin token: whoever holds it creates accounts,
+    /// changes people's addresses and places them in any workspace.
+    NewAdminToken,
     /// Connecting a Claude subscription, with a token, a sign-in or the
     /// token kept on their runners: the sessions the person starts then run
     /// on it, and a full login's Claude account sees them (Remote Control),
@@ -128,6 +131,7 @@ impl Sensitive {
             DeleteWorkspace => "delete a workspace",
             DeleteProject => "delete a project",
             NewToken => "make an access token",
+            NewAdminToken => "make an admin token",
             ConnectClaude => "connect a Claude subscription",
             GiveClaudeTokenToSandboxes => "give sandboxes your Claude token again",
             LinkLinear => "link a Linear account",

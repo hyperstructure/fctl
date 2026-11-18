@@ -4,6 +4,7 @@
 //! since the epoch) so the same code runs in a Worker and in tests.
 
 pub mod account;
+pub mod admin_tokens;
 pub mod allowlist;
 pub mod autopilot;
 pub mod avatar;

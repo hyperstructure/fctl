@@ -58,6 +58,7 @@ id_ctor!(access_request_id, AccessRequestId);
 id_ctor!(memory_id, MemoryId);
 id_ctor!(retrospective_id, RetrospectiveId);
 id_ctor!(enrollment_token_id, EnrollmentTokenId);
+id_ctor!(admin_token_id, AdminTokenId);
 
 /// A random UUID v4 (for `claude --session-id`).
 pub fn uuid_v4() -> String {

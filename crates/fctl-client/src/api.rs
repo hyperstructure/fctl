@@ -1922,9 +1922,136 @@ impl Api {
             .await
     }
 
+    /// Makes a link that sets someone's password (admins, admin tokens):
+    /// `{"emailed": true}` where the instance emailed it to them, else
+    /// `{"url": …}`.
+    pub async fn reset_link(&self, user: &str) -> Result<serde_json::Value> {
+        self.post(
+            &format!("/admin/users/{}/reset-link", enc(user)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     /// Deletes someone's account (admins), as deleting their own would.
     pub async fn delete_user(&self, user_id: &str) -> Result<Ok> {
         self.delete(&format!("/admin/users/{}", enc(user_id))).await
+    }
+
+    /// The instance's admin tokens (admins), and whether it takes them.
+    pub async fn admin_tokens(&self) -> Result<AdminTokenList> {
+        self.get("/admin/tokens").await
+    }
+
+    /// Makes an admin token (admins), which acts as you: its secret is in
+    /// the answer, and nowhere else.
+    pub async fn create_admin_token(
+        &self,
+        req: &CreateAdminTokenRequest,
+    ) -> Result<CreatedAdminToken> {
+        self.post("/admin/tokens", req).await
+    }
+
+    /// Revokes an admin token (admins), anyone's.
+    pub async fn revoke_admin_token(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/admin/tokens/{}", enc(id))).await
+    }
+
+    /// Creates someone's account (admin tokens).
+    pub async fn create_user(&self, req: &CreateUserRequest) -> Result<AdminUser> {
+        self.post("/admin/users", req).await
+    }
+
+    /// Someone's account, by id or any of their addresses, with the
+    /// workspaces and projects they are in (admin tokens).
+    pub async fn admin_user(&self, user: &str) -> Result<AdminUser> {
+        self.get(&format!("/admin/users/{}", enc(user))).await
+    }
+
+    /// Sets someone's picture (admin tokens): a PNG, JPEG, GIF or WebP image.
+    pub async fn set_user_avatar(&self, user: &str, bytes: Vec<u8>) -> Result<AdminUser> {
+        let body = self
+            .raw(
+                Method::PUT,
+                &format!("/admin/users/{}/avatar", enc(user)),
+                Some(bytes),
+                Some("application/octet-stream"),
+            )
+            .await?;
+        serde_json::from_slice(&body).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    /// Removes someone's picture (admin tokens).
+    pub async fn remove_user_avatar(&self, user: &str) -> Result<AdminUser> {
+        self.delete(&format!("/admin/users/{}/avatar", enc(user)))
+            .await
+    }
+
+    /// Sets the Claude token someone's sessions run on (admin tokens).
+    pub async fn set_user_claude(
+        &self,
+        user: &str,
+        req: &AddClaudeTokenRequest,
+    ) -> Result<AdminUser> {
+        self.put(&format!("/admin/users/{}/claude", enc(user)), req)
+            .await
+    }
+
+    /// Removes the Claude token an admin token set for someone (admin
+    /// tokens).
+    pub async fn remove_user_claude(&self, user: &str) -> Result<AdminUser> {
+        self.delete(&format!("/admin/users/{}/claude", enc(user)))
+            .await
+    }
+
+    /// Makes someone a member of a workspace, or changes their role there
+    /// (admin tokens).
+    pub async fn set_user_workspace(
+        &self,
+        user: &str,
+        workspace: &str,
+        role: Option<fctl_proto::session::WorkspaceRole>,
+    ) -> Result<AdminUser> {
+        self.put(
+            &format!("/admin/users/{}/workspaces/{}", enc(user), enc(workspace)),
+            &SetWorkspaceMembershipRequest { role },
+        )
+        .await
+    }
+
+    /// Takes someone out of a workspace (admin tokens).
+    pub async fn remove_user_workspace(&self, user: &str, workspace: &str) -> Result<AdminUser> {
+        self.delete(&format!(
+            "/admin/users/{}/workspaces/{}",
+            enc(user),
+            enc(workspace)
+        ))
+        .await
+    }
+
+    /// Makes someone a member of a project, or changes their role there
+    /// (admin tokens).
+    pub async fn set_user_project(
+        &self,
+        user: &str,
+        project: &str,
+        role: fctl_proto::session::ProjectRole,
+    ) -> Result<AdminUser> {
+        self.put(
+            &format!("/admin/users/{}/projects/{}", enc(user), enc(project)),
+            &SetRoleRequest { role },
+        )
+        .await
+    }
+
+    /// Takes someone out of a project (admin tokens).
+    pub async fn remove_user_project(&self, user: &str, project: &str) -> Result<AdminUser> {
+        self.delete(&format!(
+            "/admin/users/{}/projects/{}",
+            enc(user),
+            enc(project)
+        ))
+        .await
     }
 
     pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
