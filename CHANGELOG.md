@@ -2,6 +2,36 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.36.0 (2026-11-18)
+
+### Features
+
+- Run schedules on GitHub events, such as new issues and merges ([#578](https://github.com/hyperstructure/fctl/pull/578))
+- Cap the sessions an event schedule starts in an hour and a day ([#580](https://github.com/hyperstructure/fctl/pull/580))
+- **reviews:** Let projects choose how many review rounds agents get ([#579](https://github.com/hyperstructure/fctl/pull/579))
+- Webhooks post what agents do to your tools, signed, with retries ([#581](https://github.com/hyperstructure/fctl/pull/581))
+- Provision people with admin tokens on self-hosted instances ([#584](https://github.com/hyperstructure/fctl/pull/584))
+- Service accounts that start agents for the people who allow them ([#587](https://github.com/hyperstructure/fctl/pull/587))
+- **host:** List the autopilots that wake on a runner in its status ([#590](https://github.com/hyperstructure/fctl/pull/590))
+- Let instance admins keep creating workspaces to themselves ([#593](https://github.com/hyperstructure/fctl/pull/593))
+- Let instance admins choose how many workspaces people can be in ([#596](https://github.com/hyperstructure/fctl/pull/596))
+
+### Fixes
+
+- **web:** Load the app's pages without waiting on its service worker ([#582](https://github.com/hyperstructure/fctl/pull/582))
+- Run event schedules anyone on GitHub can start at triage by default ([#597](https://github.com/hyperstructure/fctl/pull/597))
+- Close access gaps found in a security pass of the newest features ([#595](https://github.com/hyperstructure/fctl/pull/595))
+
+### Documentation
+
+- A page for organizations: provisioning, service accounts, webhooks ([#588](https://github.com/hyperstructure/fctl/pull/588))
+- Say which service account refusals name on_behalf_of ([#589](https://github.com/hyperstructure/fctl/pull/589))
+
+### Other changes
+
+- Say the webhook tests' secret is Standard Webhooks' example ([#583](https://github.com/hyperstructure/fctl/pull/583))
+- **web:** Wait for queries to answer in the pull request card's tests ([#586](https://github.com/hyperstructure/fctl/pull/586))
+
 ## 0.35.3 (2026-11-16)
 
 ### Features
