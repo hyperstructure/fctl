@@ -628,6 +628,46 @@ export const takesBy = (kind: G.ScheduleEventKind) =>
   kind === "issue_opened" || kind === "pull_request_opened" || kind === "pull_request_merged";
 
 /**
+ * The most sessions a schedule's events start in an hour (the last 60 minutes) and in a day (the last 24
+ * hours) unless it says otherwise, and the most it may say (fctl_domain::triggers).
+ */
+export const EVENT_CAPS = { hour: 3, day: 10 } as const;
+export const MOST_CAPS = { hour: 100, day: 1000 } as const;
+
+export interface Caps {
+  hour: number;
+  day: number;
+}
+
+/** What a schedule's events start at most, as the control plane goes by it (fctl_domain::triggers::caps). */
+export function eventCaps(e: Pick<G.ScheduleEvent, "max_per_hour" | "max_per_day">): Caps {
+  const within = (n: number | undefined, fallback: number, most: number) =>
+    Math.min(Math.max(n ?? fallback, 1), most);
+  const day = within(e.max_per_day, EVENT_CAPS.day, MOST_CAPS.day);
+  return { hour: Math.min(within(e.max_per_hour, EVENT_CAPS.hour, MOST_CAPS.hour), day), day };
+}
+
+/** "3 sessions an hour and 10 a day" (fctl_domain::triggers::describe_caps). */
+export function describeCaps(c: Caps): string {
+  const n = (v: number) => v.toLocaleString("en-US");
+  return `${n(c.hour)} ${c.hour === 1 ? "session" : "sessions"} an hour and ${n(c.day)} a day`;
+}
+
+/**
+ * Why the form's cap on an hour's or a day's sessions won't do, as the control plane says it, or nothing.
+ * `text` is as typed.
+ */
+export function capProblem(text: string, per: "hour" | "day"): string | undefined {
+  const words = per === "hour" ? "an hour" : "a day";
+  const n = Number(text.trim());
+  if (!text.trim() || !Number.isInteger(n) || n < 0) return `Give a whole number of sessions ${words}`;
+  if (n === 0) return `Let it start at least 1 session ${words}: pause it to start none`;
+  if (n > MOST_CAPS[per])
+    return `It starts at most ${MOST_CAPS[per].toLocaleString("en-US")} sessions ${words}`;
+  return undefined;
+}
+
+/**
  * Whose issues or pull requests a schedule takes: its own choice, else anyone's, but writers' for pull
  * requests opened, so that an outsider's pull request starts nothing (fctl_domain::triggers::by_of).
  */

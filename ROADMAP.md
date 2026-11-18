@@ -101,7 +101,8 @@ this file is the overview. Order within a section is priority.
       subscription, and other tools run them when asked (#9)
 - [x] Schedules that run on events on GitHub: each issue opened or labeled,
       pull request opened or merged, release published, or failing checks on
-      a branch starts a run, with what GitHub said of it
+      a branch starts a run, with what GitHub said of it, up to as many
+      sessions an hour and a day as the schedule allows
 - [ ] More events for schedules: Linear's issues (#370), comments that ask
       for fctl on an issue, deployments, and fctl's own (a session that
       failed, a review's findings)

@@ -289,15 +289,13 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     } else {
         schedules::zone(&timezone)
     };
-    let when = if body.cron.is_some() || body.at.is_some() || body.event.is_some() {
-        when_of(
-            ctx,
-            &p.row,
-            body.cron.as_deref(),
-            body.at,
-            body.event.as_ref(),
-        )
-        .await?
+    // What it waits for anew keeps the caps it doesn't give.
+    let event = body
+        .event
+        .clone()
+        .map(|e| triggers::keep_caps(e, row.event().as_ref()));
+    let when = if body.cron.is_some() || body.at.is_some() || event.is_some() {
+        when_of(ctx, &p.row, body.cron.as_deref(), body.at, event.as_ref()).await?
     } else {
         row.when()
             .ok_or_else(|| validation("cron", "Say again when it runs"))?

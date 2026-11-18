@@ -213,6 +213,12 @@ pub struct EventFilter {
     pub branches: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// The most sessions its events start in an hour, and in a day; absent
+    /// (from before them): `tg::DEFAULT_PER_HOUR` and `DEFAULT_PER_DAY`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_per_hour: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_per_day: Option<u32>,
 }
 
 impl EventFilter {
@@ -223,6 +229,8 @@ impl EventFilter {
             labels: e.labels.clone(),
             branches: e.branches.clone(),
             by: e.by.map(|b| b.as_str().to_owned()),
+            max_per_hour: e.max_per_hour,
+            max_per_day: e.max_per_day,
         };
         (
             e.kind.as_str().to_owned(),
@@ -262,20 +270,28 @@ impl ScheduleRow {
                 .by
                 .as_deref()
                 .map(|b| ScheduleEventBy::parse(b).unwrap_or(ScheduleEventBy::Other)),
+            max_per_hour: filter.max_per_hour,
+            max_per_day: filter.max_per_day,
         })
     }
 
-    /// The event as the API shows it: a kind this version doesn't know
-    /// reads as one.
+    /// The event as the API shows it, with the caps it goes by: a kind
+    /// this version doesn't know reads as one.
     fn event_api(&self) -> Option<ScheduleEvent> {
         self.event_kind.as_ref()?;
-        Some(self.event().unwrap_or(ScheduleEvent {
+        let mut e = self.event().unwrap_or(ScheduleEvent {
             kind: ScheduleEventKind::Other,
             repos: Vec::new(),
             labels: Vec::new(),
             branches: Vec::new(),
             by: None,
-        }))
+            max_per_hour: None,
+            max_per_day: None,
+        });
+        let caps = fctl_domain::triggers::caps(&e);
+        e.max_per_hour = Some(caps.hour);
+        e.max_per_day = Some(caps.day);
+        Some(e)
     }
 
     /// Whether it runs at a time of its own, rather than when asked.
@@ -661,7 +677,8 @@ impl Problems {
 
     /// Why a schedule that waits for events, while it is on, wouldn't start
     /// a run if one came now: fctl wouldn't hear of it, its owner can't run
-    /// it, or their plan is at its limit.
+    /// it, their plan is at its limit, or its events started as many
+    /// sessions as it lets them in an hour or a day.
     async fn of_event(
         &mut self,
         db: &D1Database,
@@ -686,7 +703,7 @@ impl Problems {
             return Ok(Some(u.reason.clone()));
         }
         let zone = zone(&row.timezone);
-        Ok(match self.owner_of(db, project, row).await? {
+        let plan = match self.owner_of(db, project, row).await? {
             Err(why) => Some(format!("{why} The next event pauses it.")),
             Ok((name, limits)) => sch::at_limit(limits, now).map(|limit| {
                 format!(
@@ -694,7 +711,14 @@ impl Problems {
                     sch::limit_reason(name, limit, &*zone, true)
                 )
             }),
-        })
+        };
+        if plan.is_some() {
+            return Ok(plan);
+        }
+        let caps = fctl_domain::triggers::caps(&event);
+        let started = crate::triggers::started_lately(db, &row.id, caps, now, None).await?;
+        Ok(fctl_domain::triggers::capped(caps, &started, now)
+            .map(|c| fctl_domain::triggers::capped_reason(&c, &*zone)))
     }
 }
 
