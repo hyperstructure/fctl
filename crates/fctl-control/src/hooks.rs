@@ -194,10 +194,12 @@ pub async fn count(db: &D1Database, workspace_id: &str) -> AppResult<u32> {
 /// events of sessions in other isolates.
 pub const CACHED_MS: i64 = 30_000;
 
+/// A workspace's webhooks, as far as choosing what they get goes, with
+/// when they were read.
+type Read = (i64, Rc<Vec<Hook>>);
+
 thread_local! {
-    /// Each workspace's webhooks, as far as choosing what they get goes,
-    /// with when they were read.
-    static WANTED: RefCell<HashMap<String, (i64, Rc<Vec<Hook>>)>> = RefCell::new(HashMap::new());
+    static WANTED: RefCell<HashMap<String, Read>> = RefCell::new(HashMap::new());
     /// Each project's workspace, which never changes.
     static WORKSPACE_OF: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
@@ -321,24 +323,6 @@ pub async fn emit(env: &Env, workspace_id: Option<&str>, event: Event) -> AppRes
     Ok(())
 }
 
-/// [`emit`]s each of `events` once the caller has answered, logging what
-/// fails: nothing a webhook does holds up what happened.
-pub fn emit_later(ctx: &crate::ctx::Ctx, workspace_id: Option<String>, events: Vec<Event>) {
-    if events.is_empty() {
-        return;
-    }
-    let env = ctx.env.clone();
-    ctx.defer(async move {
-        for e in events {
-            let kind = e.kind;
-            if let Err(err) = emit(&env, workspace_id.as_deref(), e).await {
-                worker::console_error!("webhooks: {}: {}", kind.as_str(), err.0.message);
-            }
-        }
-        Ok(())
-    });
-}
-
 /// Tells a workspace's HooksObject that its webhooks changed (`forget`:
 /// webhook `webhook_id` went, with its deliveries), and this isolate's
 /// cache too.
@@ -352,6 +336,7 @@ pub async fn changed(env: &Env, workspace_id: &str, webhook_id: Option<&str>, fo
             &HooksChanged {
                 workspace_id: workspace_id.to_owned(),
                 webhook_id: webhook_id.map(str::to_owned),
+                project_id: None,
             },
         )
         .await
@@ -363,4 +348,30 @@ pub async fn changed(env: &Env, workspace_id: &str, webhook_id: Option<&str>, fo
             e.0.message
         );
     }
+}
+
+/// Forgets a deleted project in its workspace's delivery logs: what its
+/// events said, and its own webhooks' deliveries (the rows cascaded).
+pub async fn forget_project(env: &Env, workspace_id: &str, project_id: &str) -> AppResult<()> {
+    forget_cached(workspace_id);
+    let stub = internal::hooks_stub(env, workspace_id)?;
+    let _: serde_json::Value = internal::post(
+        &stub,
+        "/forget-project",
+        &HooksChanged {
+            workspace_id: workspace_id.to_owned(),
+            webhook_id: None,
+            project_id: Some(project_id.to_owned()),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Forgets everything a deleted workspace's webhooks sent.
+pub async fn purge(env: &Env, workspace_id: &str) -> AppResult<()> {
+    forget_cached(workspace_id);
+    let stub = internal::hooks_stub(env, workspace_id)?;
+    let _: serde_json::Value = internal::post(&stub, "/purge", &serde_json::json!({})).await?;
+    Ok(())
 }

@@ -28,12 +28,14 @@ use crate::github::{self, Github};
 use crate::internal::{self, InitSession, Schedule, Stop};
 use crate::model::{CredentialRow, PROJECT_SELECT, ProjectRow, UserRow, user_columns};
 use crate::workspaces::ConnectionRow;
+use fctl_domain::hooks::Kind as HookKind;
 use fctl_domain::reviews::{self as rv, Links, PullRequest};
 use fctl_proto::api::{
     FindingThread, PostedReview, PullRequestSummary, Review, ReviewBot, ReviewState,
     SummarizedPullRequest,
 };
 use fctl_proto::event::{MessageSource, UserMessage};
+use fctl_proto::hooks::{HookPerson, HookPullRequest, HookReview};
 use fctl_proto::runner::{GithubCredential, StopReason};
 use fctl_proto::session::{PullRequestRef, RepoAccess, RepoRef, SessionRef, SessionStats, UserRef};
 use fctl_proto::{ApiError, ErrorCode, ProjectId, SessionId, UserId};
@@ -1210,7 +1212,10 @@ pub async fn start(
     // Its check and the reaction that says fctl picked the pull request up,
     // after the answer: GitHub's webhook waits for it ten seconds at most.
     let (env, cfg, pr, session_id) = (ctx.env.clone(), ctx.cfg.clone(), pr.clone(), id.0.clone());
-    ctx.defer(async move { announce(&env, &cfg, &pr, inst, &session_id).await });
+    ctx.defer(async move {
+        to_webhooks(&env, &session_id, HookKind::ReviewQueued).await;
+        announce(&env, &cfg, &pr, inst, &session_id).await
+    });
     Ok(Started::Review(id.0))
 }
 
@@ -1379,6 +1384,18 @@ async fn supersede(
     if gone.is_empty() {
         return Ok(());
     }
+    let (env, ids) = (
+        ctx.env.clone(),
+        gone.iter()
+            .map(|g| g.session_id.clone())
+            .collect::<Vec<_>>(),
+    );
+    ctx.defer(async move {
+        for id in ids {
+            to_webhooks(&env, &id, HookKind::ReviewCancelled).await;
+        }
+        Ok(())
+    });
     let fleet = internal::fleet_stub(&ctx.env)?;
     for g in &gone {
         let stopped: AppResult<Value> = internal::post(
@@ -1672,12 +1689,13 @@ pub async fn started(env: &Env, session_id: &str) -> AppResult<()> {
     let Some(row) = of_session(&db, session_id).await? else {
         return Ok(());
     };
-    let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) else {
-        return Ok(());
-    };
     if row.state() != ReviewState::Running {
         return Ok(());
     }
+    to_webhooks(env, session_id, HookKind::ReviewStarted).await;
+    let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) else {
+        return Ok(());
+    };
     let (repo, writer) = match Writer::of(&cfg, &row).await? {
         Written::Writer(repo, writer) => (repo, writer),
         Written::Gone(why) => {
@@ -1798,6 +1816,14 @@ pub async fn ended(
     )?
     .run()
     .await?;
+    if changed > 0 {
+        let kind = if failed {
+            HookKind::ReviewFailed
+        } else {
+            HookKind::ReviewCancelled
+        };
+        to_webhooks(env, session_id, kind).await;
+    }
     if changed > 0
         && let Some(repo) = checked
     {
@@ -3061,6 +3087,11 @@ async fn post(
     )?
     .run()
     .await?;
+    let (env, session_id) = (ctx.env.clone(), row.session_id.clone());
+    ctx.defer(async move {
+        to_webhooks(&env, &session_id, HookKind::ReviewFinished).await;
+        Ok(())
+    });
     // Its check once D1 says how it went: the lookup that GitHub's word of
     // the check brings shows the pull request's sessions what it found
     // (`crate::pull_requests`). The review is posted by now, whatever
@@ -3325,5 +3356,59 @@ mod tests {
         let second = put(&db, NOW, &project, &pr, 1, None, true).await;
         assert_eq!(outcomes([first, second])?, (1, 1));
         one_review(&db).await
+    }
+}
+
+// ───────────────────────────── webhooks ─────────────────────────────
+
+/// A review as webhooks post it.
+fn hooked(cfg: &Config, row: &ReviewRow) -> HookReview {
+    HookReview {
+        session_id: SessionId(row.session_id.clone()),
+        session_url: cfg.url(&format!("/s/{}", row.session_id)),
+        pull_request: HookPullRequest {
+            repo: row.repo.clone(),
+            number: row.number(),
+            url: row.url.clone(),
+            title: row.title.clone(),
+            state: None,
+            checks: None,
+        },
+        commit: row.head_sha.clone(),
+        state: row.state().as_str().to_owned(),
+        findings: count(row.findings),
+        fixed: count(row.resolved),
+        still_open: count(row.still_open),
+        review_url: row.review_url.clone(),
+        reason: row.reason.clone(),
+        operator: Some(HookPerson {
+            id: row.operator_id.clone(),
+            name: row.operator_name.clone().unwrap_or_default(),
+        }),
+        created_at: row.created_at,
+        finished_at: row.finished_at,
+    }
+}
+
+/// Tells the workspace's webhooks of review `session_id`, as D1 has it now
+/// (`review.*`). What fails is logged: the review goes on without them.
+pub async fn to_webhooks(env: &Env, session_id: &str, kind: HookKind) {
+    let sent: AppResult<()> = async {
+        let db = env.d1("DB")?;
+        let Some(row) = of_session(&db, session_id).await? else {
+            return Ok(());
+        };
+        let cfg = Config::from_env(env);
+        let e =
+            fctl_domain::hooks::review_event(kind, hooked(&cfg, &row), &row.project_id, now_ms());
+        crate::hooks::emit(env, None, e).await
+    }
+    .await;
+    if let Err(e) = sent {
+        worker::console_error!(
+            "webhooks: {} of {session_id}: {}",
+            kind.as_str(),
+            e.0.message
+        );
     }
 }

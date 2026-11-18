@@ -342,6 +342,8 @@ pub async fn erase(ctx: &mut Ctx, row: &WorkspaceRow, typed: &str) -> AppResult<
     let env = ctx.env.clone();
     let db = crate::db::handle(&ctx.db);
     ctx.defer(async move { crate::housekeeping::purge_deleted(&env, &db).await });
+    let (env, workspace) = (ctx.env.clone(), row.id.clone());
+    ctx.defer(async move { crate::hooks::purge(&env, &workspace).await });
     if !own.is_empty() {
         let env = ctx.env.clone();
         let reason = format!("Its runner's workspace, {}, was deleted.", row.name);

@@ -20,6 +20,7 @@ use crate::model::{
     CredentialRow, PROJECT_SELECT, ProjectRow, USAGE_JSON, UserRow, plan_usage, user_columns,
 };
 use fctl_domain::cron::{self, Zone};
+use fctl_domain::hooks::Kind;
 use fctl_domain::schedules::{self as sch, RunNote, StartedBy, When};
 use fctl_proto::api::{
     PlanLimit, Schedule, ScheduleEvent, ScheduleEventBy, ScheduleEventKind, ScheduleRun,
@@ -27,6 +28,7 @@ use fctl_proto::api::{
 };
 use fctl_proto::autopilot::AutopilotAuthor;
 use fctl_proto::event::MessageSource;
+use fctl_proto::hooks::{HookRun, HookSchedule};
 use fctl_proto::session::{GithubAccess, SessionRef, SessionStatus, UserRef};
 use fctl_proto::{ApiError, ProjectId, ScheduleId, ScheduleRunId, SessionId, UserId};
 use serde::Deserialize;
@@ -770,6 +772,7 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
     let zone = zone(&row.timezone);
     let Some(when) = row.when() else {
         pause(
+            env,
             db,
             &row.id,
             "fctl can't read when it runs: set its time again.",
@@ -810,7 +813,7 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
         Ok(None) => return Ok(true),
         Err(e) => Outcome::Failed(e.0.message),
     };
-    outcome
+    let run_id = outcome
         .record(
             db,
             row,
@@ -820,6 +823,9 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
             row.owner_id.as_deref(),
         )
         .await?;
+    if let Some(run) = outcome.skipped(run_id, ScheduleTrigger::Time, now, None) {
+        to_webhooks(env, db, row, Kind::ScheduleRunSkipped, Some(run), None, now).await;
+    }
     Ok(true)
 }
 
@@ -849,13 +855,13 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
     Ok('run: {
         if project.archived_at.is_some() {
             let why = "Its project is archived.".to_owned();
-            pause(db, &row.id, &why, now).await?;
+            pause(env, db, &row.id, &why, now).await?;
             break 'run skip(why);
         }
         let owner = match owner(db, project, row).await? {
             Ok(o) => o,
             Err(why) => {
-                pause(db, &row.id, &why, now).await?;
+                pause(env, db, &row.id, &why, now).await?;
                 break 'run skip(why);
             }
         };
@@ -982,6 +988,30 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// A run of this outcome, `id`, as webhooks hear of one that started no
+    /// session; none for one that started its session.
+    pub fn skipped(
+        &self,
+        id: String,
+        trigger: ScheduleTrigger,
+        at: i64,
+        event_url: Option<String>,
+    ) -> Option<HookRun> {
+        let (outcome, why) = match self {
+            Outcome::Started(_) => return None,
+            Outcome::Skipped(why) => (ScheduleRunOutcome::Skipped, why),
+            Outcome::Failed(why) => (ScheduleRunOutcome::Failed, why),
+        };
+        Some(HookRun {
+            id: ScheduleRunId(id),
+            trigger: trigger.as_str().to_owned(),
+            outcome: outcome.as_str().to_owned(),
+            reason: Some(why.clone()),
+            at,
+            event_url,
+        })
+    }
+
     /// Records it as a run of `schedule`, due at `due`, for `user`.
     pub async fn record(
         &self,
@@ -1039,16 +1069,78 @@ pub async fn trim_runs(db: &D1Database, schedule_id: &str, now: i64) -> AppResul
     Ok(())
 }
 
-/// Pauses a schedule that fctl can't run, saying why.
-pub(crate) async fn pause(db: &D1Database, id: &str, why: &str, now: i64) -> AppResult<()> {
-    q(
+/// Pauses a schedule that fctl can't run, saying why, and tells its
+/// workspace's webhooks (`schedule.paused`).
+pub(crate) async fn pause(
+    env: &Env,
+    db: &D1Database,
+    id: &str,
+    why: &str,
+    now: i64,
+) -> AppResult<()> {
+    let paused = q(
         db,
-        "UPDATE schedules SET enabled = 0, paused_reason = ?, next_run_at = NULL, updated_at = ? WHERE id = ?",
+        "UPDATE schedules SET enabled = 0, paused_reason = ?, next_run_at = NULL, updated_at = ? WHERE id = ? AND enabled = 1",
         &[s(why), n(now), s(id)],
     )?
     .run()
     .await?;
+    if paused > 0
+        && let Some(row) = row(db, id).await?
+    {
+        to_webhooks(
+            env,
+            db,
+            &row,
+            Kind::SchedulePaused,
+            None,
+            Some(why.to_owned()),
+            now,
+        )
+        .await;
+    }
     Ok(())
+}
+
+/// Tells the workspace's webhooks of what happened to schedule `row`: a
+/// run of it that started no session (`schedule.run_skipped`, with `run`),
+/// or fctl pausing it (`schedule.paused`, saying why). What fails is
+/// logged: the schedule goes on as it would without them.
+pub(crate) async fn to_webhooks(
+    env: &Env,
+    db: &D1Database,
+    row: &ScheduleRow,
+    kind: Kind,
+    run: Option<HookRun>,
+    reason: Option<String>,
+    now: i64,
+) {
+    #[derive(Deserialize)]
+    struct Slug {
+        slug: String,
+    }
+    let slug: Option<Slug> = match q(
+        db,
+        "SELECT slug FROM projects WHERE id = ?",
+        &[s(&row.project_id)],
+    ) {
+        Ok(query) => query.first().await.ok().flatten(),
+        Err(_) => None,
+    };
+    let base = crate::config::Config::from_env(env).public_url;
+    let schedule = HookSchedule {
+        id: ScheduleId(row.id.clone()),
+        name: Some(row.name.clone()),
+        url: fctl_domain::hooks::schedule_url(
+            &base,
+            slug.as_ref().map_or("", |s| s.slug.as_str()),
+            &row.id,
+        ),
+    };
+    let e = fctl_domain::hooks::schedule_event(kind, schedule, run, reason, &row.project_id, now);
+    if let Err(err) = crate::hooks::emit(env, None, e).await {
+        worker::console_error!("webhooks: {}: {}", kind.as_str(), err.0.message);
+    }
 }
 
 /// An entry in the workspace's audit log for what the alarm did, which no

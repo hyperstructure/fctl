@@ -20,6 +20,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use fctl_proto::api::ReviewState;
 use fctl_proto::autopilot::AutopilotRole;
+use fctl_proto::event::{FollowUp, FollowUpEvent, PassedOnReview};
 use fctl_proto::hooks::{
     HookChecks, HookEnvelope, HookPerson, HookPlace, HookPullRequest, HookQuestion, HookReview,
     HookRun, HookSchedule, HookScheduleData, HookSession, HookSessionData, HookTicket,
@@ -1224,6 +1225,77 @@ pub fn pull_request_event(
         data: json!({ "session": session(s, base), "pull_request": p }),
         at,
     }
+}
+
+/// What brought an agent back to its pull request (GitHub's follow-up), as
+/// `session.follow_up` carries it, and what it was in a few words for the
+/// log: "checks failed on web#45".
+pub fn follow_up(f: &FollowUp) -> (Value, String) {
+    let pr = format!("{}#{}", f.repo.name, f.number);
+    let comments: Vec<&str> = f
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            FollowUpEvent::Comment(c) => Some(c.login.as_str()),
+            _ => None,
+        })
+        .collect();
+    let what = if let [login] = comments.as_slice() {
+        format!("a comment by @{login} on {pr}")
+    } else if !comments.is_empty() {
+        format!("{} comments on {pr}", comments.len())
+    } else {
+        match f.events.first() {
+            Some(FollowUpEvent::ChecksFailed { .. }) => format!("checks failed on {pr}"),
+            Some(FollowUpEvent::Merged { .. }) => format!("{pr} merged"),
+            Some(FollowUpEvent::Closed { .. }) => format!("{pr} closed"),
+            Some(FollowUpEvent::Conflicts { base, .. }) => match base {
+                Some(b) => format!("{pr} conflicts with {b}"),
+                None => format!("{pr} conflicts with its base branch"),
+            },
+            _ => format!("news of {pr}"),
+        }
+    };
+    let data = json!({
+        "kind": "github",
+        "pull_request": {
+            "repo": f.repo.full_name(),
+            "number": f.number,
+            "url": f.url,
+            "title": f.title,
+            "state": f.state,
+            "base": f.base,
+        },
+        "events": f.events,
+    });
+    (data, what)
+}
+
+/// A review's findings that fctl passed on to the agent that opened the
+/// pull request, as `session.follow_up` carries them, and its words for
+/// the log: "a review's 2 findings on web#45".
+pub fn findings(r: &PassedOnReview) -> (Value, String) {
+    let pr = format!("{}#{}", r.repo.name, r.number);
+    let what = match r.findings.len() {
+        1 => format!("a review's finding on {pr}"),
+        n => format!("a review's {n} findings on {pr}"),
+    };
+    let data = json!({
+        "kind": "review",
+        "pull_request": {
+            "repo": r.repo.full_name(),
+            "number": r.number,
+            "url": r.url,
+            "title": r.title,
+        },
+        "review": {
+            "commit": r.sha,
+            "summary_url": r.summary_url,
+            "session_id": r.session,
+            "findings": r.findings,
+        },
+    });
+    (data, what)
 }
 
 /// A review's event (`review.*`), of `review` in project `project_id`.
@@ -2474,6 +2546,60 @@ mod tests {
             ),
             "Posts every event to hooks.slack.com, in Web, for sessions started by tickets or people."
         );
+    }
+
+    #[test]
+    fn follow_ups_say_what_brought_the_agent_back() {
+        let f: FollowUp = serde_json::from_value(json!({
+            "repo": { "owner": "acme", "name": "web" },
+            "number": 45,
+            "url": "https://github.com/acme/web/pull/45",
+            "events": [{ "kind": "checks_failed", "sha": "abc", "names": ["test"], "passed": 1, "failed": 1, "pending": 0 }]
+        }))
+        .unwrap_or_else(|_| FollowUp {
+            repo: fctl_proto::session::RepoRef { owner: "x".into(), name: "y".into() },
+            number: 0,
+            url: String::new(),
+            title: None,
+            state: None,
+            base: None,
+            events: Vec::new(),
+        });
+        let (data, what) = follow_up(&f);
+        assert_eq!(what, "checks failed on web#45");
+        assert_eq!(data["kind"], "github");
+        assert_eq!(data["pull_request"]["repo"], "acme/web");
+        assert_eq!(data["events"][0]["kind"], "checks_failed");
+        let mut c = f.clone();
+        c.events = serde_json::from_value(json!([
+            { "kind": "comment", "id": 1, "login": "ada", "url": "u", "body": "b" }
+        ]))
+        .unwrap_or_default();
+        assert_eq!(follow_up(&c).1, "a comment by @ada on web#45");
+        c.events =
+            serde_json::from_value(json!([{ "kind": "merged", "by": "ada" }])).unwrap_or_default();
+        assert_eq!(follow_up(&c).1, "web#45 merged");
+        c.events =
+            serde_json::from_value(json!([{ "kind": "conflicts", "sha": "a", "base": "main" }]))
+                .unwrap_or_default();
+        assert_eq!(follow_up(&c).1, "web#45 conflicts with main");
+
+        let r: Option<PassedOnReview> = serde_json::from_value(json!({
+            "repo": { "owner": "acme", "name": "web" },
+            "number": 45,
+            "url": "https://github.com/acme/web/pull/45",
+            "sha": "3f2a1c9",
+            "session": "ses_r",
+            "findings": [
+                { "severity": "high", "title": "Retries never stop", "path": "src/sync/upload.rs", "line": 12 },
+                { "severity": "low", "title": "Typo", "path": "README.md", "line": 3 }
+            ]
+        }))
+        .ok();
+        let (data, what) = r.as_ref().map(findings).unwrap_or_default();
+        assert_eq!(what, "a review's 2 findings on web#45");
+        assert_eq!(data["review"]["findings"][0]["title"], "Retries never stop");
+        assert_eq!(data["kind"], "review");
     }
 
     #[test]

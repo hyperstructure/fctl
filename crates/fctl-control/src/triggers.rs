@@ -17,11 +17,12 @@ use crate::db::{Count, int, n, os, q, s};
 use crate::error::AppResult;
 use crate::model::ProjectRow;
 use crate::schedules::{self, Outcome, SCHEDULE_SELECT, ScheduleRow, Start};
+use fctl_domain::hooks::Kind;
 use fctl_domain::schedules::{self as sch, RunNote, StartedBy};
 use fctl_domain::triggers::{self as tg, Happened, ProjectRepo, Takes};
 use fctl_domain::webhooks;
 use fctl_proto::ScheduleRunId;
-use fctl_proto::api::{ScheduleEventKind, ScheduleRunOutcome, UnheardEvent};
+use fctl_proto::api::{ScheduleEventKind, ScheduleRunOutcome, ScheduleTrigger, UnheardEvent};
 use fctl_proto::event::MessageSource;
 use fctl_proto::session::{RepoAccess, RepoRef, SessionStatus};
 use serde::Deserialize;
@@ -486,6 +487,28 @@ async fn run(
     .run()
     .await?;
     schedules::trim_runs(db, &row.id, ctx.now).await?;
+    if let Some(run) = outcome.skipped(
+        id.clone(),
+        ScheduleTrigger::Event,
+        ctx.now,
+        Some(tg::run_event(h).url),
+    ) {
+        let (env, row, now) = (ctx.env.clone(), row.clone(), ctx.now);
+        ctx.defer(async move {
+            let db = env.d1("DB")?;
+            schedules::to_webhooks(
+                &env,
+                &db,
+                &row,
+                Kind::ScheduleRunSkipped,
+                Some(run),
+                None,
+                now,
+            )
+            .await;
+            Ok(())
+        });
+    }
     Ok(Some(matches!(outcome, Outcome::Started(_))))
 }
 
@@ -503,13 +526,13 @@ async fn decide(
     let skip = |why: String| Ok(Outcome::Skipped(why));
     if project.archived_at.is_some() {
         let why = "Its project is archived.";
-        schedules::pause(db, &row.id, why, now).await?;
+        schedules::pause(&ctx.env, db, &row.id, why, now).await?;
         return skip(why.into());
     }
     let owner = match schedules::owner(db, project, row).await? {
         Ok(o) => o,
         Err(why) => {
-            schedules::pause(db, &row.id, &why, now).await?;
+            schedules::pause(&ctx.env, db, &row.id, &why, now).await?;
             return skip(why);
         }
     };

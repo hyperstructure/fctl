@@ -379,6 +379,16 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         let env = ctx.env.clone();
         let db = crate::db::handle(&ctx.db);
         ctx.defer(async move { crate::housekeeping::purge_deleted(&env, &db).await });
+        let (env, sole) = (
+            ctx.env.clone(),
+            plan.sole.iter().map(|w| w.id.clone()).collect::<Vec<_>>(),
+        );
+        ctx.defer(async move {
+            for w in sole {
+                crate::hooks::purge(&env, &w).await?;
+            }
+            Ok(())
+        });
     }
     for w in &plan.successors {
         ctx.audit_in(

@@ -334,6 +334,14 @@ impl DurableObject for HooksObject {
                 }
                 Ok(serde_json::json!({ "ok": true }))
             }
+            "/forget-project" => {
+                let b = body!(HooksChanged);
+                self.changed(&b.workspace_id);
+                if let Some(project) = b.project_id {
+                    self.forget_project(&project);
+                }
+                Ok(serde_json::json!({ "ok": true }))
+            }
             "/health" => {
                 let b = body!(HooksHealth);
                 Ok(serde_json::json!(self.health(&b.webhooks)))
@@ -1220,6 +1228,19 @@ impl HooksObject {
         self.exec(
             "DELETE FROM events WHERE NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.event_id = events.id)",
             vec![],
+        );
+    }
+
+    /// Forgets a deleted project's events and their deliveries, and the
+    /// deliveries of its own webhooks, which went with it.
+    fn forget_project(&self, project_id: &str) {
+        self.exec(
+            "DELETE FROM deliveries WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",
+            vec![sv(project_id)],
+        );
+        self.exec(
+            "DELETE FROM events WHERE project_id = ?",
+            vec![sv(project_id)],
         );
     }
 

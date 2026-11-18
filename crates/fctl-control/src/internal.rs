@@ -582,13 +582,17 @@ pub struct HookEmit {
     pub at: Millis,
 }
 
-/// A workspace's webhooks changed in D1 (`/changed`), or one of them went
-/// (`/forget`, with `webhook_id`): its HooksObject reads them again.
+/// A workspace's webhooks changed in D1 (`/changed`), one of them went
+/// (`/forget`, with `webhook_id`), or a project did, with its webhooks
+/// (`/forget-project`): its HooksObject reads them again.
 #[derive(Serialize, Deserialize)]
 pub struct HooksChanged {
     pub workspace_id: String,
     #[serde(default)]
     pub webhook_id: Option<String>,
+    /// `/forget-project`: a deleted project, whose events go from the log.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// How some of a workspace's webhooks' deliveries went lately (`/health`).

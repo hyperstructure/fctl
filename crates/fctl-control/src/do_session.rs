@@ -16,6 +16,7 @@ use fctl_domain::diffs;
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::files;
 use fctl_domain::follow_ups;
+use fctl_domain::hooks::{self, Kind as HookKind, SessionExtra};
 use fctl_domain::journal::{self, Take};
 use fctl_domain::kept_images;
 use fctl_domain::notify;
@@ -308,6 +309,19 @@ const SILENCE: &str = "silence";
 /// (`fctl_domain::autopilot::cut_into`).
 const AUTOPILOT_SENT: &str = "autopilot_sent";
 
+/// How the session stood when its webhooks last heard of it
+/// (`fctl_domain::hooks::Stood`), so that each move sends its events once.
+const HOOKS_STOOD: &str = "hooks_stood";
+/// Its pull requests' states when its webhooks last heard of them (JSON:
+/// `[url, state]` pairs).
+const HOOKS_PULLS: &str = "hooks_pulls";
+/// The commits its pull requests were last said to be ready for review at
+/// (`fctl_domain::hooks::ready_for_review`'s key), and, while they are
+/// ready and not said yet, when they will be with which key (`at\nkey`):
+/// once they have stayed ready for `READY_SETTLE_MS`.
+const HOOKS_READY: &str = "hooks_ready";
+const HOOKS_READY_AT: &str = "hooks_ready_at";
+
 /// Whether `s` is one of the sessions an autopilot started.
 fn crew(s: &Session) -> bool {
     s.autopilot
@@ -530,6 +544,7 @@ impl DurableObject for SessionObject {
         self.index_now(now_ms()).await;
         self.expire_images(now_ms()).await;
         self.see_if_done(now_ms()).await;
+        self.ready_to_webhooks(now_ms()).await;
         Response::ok("ok")
     }
 }
@@ -641,6 +656,7 @@ impl SessionObject {
             self.set_meta("summary", &text);
         }
         self.mem.borrow_mut().summary = Some(s.clone());
+        self.hooks_moved(s);
     }
 
     /// On whose Claude subscription the session runs: who started it, until
@@ -933,6 +949,16 @@ impl SessionObject {
         // Its title too.
         self.mem.borrow_mut().search_due = true;
         self.search_soon(now).await;
+        if s.review.is_none() {
+            let started = hooks::session_event(
+                HookKind::SessionStarted,
+                &s,
+                &self.public_url(),
+                now,
+                SessionExtra::default(),
+            );
+            self.to_webhooks(&s, vec![started]);
+        }
         Ok(serde_json::json!({ "ok": true }))
     }
 
@@ -1232,33 +1258,39 @@ impl SessionObject {
         now: i64,
     ) -> std::result::Result<Delivered, ApiError> {
         let id = fctl_domain::ids::delivery_id(now);
-        self.deliver(Deliver {
-            delivery: Delivery {
-                id: id.clone(),
-                kind: DeliveryKind::Message {
-                    text: text.clone(),
-                    author: None,
-                    author_called: None,
-                    attachments: Vec::new(),
-                    autopilot: None,
+        let told = shown.as_ref().map(hooks::findings);
+        let delivered = self
+            .deliver(Deliver {
+                delivery: Delivery {
+                    id: id.clone(),
+                    kind: DeliveryKind::Message {
+                        text: text.clone(),
+                        author: None,
+                        author_called: None,
+                        attachments: Vec::new(),
+                        autopilot: None,
+                    },
                 },
-            },
-            client_key: Some(key),
-            by_autopilot: false,
-            event: EventBody::UserMessage(UserMessage {
-                ticket: None,
-                autopilot: None,
-                wake: None,
-                id,
-                author: None,
-                text,
-                source: fctl_proto::event::MessageSource::System,
-                attachments: Vec::new(),
-                follow_up: None,
-                review: shown,
-            }),
-        })
-        .await
+                client_key: Some(key),
+                by_autopilot: false,
+                event: EventBody::UserMessage(UserMessage {
+                    ticket: None,
+                    autopilot: None,
+                    wake: None,
+                    id,
+                    author: None,
+                    text,
+                    source: fctl_proto::event::MessageSource::System,
+                    attachments: Vec::new(),
+                    follow_up: None,
+                    review: shown,
+                }),
+            })
+            .await?;
+        if let Some(told) = told {
+            self.follow_up_to_webhooks(told, now);
+        }
+        Ok(delivered)
     }
 
     /// Someone passes on the findings of a review that fctl held back from
@@ -1657,6 +1689,7 @@ impl SessionObject {
         if f.events.is_empty() {
             return;
         }
+        let told = hooks::follow_up(&f);
         let text = follow_ups::message(&f);
         let id = fctl_domain::ids::delivery_id(now);
         for key in &keys {
@@ -1696,6 +1729,26 @@ impl SessionObject {
         if let Err(e) = delivered {
             worker::console_error!("passing a follow-up on: {}", e.message);
         }
+        self.follow_up_to_webhooks(told, now);
+    }
+
+    /// Tells the session's webhooks what brought its agent back
+    /// (`session.follow_up`): `told` is its data and its words.
+    fn follow_up_to_webhooks(&self, told: (serde_json::Value, String), now: i64) {
+        let Some(s) = self.summary().filter(|s| s.review.is_none()) else {
+            return;
+        };
+        let e = hooks::session_event(
+            HookKind::SessionFollowUp,
+            &s,
+            &self.public_url(),
+            now,
+            SessionExtra {
+                follow_up: Some(told),
+                ..Default::default()
+            },
+        );
+        self.to_webhooks(&s, vec![e]);
     }
 
     /// A message resumes a stopped session, on the Claude subscription it
@@ -1777,6 +1830,16 @@ impl SessionObject {
             if s.question.is_some() && matches!(s.status, SessionStatus::Idle) {
                 self.notify(&s, notify::Kind::Asking, now);
                 self.autopilot_moved(&s, None, now);
+            }
+            if s.question.is_some() && s.review.is_none() {
+                let asked = hooks::session_event(
+                    HookKind::SessionQuestion,
+                    &s,
+                    &self.public_url(),
+                    now,
+                    SessionExtra::default(),
+                );
+                self.to_webhooks(&s, vec![asked]);
             }
         }
         Ok(internal::Ask {
@@ -4491,6 +4554,163 @@ impl SessionObject {
             .and_then(|n| n.at);
         if let Some(at) = next {
             self.arm(at as i64).await;
+        }
+    }
+
+    // ───────────────────────────── webhooks ─────────────────────────────
+
+    fn public_url(&self) -> String {
+        crate::config::Config::from_env(&self.env).public_url
+    }
+
+    /// Hands the session's `events` to its workspace's webhooks
+    /// (`crate::hooks::emit`), after the answer: nothing a webhook does
+    /// holds the session up.
+    fn to_webhooks(&self, s: &Session, events: Vec<hooks::Event>) {
+        if events.is_empty() {
+            return;
+        }
+        let env = self.env.clone();
+        let workspace = s
+            .workspace
+            .as_ref()
+            .map(|w| w.id.0.clone())
+            .or_else(|| self.meta("workspace_id"));
+        self.state.wait_until(async move {
+            for e in events {
+                let kind = e.kind;
+                if let Err(err) = crate::hooks::emit(&env, workspace.as_deref(), e).await {
+                    worker::console_error!("webhooks: {}: {}", kind.as_str(), err.0.message);
+                }
+            }
+        });
+    }
+
+    /// What the session's change since its webhooks last heard of it sends
+    /// them: its status's events (`fctl_domain::hooks::moved`), its pull
+    /// requests' (`pull_moves`), and, once its pull requests have been
+    /// ready for review for a while, that they are (`ready_to_webhooks`).
+    /// A review's session sends none: its review's events say how it goes.
+    /// A session from before webhooks starts from how it stands now.
+    fn hooks_moved(&self, s: &Session) {
+        if s.review.is_some() {
+            return;
+        }
+        let now = now_ms();
+        let mut events = Vec::new();
+        let stood = hooks::Stood::of(s);
+        let before = self.meta(HOOKS_STOOD).and_then(|k| hooks::Stood::parse(&k));
+        if before != Some(stood) {
+            self.set_meta(HOOKS_STOOD, &stood.key());
+            if let Some(before) = before {
+                let base = self.public_url();
+                for kind in hooks::moved(before, stood) {
+                    let message = (kind == HookKind::SessionFinished)
+                        .then(|| self.meta("last_result"))
+                        .flatten();
+                    events.push(hooks::session_event(
+                        kind,
+                        s,
+                        &base,
+                        now,
+                        SessionExtra {
+                            previous_status: Some(before.status),
+                            message,
+                            follow_up: None,
+                        },
+                    ));
+                }
+            }
+        }
+        let pulls: Vec<(&str, Option<&str>)> = s
+            .pull_requests
+            .iter()
+            .map(|p| (p.url.as_str(), p.state.as_deref()))
+            .collect();
+        let pulls = serde_json::to_string(&pulls).unwrap_or_default();
+        let seen = self.meta(HOOKS_PULLS);
+        if seen.as_deref() != Some(pulls.as_str()) {
+            self.set_meta(HOOKS_PULLS, &pulls);
+            if let Some(seen) = seen {
+                let before: Vec<PullRequestRef> =
+                    serde_json::from_str::<Vec<(String, Option<String>)>>(&seen)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(url, state)| PullRequestRef {
+                            url,
+                            state,
+                            ..Default::default()
+                        })
+                        .collect();
+                let base = self.public_url();
+                for (kind, pr) in hooks::pull_moves(&before, &s.pull_requests) {
+                    events.push(hooks::pull_request_event(kind, s, pr, &base, now));
+                }
+            }
+        }
+        match hooks::ready_for_review(s) {
+            Some((_, key)) if self.meta(HOOKS_READY).as_deref() != Some(key.as_str()) => {
+                let waiting = self.meta(HOOKS_READY_AT);
+                if waiting
+                    .as_deref()
+                    .and_then(|w| w.split_once('\n'))
+                    .map(|(_, k)| k)
+                    != Some(key.as_str())
+                {
+                    let at = now + hooks::READY_SETTLE_MS;
+                    self.set_meta(HOOKS_READY_AT, &format!("{at}\n{key}"));
+                    let storage = self.state.storage();
+                    self.state.wait_until(async move {
+                        match storage.get_alarm().await {
+                            Ok(Some(set)) if set <= at => {}
+                            _ => {
+                                let _ = storage.set_alarm((at - now_ms()).max(0)).await;
+                            }
+                        }
+                    });
+                }
+            }
+            _ => self.delete_meta(HOOKS_READY_AT),
+        }
+        self.to_webhooks(s, events);
+    }
+
+    /// The session's pull requests stayed ready for review since
+    /// `hooks_moved` saw them so, with the same commits: its webhooks hear
+    /// that they wait for a person (`session.ready_for_review`), once for
+    /// those commits.
+    async fn ready_to_webhooks(&self, now: i64) {
+        let Some(waiting) = self.meta(HOOKS_READY_AT) else {
+            return;
+        };
+        let Some((at, key)) = waiting
+            .split_once('\n')
+            .and_then(|(at, key)| Some((at.parse::<i64>().ok()?, key.to_owned())))
+        else {
+            self.delete_meta(HOOKS_READY_AT);
+            return;
+        };
+        if at > now {
+            self.arm(at).await;
+            return;
+        }
+        self.delete_meta(HOOKS_READY_AT);
+        let Some(s) = self.summary() else {
+            return;
+        };
+        if let Some((_, now_key)) = hooks::ready_for_review(&s)
+            && now_key == key
+            && self.meta(HOOKS_READY).as_deref() != Some(key.as_str())
+        {
+            self.set_meta(HOOKS_READY, &key);
+            let e = hooks::session_event(
+                HookKind::SessionReadyForReview,
+                &s,
+                &self.public_url(),
+                now,
+                SessionExtra::default(),
+            );
+            self.to_webhooks(&s, vec![e]);
         }
     }
 
