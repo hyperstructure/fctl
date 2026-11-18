@@ -327,7 +327,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             let asked = GithubAccess::parse(v).ok_or_else(|| {
                 validation(
                     "github_access",
-                    "Use push, comment, triage or read, or \"\" for the project's",
+                    "Use push, comment, triage or read, or \"\" for its default: triage on an event anyone on GitHub can start, else the project's",
                 )
             })?;
             github(ctx, Some(asked), &p.row, when.event())?

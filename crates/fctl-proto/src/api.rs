@@ -3704,8 +3704,10 @@ pub struct Schedule {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub base_branch: Option<String>,
-    /// What its sessions' agents may do on GitHub; absent: as much as the
-    /// project allows. One this version doesn't know reads as `read`.
+    /// What its sessions' agents may do on GitHub: what it set, else
+    /// `triage` for a schedule anyone on GitHub can start (issues opened,
+    /// pull requests opened by anyone); absent: as much as the project
+    /// allows. One this version doesn't know reads as `read`.
     #[serde(default, deserialize_with = "crate::session::least_if_unknown")]
     pub github_access: Option<GithubAccess>,
     /// Its sessions stay off session lists (the Agent Floor, the sidebar,
@@ -4071,7 +4073,9 @@ pub struct CreateScheduleRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub base_branch: Option<String>,
-    /// At most what the project allows; absent: that much.
+    /// At most what the project allows; absent: its default, `triage` on
+    /// an event anyone on GitHub can start (issues opened, pull requests
+    /// opened by anyone), else as much as the project allows.
     pub github_access: Option<GithubAccess>,
     /// `true`: its sessions stay off session lists (`Schedule::hide_sessions`).
     pub hide_sessions: Option<bool>,
@@ -4104,7 +4108,8 @@ pub struct UpdateScheduleRequest {
     pub effort: Option<String>,
     /// `""` for the project's default branch.
     pub base_branch: Option<String>,
-    /// `push`, `comment`, `triage` or `read`; `""` for as much as the
+    /// `push`, `comment`, `triage` or `read`; `""` for its default:
+    /// `triage` on an event anyone on GitHub can start, else as much as the
     /// project allows.
     pub github_access: Option<String>,
     /// `true`: its sessions, those it started already too, stay off session

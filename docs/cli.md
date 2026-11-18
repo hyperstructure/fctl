@@ -751,7 +751,8 @@ sets up one without a time, which runs only when someone runs it, or
 another tool does, each run on the subscription of whoever runs it; a
 paused schedule starts nothing, not even then. `--model`,
 `--effort`, `--github` and `--base` say what its sessions start with,
-`default` for the project's. What `--context` says comes after the task;
+`default` for the project's (for `--github` on an event anyone on GitHub
+can start, triage). What `--context` says comes after the task;
 from an access token, its agent takes it as information, not instructions
 ([Automation](automation.md#start-agents-from-other-tools)). A project
 keeps at most 50 schedules.
