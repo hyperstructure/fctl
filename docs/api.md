@@ -265,7 +265,7 @@ closes it with 4403 once the caller may no longer see the session.
 |---|---|
 | `GET /api/v1/projects/{project}/schedules` | `{"schedules": […], "unheard": […]}`: each with `id`, `name`, `prompt`, `cron` or `at` or `event` (or none: runs when asked), `timezone`, `model`, `effort`, `base_branch`, `github_access`, `hide_sessions` (its sessions stay off session lists), `enabled`, `state` (`active`, `paused`, `done`), `paused_reason`, `problem`, `next_run_at`, `last_run`, `owner`; `unheard` lists the kinds of events that wouldn't start runs here, each with its `reason` (the GitHub App isn't subscribed to the event, say) |
 | `POST /api/v1/projects/{project}/schedules` | `{"name", "prompt", "cron" or "at" or "event", "timezone", "model", "effort", "base_branch", "github_access", "hide_sessions": true, "enabled": false}`: set one up, on the caller's subscription (people who start sessions in the project; tokens with `full` access) |
-| `GET`, `PATCH`, `DELETE /api/v1/schedules/{id}` | read, change (absent fields stay; `""` for the project's defaults; a `cron` or an `at` ends what it waited for, and an `event` its time; `"enabled": false` pauses it; `"run_as_me": true` takes it over, as a change or a resume by anyone but its owner does), delete |
+| `GET`, `PATCH`, `DELETE /api/v1/schedules/{id}` | read, change (absent fields stay; `""` for the defaults, the project's but `triage` for the `github_access` of a schedule anyone on GitHub can start; a `cron` or an `at` ends what it waited for, and an `event` its time; `"enabled": false` pauses it; `"run_as_me": true` takes it over, as a change or a resume by anyone but its owner does), delete |
 | `GET /api/v1/schedules/{id}/runs` | `{"runs": […], "next_before": …}`, newest first |
 | `POST /api/v1/schedules/{id}/runs` | `{"context": "…"}` (at most 20,000 characters): run it now, on the caller's subscription |
 
@@ -289,7 +289,11 @@ last 24 hours (absent: 3 and 10; at most 100 and 1,000, and an hour no
 more than a day): past either they start none, the run says why and
 until when, and so does the schedule's `problem` until then. A schedule
 always shows both. A `PATCH` with an `event` replaces what it waits for,
-and keeps the caps it doesn't give.
+and keeps the caps it doesn't give. A schedule that anyone on GitHub can
+start (`issue_opened`, or `pull_request_opened` with `"by": "anyone"`)
+runs at `triage` when it sets no `github_access`, which it then shows;
+set one (`"push"`) for more. Without one, others run at as much as the
+project allows, which they show as absent.
 
 A run is `{"id": "srn_…", "outcome": "started" | "skipped" | "failed",
 "reason", "trigger": "time" | "person" | "token" | "event", "by",

@@ -35,7 +35,8 @@ effort?: string,
  */
 base_branch?: string, 
 /**
- * `push`, `comment`, `triage` or `read`; `""` for as much as the
+ * `push`, `comment`, `triage` or `read`; `""` for its default:
+ * `triage` on an event anyone on GitHub can start, else as much as the
  * project allows.
  */
 github_access?: string, 

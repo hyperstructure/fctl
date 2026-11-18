@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import {
+  anyoneStarts,
   type Cron,
   capProblem,
   cronProblem,
   cronRepeat,
   DEFAULT_REPEAT,
+  defaultAccess,
   describeCaps,
   describeCron,
   describeEvent,
@@ -334,6 +336,27 @@ describe("events", () => {
     expect(eventBy(event({ kind: "pull_request_merged" }))).toBe("anyone");
     expect(eventBy(event({ kind: "pull_request_opened", by: "anyone" }))).toBe("anyone");
     expect(eventBy(event({ by: "other" }))).toBe("anyone");
+  });
+
+  it("triage what anyone on GitHub can start unless they say, as the control plane does", () => {
+    expect(anyoneStarts(event({ kind: "issue_opened" }))).toBe(true);
+    expect(anyoneStarts(event({ kind: "pull_request_opened", by: "anyone" }))).toBe(true);
+    for (const e of [
+      event({ kind: "pull_request_opened" }),
+      event({ kind: "issue_opened", by: "writers" }),
+      event({ kind: "issue_opened", by: "agents" }),
+      event({ kind: "issue_labeled" }),
+      event({ kind: "pull_request_merged" }),
+      event({ kind: "release_published" }),
+      event({ kind: "checks_failed" }),
+    ])
+      expect(anyoneStarts(e)).toBe(false);
+    expect(anyoneStarts(undefined)).toBe(false);
+    expect(defaultAccess(event({ kind: "issue_opened" }), "push")).toBe("triage");
+    // Never more than the project's.
+    expect(defaultAccess(event({ kind: "issue_opened" }), "read")).toBe("read");
+    expect(defaultAccess(event({ kind: "pull_request_merged" }), "push")).toBe("push");
+    expect(defaultAccess(undefined, "comment")).toBe("comment");
   });
 
   it("say what happened", () => {

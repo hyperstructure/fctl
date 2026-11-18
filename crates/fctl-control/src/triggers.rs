@@ -600,7 +600,7 @@ async fn decide(
             tg::short(h)
         ));
     }
-    let github = fctl_domain::limits::effective(row.github(), project.settings().github_access);
+    let github = fctl_domain::limits::effective(row.run_github(), project.settings().github_access);
     let previous = schedules::previous(db, &row.id).await?;
     let previous_at = previous.as_ref().map(|p| sch::stamp(&*zone, p.at));
     let when = row

@@ -2201,9 +2201,11 @@ another tool, runs one
    `GET`/`PATCH`/`DELETE /api/v1/schedules/{id}`): a name, the task its
    runs' agents get, when it runs (a time, an event or neither), and the
    model, effort level, base
-   branch and GitHub access its sessions start with, else the project's,
-   and never more on GitHub than the project allows now
-   (`limits::effective`). People who start sessions in the project set
+   branch and GitHub access its sessions start with, else the project's
+   (but triage for the GitHub access of one that anyone on GitHub can
+   start, item 6's `triggers::default_github`), and never more on GitHub
+   than the project allows now (`limits::effective`). People who start
+   sessions in the project set
    them up, on their own Claude subscription: the schedule's owner. The
    owner, and the project's maintainers and owners, change it; a change by
    anyone else, a resume or **Run it on my subscription** runs it on
@@ -2353,7 +2355,13 @@ another tool, runs one
    (`triggers::context`: the issue's or pull request's title, author and
    their association, labels, branches and text, cut at 8,000
    characters; the release's tag and notes; the commit and the checks
-   that failed). The run keeps what happened (`ScheduleRun.event`), which
+   that failed). A schedule that anyone on GitHub can start, on issues
+   opened or pull requests opened by anyone (`triggers::anyone_starts`),
+   runs at triage unless it sets more (`triggers::default_github`,
+   `ScheduleRow::run_github`, which the API shows as its
+   `github_access`), so that an outsider's text reaches an agent that
+   pushes only where someone chose that; others go by the project's.
+   The run keeps what happened (`ScheduleRun.event`), which
    the tab and `fctl schedules runs` show and link, and its trigger is
    `event`. The delivery's answer counts the runs it started
    (`"schedules"`). Since each kind needs its webhook event, the API says

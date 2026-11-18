@@ -8,6 +8,7 @@
 // (02:30 runs at 03:30), and one the clock goes through twice runs once, the first time, as there.
 
 import type * as G from "@/gen";
+import { lowerAccess } from "./github-access";
 import { dateTimeFormat, timeOptions } from "./hour-cycle";
 
 const MINUTE = 60_000;
@@ -674,6 +675,28 @@ export function capProblem(text: string, per: "hour" | "day"): string | undefine
 export function eventBy(e: Pick<G.ScheduleEvent, "kind" | "by">): G.ScheduleEventBy {
   if (e.by && e.by !== "other") return e.by;
   return e.kind === "pull_request_opened" ? "writers" : "anyone";
+}
+
+/**
+ * Whether anyone on GitHub can start a run of a schedule that waits for `e`, without anyone who may
+ * write to the repository doing anything first: an issue opened, or a pull request opened, by anyone
+ * (fctl_domain::triggers::anyone_starts).
+ */
+export function anyoneStarts(e: Pick<G.ScheduleEvent, "kind" | "by"> | undefined): boolean {
+  return !!e && (e.kind === "issue_opened" || e.kind === "pull_request_opened") && eventBy(e) === "anyone";
+}
+
+/**
+ * What the agents of a schedule that waits for `e` may do on GitHub when it doesn't say, in a project
+ * that lets them do `own` at most: triage for one anyone on GitHub can start, so that what an
+ * outsider wrote reaches an agent that pushes only where the schedule asks for it; else `own`
+ * (fctl_domain::triggers::default_github).
+ */
+export function defaultAccess(
+  e: Pick<G.ScheduleEvent, "kind" | "by"> | undefined,
+  own: G.GithubAccess,
+): G.GithubAccess {
+  return anyoneStarts(e) ? lowerAccess("triage", own) : own;
 }
 
 /** "a", "a or b", "a, b or c". */

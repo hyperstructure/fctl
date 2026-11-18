@@ -29,7 +29,9 @@ event?: ScheduleEvent,
  */
 timezone?: string, model?: string, effort?: string, base_branch?: string, 
 /**
- * At most what the project allows; absent: that much.
+ * At most what the project allows; absent: its default, `triage` on
+ * an event anyone on GitHub can start (issues opened, pull requests
+ * opened by anyone), else as much as the project allows.
  */
 github_access?: GithubAccess, 
 /**

@@ -511,6 +511,10 @@ its VM, and nothing outside it except through these channels:
   though it keeps the project's secrets, setup script and network, as
   other sessions do
   ([ADR 0075](adr/0075-agents-that-triage-write-labels-and-comments-through-fctl-alone.md)).
+  A schedule that anyone on GitHub can start, on issues opened or on pull
+  requests opened by anyone, runs at triage unless it sets more: doing
+  more takes choosing `push` or `comment` for it, which the form warns
+  about.
 - **Review agents** run on their operator's Claude subscription, with
   their Claude access token in the sandbox like any session's (another
   owner who changes how they review takes them over, so nobody changes
