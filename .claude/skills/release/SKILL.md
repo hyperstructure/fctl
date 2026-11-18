@@ -124,7 +124,10 @@ image, which runs a session before it publishes, ends the run after about
 - **After the tag was pushed** (a build or publish failed): if it was the
   infrastructure, run the failed jobs again (`gh run rerun <run-id>
   --failed`, or "Re-run failed jobs" on the run's page); Publish uses the
-  binaries the Build jobs made, which are kept for 7 days. Or rebuild the
+  binaries the Build jobs made, which are kept for 7 days, and packs the
+  same archives again byte for byte, so it uploads the files already
+  published. Homebrew tap and Sandbox image are skipped when Publish
+  fails, and run after it once it passes. Or rebuild the
   tag from the start with
   `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
   broken, fix it and release a patch.

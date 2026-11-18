@@ -234,9 +234,19 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: The installer sees it
         run: |
-          test "$(curl -fsS https://fctl.sh/releases/latest)" = "${TAG#v}"
+          # fctl.sh reads `latest` from KV, which each Cloudflare location
+          # caches for 60 seconds (fctl-site's worker, cacheTtl), and a write
+          # can take longer than that to reach them all: v0.36.0's check read
+          # the old version a second after the write. Wait for the new one.
+          for attempt in $(seq 30); do
+            latest="$(curl -fsS https://fctl.sh/releases/latest || true)"
+            if [ "$latest" = "${TAG#v}" ]; then break; fi
+            echo "fctl.sh/releases/latest says '$latest', not ${TAG#v} ($attempt/30)"
+            sleep 10
+          done
+          test "$latest" = "${TAG#v}"
           curl -fsSL https://fctl.sh/install | FCTL_INSTALL_DIR="$RUNNER_TEMP/bin" sh
-          "$RUNNER_TEMP/bin/fctl" --version
+          test "$("$RUNNER_TEMP/bin/fctl" --version)" = "fctl ${TAG#v}"
 
   # hyperstructure/homebrew-tap's brew bump workflow runs every day, and GitHub
   # starts it hours late at times, so this starts it with the version. It
