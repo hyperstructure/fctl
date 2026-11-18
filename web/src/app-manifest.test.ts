@@ -83,14 +83,13 @@ describe("the installable app", () => {
   });
 
   // What paints before the app's styles do takes the dark canvas from the
-  // design package: the title bar, the installed app's splash and the
-  // offline page, so that none of them shows a band of another dark.
+  // design package: the title bar and the installed app's splash, so that
+  // neither shows a band of another dark.
   it("gives what paints before the app the dark theme's canvas", () => {
     const canvas = themes.dark.canvas;
     const file = (path: string) => readFileSync(new URL(path, web), "utf8");
     expect(manifest).toMatchObject({ background_color: canvas, theme_color: canvas });
     expect(html).toContain(`<meta name="theme-color" content="${canvas}" />`);
     expect(file("public/theme.js")).toContain(`dark ? "${canvas}" : "${themes.light.canvas}"`);
-    expect(file("public/offline.html")).toMatch(new RegExp(`:root \\{\\s*--canvas: ${canvas};`));
   });
 });

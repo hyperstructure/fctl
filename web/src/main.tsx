@@ -11,12 +11,15 @@ import { openingWaits } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
 import { reopen } from "@/lib/reopen";
 import { syncShimmers } from "@/lib/shimmer";
+import { catchSkippedTransitions } from "@/lib/view-transition";
 import { watchViewport } from "@/lib/viewport";
 import { stopPinchZoom } from "@/lib/zoom";
 import { router } from "./router";
 
 // First: the log keeps how this run goes, for Settings → App log.
 startAppLog();
+// The first page's view transition, skipped when iOS starts the app in the background, is no error.
+catchSkippedTransitions();
 stopPinchZoom();
 syncShimmers();
 watchViewport();
@@ -29,8 +32,9 @@ try {
   localStorage.removeItem("fctl:session-view");
 } catch {}
 
-// Makes the app installable and shows an offline page (public/sw.js). Not in
-// development, where it would outlive the dev server on this origin.
+// The service worker shows notifications and opens what a click on one is about, and leaves page
+// loads to the browser (public/sw.js). Not in development, where it would outlive the dev server on
+// this origin.
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }

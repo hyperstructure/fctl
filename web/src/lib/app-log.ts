@@ -7,7 +7,9 @@
 // comes back from the background black, and stays so until it is closed (fctl#515 and before).
 // When the page itself still runs, the log says what it saw. When it didn't, the next run says
 // how the last one ended: on screen with the main thread stuck or the page gone, or in the
-// background, where iOS ends apps.
+// background, where iOS ends apps, and how long it still ran there. A black screen whose run
+// before was heard from through it had a page running that didn't show; one whose run before went
+// quiet minutes earlier, as iOS suspended it, had none that ran.
 //
 // Where the page still runs but shows nothing (React took the app down after an error it didn't
 // catch, or the screen came back with nothing on it), the app loads its page again
@@ -30,14 +32,14 @@ const LOG = "fctl:app-log";
 const OWNER = "fctl:app-log-owner";
 /** What `OWNER` starts with after a sign-out, before the run's ID. */
 const SIGNED_OUT = "signed-out:";
-/** localStorage: the run's heartbeat: when it was last heard from, and whether it was on screen then. */
+/** localStorage: the run's heartbeat: when it was last heard from, whether it was on screen then, and when it last was. */
 const BEAT = "fctl:app-beat";
 /** sessionStorage: the run's ID (a page load in a tab that has one is the run's own), and when it last reloaded to recover. */
 const RUNNING = "fctl:log-running";
 const RECOVERED = "fctl:recovered-at";
 /** Entries kept, the newest. */
 export const KEEP = 300;
-/** How often a run on screen says it is alive (ms). */
+/** How often a run says it is alive (ms), on screen, and in the background until the browser suspends it. */
 const BEAT_EVERY = 2_000;
 /** A gap this much longer than a beat on screen is the main thread stuck (ms). */
 const STALL = 3_000;
@@ -50,8 +52,15 @@ const RECOVER_EVERY = 60_000;
 
 /** The run's heartbeat. */
 export interface Beat {
+  /** When the run was last heard from (ms). */
   at: number;
+  /** Whether it was on screen then. */
   shown: boolean;
+  /**
+   * When it was last on screen (ms), or null if it never was. A heartbeat from before the app kept
+   * it has none: those runs beat only on screen, so their `at` is when they went to the background.
+   */
+  seen?: number | null;
 }
 
 /** The log as last read, which React shows until it changes. */
@@ -192,9 +201,13 @@ export function logText(log: Entry[], about: string): string {
 /** How the run before ended, as its last heartbeat tells, or nothing for a first run. */
 export function previousEnd(beat: Beat | undefined): string | undefined {
   if (!beat) return undefined;
-  return beat.shown
-    ? `The run before stopped while on screen: last heard at ${at(beat.at)}. Its page stopped, or was ended, without going to the background.`
-    : `The run before ended in the background: last on screen at ${at(beat.at)}.`;
+  if (beat.shown)
+    return `The run before stopped while on screen: last heard at ${at(beat.at)}. Its page stopped, or was ended, without going to the background.`;
+  if (beat.seen === undefined)
+    return `The run before ended in the background: last on screen at ${at(beat.at)}.`;
+  if (beat.seen === null)
+    return `The run before ended in the background, never on screen: last heard from at ${at(beat.at)}.`;
+  return `The run before ended in the background: last on screen at ${at(beat.seen)}, last heard from at ${at(beat.at)}.`;
 }
 
 /** The page's viewports and the screen, as `402×812 (visual 402×812 at 0), screen 402×874`. */
@@ -239,10 +252,22 @@ function onScreen(): string | undefined {
   return undefined;
 }
 
+function navigation(): PerformanceNavigationTiming | undefined {
+  return performance.getEntriesByType?.("navigation")[0] as PerformanceNavigationTiming | undefined;
+}
+
 /** How the page loaded: `navigate`, `reload`, `back_forward`. */
 function navigationType(): string {
-  const nav = performance.getEntriesByType?.("navigation")[0] as PerformanceNavigationTiming | undefined;
-  return nav?.type ?? "unknown";
+  return navigation()?.type ?? "unknown";
+}
+
+/**
+ * How long the page took to load, from when it was asked for to the app's script running, and
+ * whether the browser had a service worker answer for it: `1.2 s after it was asked for`.
+ */
+function loadTime(): string {
+  const took = `${duration(performance.now())} after it was asked for`;
+  return (navigation()?.workerStart ?? 0) > 0 ? `${took}, through the service worker` : took;
 }
 
 /** Which build of the app runs: its main script's name (`index-tOVBOagz.js`), or `dev`. */
@@ -360,7 +385,10 @@ export function startAppLog(): () => void {
   let before: Beat | undefined;
   try {
     const b = JSON.parse(localStorage.getItem(BEAT) ?? "null") as Partial<Beat> | null;
-    if (b && typeof b.at === "number" && typeof b.shown === "boolean") before = { at: b.at, shown: b.shown };
+    if (b && typeof b.at === "number" && typeof b.shown === "boolean") {
+      before = { at: b.at, shown: b.shown };
+      if (typeof b.seen === "number" || b.seen === null) before.seen = b.seen;
+    }
   } catch {}
   // Tabs run side by side, each with its own heartbeat: only an installed app's runs follow one
   // another.
@@ -369,34 +397,51 @@ export function startAppLog(): () => void {
     const end = previousEnd(before);
     if (end) record(end);
   }
+  const shown = () => document.visibilityState === "visible";
+  // iOS starts the app in the background at times, and loads its page there again after ending it.
+  const away = shown() ? "" : ", in the background";
   record(
-    `Started (${fresh ? "a fresh run" : "a page load in the same run"}, ${navigationType()}) in ${where()} at ${window.location.pathname}, build ${build()}; ${viewportNow()}`,
+    `Started (${fresh ? "a fresh run" : "a page load in the same run"}, ${navigationType()}) in ${where()} at ${window.location.pathname}${away}, build ${build()}, ${loadTime()}; ${viewportNow()}`,
   );
 
-  const shown = () => document.visibilityState === "visible";
+  // When the run was last on screen, or null while it hasn't been. With the heartbeat, which goes on
+  // in the background until the browser suspends the page, the next run can tell how long this one
+  // still ran there.
+  let seen: number | null = null;
   const beat = (on = shown()) => {
     if (!own) return;
+    const now = Date.now();
+    if (on) seen = now;
     try {
-      localStorage.setItem(BEAT, JSON.stringify({ at: Date.now(), shown: on }));
+      localStorage.setItem(BEAT, JSON.stringify({ at: now, shown: on, seen }));
     } catch {}
   };
   beat();
 
   let last = performance.now();
+  // Whether the page has been on screen since the last tick, or since it came back: only then is a
+  // late tick the main thread stuck. A page iOS suspended in the background ticks again as it comes
+  // back, often before it hears that it is on screen, and that gap is the time it was away.
+  let steady = shown();
   let hiddenAt: number | undefined;
   let look: ReturnType<typeof setTimeout> | undefined;
   const tick = setInterval(() => {
     const now = performance.now();
-    if (shown() && now - last > BEAT_EVERY + STALL)
+    const on = shown();
+    if (on && steady && now - last > BEAT_EVERY + STALL)
       record(`The main thread was stuck for ${duration(now - last - BEAT_EVERY)} on screen`);
     last = now;
-    if (shown()) beat();
+    steady = on;
+    beat(on);
   }, BEAT_EVERY);
 
   // A page that unloads goes hidden too: that isn't the app going to the background.
   let unloading = false;
   const visibility = () => {
     last = performance.now();
+    steady = shown();
+    // Hidden now, it was on screen until now.
+    if (!steady) seen = Date.now();
     beat();
     clearTimeout(look);
     if (unloading) return;
@@ -421,6 +466,7 @@ export function startAppLog(): () => void {
     if (e.persisted) record("Came back from the browser's page cache");
   };
   const pagehide = (e: PageTransitionEvent) => {
+    if (shown()) seen = Date.now();
     beat(false);
     unloading = !e.persisted;
     record(e.persisted ? "Left for the browser's page cache" : "Page unloading");

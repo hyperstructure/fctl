@@ -155,6 +155,20 @@ describe("previousEnd", () => {
     expect(previousEnd({ at: 0, shown: true })).toMatch(/^The run before stopped while on screen/);
     expect(previousEnd({ at: 0, shown: false })).toMatch(/^The run before ended in the background/);
   });
+
+  it("says how long a run that ended in the background still ran there", () => {
+    const t = (m: number, s: number) => new Date(2026, 10, 18, 9, m, s).getTime();
+    expect(previousEnd({ at: t(57, 21), shown: false, seen: t(56, 57) })).toBe(
+      "The run before ended in the background: last on screen at 2026-11-18 09:56:57, last heard from at 2026-11-18 09:57:21.",
+    );
+    expect(previousEnd({ at: t(52, 31), shown: false, seen: null })).toBe(
+      "The run before ended in the background, never on screen: last heard from at 2026-11-18 09:52:31.",
+    );
+    // Runs before the heartbeat said when they were last on screen beat only there.
+    expect(previousEnd({ at: t(56, 57), shown: false })).toBe(
+      "The run before ended in the background: last on screen at 2026-11-18 09:56:57.",
+    );
+  });
 });
 
 describe("viewportText", () => {
@@ -282,6 +296,44 @@ describe("startAppLog", () => {
     stop();
   });
 
+  it("keeps the heartbeat going in the background, for the next run to say how long", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 18, 9, 56, 50));
+    installed(true);
+    const stop = startAppLog();
+    vi.advanceTimersByTime(7_000);
+    setVisibility("hidden");
+    // iOS lets it run a while in the background, then suspends it, and later ends it.
+    vi.advanceTimersByTime(23_000);
+    expect(JSON.parse(localStorage.getItem("fctl:app-beat") ?? "{}")).toEqual({
+      at: new Date(2026, 10, 18, 9, 57, 20).getTime(),
+      shown: false,
+      seen: new Date(2026, 10, 18, 9, 56, 57).getTime(),
+    });
+    stop();
+    sessionStorage.clear();
+    const next = startAppLog();
+    expect(said()).toContain(
+      "The run before ended in the background: last on screen at 2026-11-18 09:56:57, last heard from at 2026-11-18 09:57:20.",
+    );
+    next();
+  });
+
+  it("says a run started in the background, and how long its page took to load", () => {
+    installed(true);
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    vi.spyOn(performance, "now").mockReturnValue(1_234);
+    const stop = startAppLog();
+    expect(said().at(-1)).toMatch(
+      /^Started \(a fresh run, .*\) in the installed app at \/, in the background, build dev, 1\.2 s after it was asked for; viewport /,
+    );
+    expect(JSON.parse(localStorage.getItem("fctl:app-beat") ?? "{}")).toMatchObject({
+      shown: false,
+      seen: null,
+    });
+    stop();
+  });
+
   it("loads the page again when the app comes back showing nothing", () => {
     vi.useFakeTimers();
     installed(true);
@@ -308,6 +360,36 @@ describe("startAppLog", () => {
     now = 13_000;
     vi.advanceTimersByTime(2_000);
     expect(said().at(-1)).toBe("The main thread was stuck for 9.0 s on screen");
+    stop();
+  });
+
+  it("doesn't take the time iOS kept the page suspended for the main thread stuck", () => {
+    vi.useFakeTimers();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const root = Object.assign(document.createElement("div"), { id: "root" });
+    root.append(document.createElement("main"));
+    document.body.append(root);
+    const stop = startAppLog();
+    now = 2_000;
+    vi.advanceTimersByTime(2_000);
+    setVisibility("hidden");
+    // Suspended in the background for a minute, it ticks again as it comes back, before it hears
+    // that it is on screen.
+    now = 62_000;
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    vi.advanceTimersByTime(2_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(said().some((w) => w.includes("stuck"))).toBe(false);
+    expect(said().at(-1)).toMatch(/^Came back after /);
+    // Stuck on screen after that, it still says so.
+    now = 64_000;
+    vi.advanceTimersByTime(2_000);
+    now = 75_000;
+    vi.advanceTimersByTime(2_000);
+    expect(said().filter((w) => w.includes("stuck"))).toEqual([
+      "The main thread was stuck for 9.0 s on screen",
+    ]);
     stop();
   });
 
