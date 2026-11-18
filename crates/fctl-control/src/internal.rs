@@ -657,6 +657,30 @@ pub struct HookDelivery {
     pub by: Option<UserRef>,
 }
 
+/// Checks an address a webhook is being added at or pointed to: posts it a
+/// challenge, signed with the webhook's secret, and says whether the
+/// answer gave it back (`/challenge`).
+#[derive(Serialize, Deserialize)]
+pub struct HookChallenge {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub webhook_id: String,
+    pub url: String,
+    /// A new webhook's secret, sealed as its row will keep it; a webhook
+    /// that exists signs with its own.
+    #[serde(default)]
+    pub sealed: Option<String>,
+}
+
+/// What `/challenge` found: why the answer doesn't let the webhook post
+/// there, or nothing when it gave the challenge back.
+#[derive(Serialize, Deserialize)]
+pub struct HookChallenged {
+    #[serde(default)]
+    pub refused: Option<String>,
+}
+
 /// A sample of event `kind` to a webhook, now (`/test`).
 #[derive(Serialize, Deserialize)]
 pub struct HookTest {

@@ -230,8 +230,9 @@ schedule's session finishes, a dashboard follows sessions and reviews.
      --events session.question,session.ready_for_review,session.failed
    ```
 
-   It shows the webhook's signing secret (`whsec_…`) once: keep it where
-   your receiver reads it. Those who manage the webhook read it again on
+   fctl first [checks the address](#checking-the-address): your receiver
+   answers its challenge. Then it shows the webhook's signing secret
+   (`whsec_…`) once: keep it where your receiver reads it. Those who manage the webhook read it again on
    its page (`fctl webhooks secret NAME`), and rotate it, which take
    confirming it's you where the instance asks for that.
 2. **Choose what it hears of**: every event or some ([Webhook
@@ -254,6 +255,32 @@ doesn't. A development instance takes `http://` and local addresses, to
 try a receiver on the same machine. The address field says what the
 instance takes, and so does `fctl webhooks events`. A change to a webhook
 reaches new events within half a minute.
+
+### Checking the address
+
+As a webhook is added, and as it's pointed elsewhere, fctl posts the
+address a challenge, as Slack does before its events go to an app, and
+saves the address only once the answer gives the challenge back. It
+shows that the address is yours and takes fctl's requests before any
+event goes there. The request is signed like the others, with
+`fctl-event: url_verification`:
+
+```json
+{
+  "id": "evt_01KC9R2W…",
+  "type": "url_verification",
+  "timestamp": "2026-11-17T14:01:52.113Z",
+  "challenge": "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO"
+}
+```
+
+Answer it with a 2xx status and the challenge, as text or as
+`{"challenge": "…"}` (or a form's `challenge=…`), within 10 seconds, and
+before checking its signature: a new webhook's secret reaches you only
+once fctl has added it. The challenge asks for nothing else, and nothing
+happened. An answer without it says why under the address (`fctl webhooks
+add` and `edit --url` say so too), and the webhook stays as it was. A
+workspace's webhooks post at most 20 challenges an hour.
 
 ### What a request carries
 
@@ -325,6 +352,8 @@ libraries check a request in one call:
 import { Webhook } from "standardwebhooks";
 
 // `body` is the request's body as it came, not parsed JSON.
+const sent = JSON.parse(body);
+if (sent.type === "url_verification") return new Response(sent.challenge); // fctl checking the address
 const event = new Webhook(process.env.FCTL_WEBHOOK_SECRET).verify(body, headers); // throws if it isn't fctl's
 if (event.workspace.id !== "wsp_01KB…" || event.project?.id !== "prj_01KB…") throw new Error("Not ours");
 ```

@@ -239,6 +239,14 @@ export function verifySnippet(language: SnippetLanguage, workspaceId: string, pr
   if (language === "node")
     return `import { createHmac, timingSafeEqual } from "node:crypto";
 
+// fctl checks an address before a webhook posts there: answer that request with
+// its challenge, before checking the signature, since a new webhook's secret
+// reaches you only once fctl has added it.
+export function challengeOf(body) {
+  const event = JSON.parse(body);
+  return event.type === "url_verification" ? event.challenge : undefined;
+}
+
 // \`body\` is the request's body as it came: the raw bytes, not parsed JSON.
 export function fromFctl(headers, body) {
   const id = headers["webhook-id"];
@@ -258,6 +266,13 @@ export function fromFctl(headers, body) {
   if (language === "python")
     return `import base64, hashlib, hmac, json, os, time
 
+# fctl checks an address before a webhook posts there: answer that request with
+# its challenge, before checking the signature, since a new webhook's secret
+# reaches you only once fctl has added it.
+def challenge_of(body: bytes):
+    event = json.loads(body)
+    return event.get("challenge") if event.get("type") == "url_verification" else None
+
 # \`body\` is the request's body as it came: the raw bytes, not parsed JSON.
 def from_fctl(headers, body: bytes) -> bool:
     msg_id = headers["webhook-id"]
@@ -276,7 +291,11 @@ def from_fctl(headers, body: bytes) -> bool:
         return False
     event = json.loads(body)
     return event["workspace"]["id"] == "${workspaceId}"${projectId ? ` and (event.get("project") or {}).get("id") == "${projectId}"` : ""}`;
-  return `1. Take the secret's bytes: base64-decode what follows whsec_.
+  return `0. A request whose type is url_verification is fctl checking the address before a
+   webhook posts there: answer it with 200 and its challenge, as text or as
+   {"challenge": "…"}, before the steps below (a new webhook's secret reaches you only
+   once fctl has added it).
+1. Take the secret's bytes: base64-decode what follows whsec_.
 2. Sign "<webhook-id>.<webhook-timestamp>.<body>" with HMAC-SHA256 and that key,
    the body byte for byte as it came, and base64-encode the result.
 3. It's fctl's when one of the space-separated signatures in webhook-signature,

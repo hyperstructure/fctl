@@ -194,12 +194,15 @@ describe("the form's starting points", () => {
 describe("verifySnippet", () => {
   it("checks the signature, the timestamp, then where a post says it comes from", () => {
     const node = verifySnippet("node", "wsp_1", "prj_1");
+    expect(node).toContain('event.type === "url_verification" ? event.challenge : undefined');
     expect(node).toContain('headers["webhook-signature"]');
     expect(node).toContain('event.workspace.id === "wsp_1" && event.project?.id === "prj_1"');
     const python = verifySnippet("python", "wsp_1");
     expect(python).toContain('event["workspace"]["id"] == "wsp_1"');
     expect(python).not.toContain("project");
     expect(verifySnippet("any", "wsp_1")).toContain("HMAC-SHA256");
+    expect(verifySnippet("any", "wsp_1")).toMatch(/^0\. A request whose type is url_verification/);
+    expect(verifySnippet("python", "wsp_1")).toContain('event.get("type") == "url_verification"');
   });
 });
 

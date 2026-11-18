@@ -752,7 +752,12 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   or says in its log that it couldn't, for one another user owns.
   One server at a time uses it (`server.lock`): two would each run the
   same sessions.
-- **Webhooks** go out from the server's own network. fctl refuses
+- **Webhooks** post only to an address that answered fctl's challenge
+  as the webhook was added there or pointed there
+  ([checking the address](automation.md#checking-the-address)), so that
+  fctl doesn't post a workspace's events where nobody set up a receiver
+  for them, or to someone else's server. They go out from the server's
+  own network. fctl refuses
   addresses that name a private, loopback or link-local IP address or a
   local name, but can't see where a public-looking name resolves: one
   that resolves to an address in the server's network reaches it there.

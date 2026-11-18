@@ -922,7 +922,8 @@ pub fn verify(
 pub struct Headers<'a> {
     pub event_id: &'a str,
     pub kind: &'a str,
-    pub delivery_id: &'a str,
+    /// None for an address's challenge, which is no delivery.
+    pub delivery_id: Option<&'a str>,
     pub webhook_id: &'a str,
     pub workspace_id: &'a str,
     pub project_id: Option<&'a str>,
@@ -951,10 +952,12 @@ impl Headers<'_> {
             ("webhook-timestamp".into(), self.timestamp.to_string()),
             ("webhook-signature".into(), self.signature.into()),
             ("fctl-event".into(), self.kind.into()),
-            ("fctl-delivery".into(), self.delivery_id.into()),
-            ("fctl-webhook".into(), self.webhook_id.into()),
-            ("fctl-workspace-id".into(), self.workspace_id.into()),
         ];
+        if let Some(d) = self.delivery_id {
+            h.push(("fctl-delivery".into(), d.into()));
+        }
+        h.push(("fctl-webhook".into(), self.webhook_id.into()));
+        h.push(("fctl-workspace-id".into(), self.workspace_id.into()));
         if let Some(p) = self.project_id {
             h.push(("fctl-project-id".into(), p.into()));
         }
@@ -969,6 +972,94 @@ impl Headers<'_> {
 /// Headers the delivery log shows with their value hidden.
 pub fn hidden_header(name: &str) -> bool {
     name.eq_ignore_ascii_case("webhook-signature")
+}
+
+// ───────────────────────────── an address's challenge ─────────────────────────────
+
+/// The type of the request that checks an address as a webhook is added
+/// there or pointed there, as Slack's Events API names its own: the address
+/// answers it with its `challenge`, which shows that it takes fctl's
+/// requests before any event goes there.
+pub const CHALLENGE: &str = "url_verification";
+
+/// The challenges a workspace's webhooks may post in an hour, to addresses
+/// people add them at or point them to: fctl doesn't knock on an address
+/// over and over for whoever asks.
+pub const CHALLENGES_PER_HOUR: u32 = 20;
+
+/// A challenge, from 32 random bytes: base64url, 43 characters.
+pub fn challenge(bytes: &[u8; 32]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// What fctl posts to check an address, at `at`: the challenge, and no
+/// more of the workspace than its headers carry.
+pub fn challenge_body(event_id: &str, challenge: &str, at: i64) -> String {
+    json!({
+        "id": event_id,
+        "type": CHALLENGE,
+        "timestamp": crate::account::iso8601(at),
+        "challenge": challenge,
+    })
+    .to_string()
+}
+
+/// Whether an answer's `body` gives `challenge` back, as Slack takes one:
+/// the challenge as text, JSON's `{"challenge": …}`, or a form's
+/// `challenge=…`.
+pub fn gives_back(challenge: &str, body: &str) -> bool {
+    let body = body.trim();
+    body == challenge
+        || serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|v| {
+                v.get("challenge")
+                    .and_then(Value::as_str)
+                    .map(|c| c == challenge)
+            })
+            .unwrap_or(false)
+        || url::form_urlencoded::parse(body.as_bytes())
+            .any(|(k, v)| k == "challenge" && v == challenge)
+}
+
+/// Why an address's answer to fctl's challenge, its `status` (none when no
+/// answer came, for `error`) and `body`, doesn't let a webhook post there,
+/// in the API's words; None when it gave the challenge back.
+pub fn challenge_refused(
+    challenge: &str,
+    status: Option<u16>,
+    error: Option<&str>,
+    body: Option<&str>,
+) -> Option<String> {
+    const ANSWER: &str = "It answers fctl's url_verification request with the challenge, before it checks the signature: a new webhook's secret reaches it only once the webhook is added";
+    let Some(status) = status else {
+        return Some(format!(
+            "fctl posted a challenge to this address and got no answer: {}. {ANSWER}",
+            error.unwrap_or("no answer").trim_end_matches('.')
+        ));
+    };
+    if (300..400).contains(&status) {
+        return Some(format!(
+            "This address answered fctl's challenge with {}",
+            status_error(status).trim_end_matches('.')
+        ));
+    }
+    if !delivered(status) {
+        return Some(format!(
+            "This address answered fctl's challenge with HTTP {status}. {ANSWER}"
+        ));
+    }
+    if body.is_some_and(|b| gives_back(challenge, b)) {
+        return None;
+    }
+    let said: String = body.unwrap_or_default().trim().chars().take(60).collect();
+    Some(if said.is_empty() {
+        format!("This address answered fctl's challenge with nothing. {ANSWER}")
+    } else {
+        format!(
+            "This address answered fctl's challenge with \"{said}\" rather than the challenge. {ANSWER}"
+        )
+    })
 }
 
 // ───────────────────────────── retries and limits ─────────────────────────────
@@ -2552,7 +2643,7 @@ mod tests {
         let h = Headers {
             event_id: "evt_1",
             kind: "session.finished",
-            delivery_id: "whd_1",
+            delivery_id: Some("whd_1"),
             webhook_id: "whk_1",
             workspace_id: "wks_1",
             project_id: Some("prj_1"),
@@ -2683,6 +2774,48 @@ mod tests {
         assert_eq!(
             settle(By::Test, Pending, None, false, 0, now, None).done_at,
             Some(now)
+        );
+    }
+
+    #[test]
+    fn an_address_answers_fctl_s_challenge_before_a_webhook_posts_there() {
+        let c = challenge(&[7; 32]);
+        assert_eq!(c.len(), 43);
+        let body: Value = serde_json::from_str(&challenge_body("evt_1", &c, 0)).unwrap_or_default();
+        assert_eq!(body["type"], "url_verification");
+        assert_eq!(body["challenge"], c.as_str());
+        assert_eq!(body["timestamp"], "1970-01-01T00:00:00.000Z");
+        // Given back as Slack takes it: text, JSON or a form.
+        for answer in [
+            c.clone(),
+            format!("  {c}\n"),
+            format!(r#"{{"challenge": "{c}"}}"#),
+            format!("challenge={c}"),
+        ] {
+            assert_eq!(
+                challenge_refused(&c, Some(200), None, Some(&answer)),
+                None,
+                "{answer}"
+            );
+        }
+        let refused = |status: Option<u16>, error: Option<&str>, body: Option<&str>| {
+            challenge_refused(&c, status, error, body).unwrap_or_default()
+        };
+        assert!(
+            refused(Some(200), None, Some("ok")).contains("with \"ok\" rather than the challenge")
+        );
+        assert!(refused(Some(204), None, None).contains("with nothing"));
+        assert!(
+            refused(Some(200), None, Some(r#"{"challenge": "another"}"#)).contains("rather than")
+        );
+        assert!(
+            refused(Some(401), None, Some(&c))
+                .starts_with("This address answered fctl's challenge with HTTP 401. It answers")
+        );
+        assert!(refused(Some(302), None, None).contains("a redirect, which fctl doesn't follow"));
+        assert!(
+            refused(None, Some("No answer within 10 seconds."), None)
+                .starts_with("fctl posted a challenge to this address and got no answer: No answer within 10 seconds. It answers")
         );
     }
 

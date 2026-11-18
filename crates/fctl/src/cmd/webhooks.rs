@@ -58,7 +58,9 @@ pub enum WebhooksCmd {
     #[command(visible_alias = "ls")]
     List,
     /// Add a webhook: the workspace's (its admins), or a project's (-p, its
-    /// owners and maintainers). Prints its signing secret, once.
+    /// owners and maintainers). fctl first posts the address a challenge
+    /// (type url_verification), which it answers with the challenge. Prints
+    /// its signing secret, once.
     #[command(after_help = "Examples:
   fctl webhooks add https://hooks.example.com/fctl --name \"Deploy bot\" --events session.ready_for_review
   fctl webhooks add https://example.com/hook -p web --events session.question,session.ready_for_review,session.failed
@@ -90,7 +92,8 @@ pub enum WebhooksCmd {
     Edit {
         /// Its id (whk_…), name or host.
         webhook: String,
-        /// Where fctl posts its events from now on.
+        /// Where fctl posts its events from now on, once the address answers
+        /// fctl's challenge.
         #[arg(long)]
         url: Option<String>,
         /// A new name; empty for none.
@@ -309,7 +312,7 @@ pub async fn run(server: Option<&str>, args: WebhooksArgs, json: bool) -> Result
             let w = &created.webhook;
             let names = project_names(&api, &place, std::slice::from_ref(w)).await;
             eprintln!(
-                "Added {} ({}): {}",
+                "Added {} ({}), whose address answered fctl's challenge: {}",
                 style::bold(&title(w)),
                 w.id,
                 describe(w, &names)

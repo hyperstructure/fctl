@@ -57,6 +57,16 @@ address outside fctl.
   receiver switches without missing a delivery. Adding a webhook,
   pointing one elsewhere, and reading or rotating its secret are sensitive actions
   ([ADR 0039](0039-sensitive-actions-take-a-passkey-or-a-code.md)).
+- **An address answers a challenge before a webhook posts there**, as
+  Slack's Events API checks an app's: adding a webhook, or pointing one
+  elsewhere, first posts the address a signed `url_verification` request
+  whose answer gives its `challenge` back, so that a webhook's events go
+  only where someone set up a receiver for them, and fctl can't be
+  pointed at another's server. A new webhook's secret reaches its
+  receiver only once the webhook exists, so receivers answer the
+  challenge before checking signatures; it asks for nothing else. Tools
+  that only take requests, without answering them as asked, need a
+  receiver of one's own in front.
 - **A Durable Object per workspace sends them** (`HooksObject`), from a
   queue in its storage, so that nothing a receiver does slows a session
   down: sources hand it an event after their answer (`wait_until`), only

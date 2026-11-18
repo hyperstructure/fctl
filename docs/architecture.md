@@ -3686,7 +3686,13 @@ what happens to as it happens, signed with each one's secret
    HooksDO checks each address again before it posts, so that settings
    narrowed since stop it. A self-hosted control plane can't check where
    a name resolves, so a name that resolves to its own network reaches it
-   there. Adding one, pointing
+   there. Before an address is saved, as a webhook is added there or
+   pointed there, the workspace's HooksDO posts it a challenge
+   (`/challenge`, `hooks::challenge`): a `url_verification` request,
+   signed with the new webhook's secret (sealed in the request) or the
+   webhook's own, which the answer gives back as text, `{"challenge"}` or
+   a form, as Slack's Events API takes one; at most 20 a workspace an hour
+   (`CHALLENGES_PER_HOUR`, counted in `sends`). Adding one, pointing
    one elsewhere, and reading or rotating its secret are sensitive actions
    (`Sensitive::AddWebhook`); limited access tokens and autopilots reach
    none of it but the list of events. A project's page lists the

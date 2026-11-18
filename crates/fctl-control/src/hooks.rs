@@ -400,6 +400,39 @@ pub async fn forget_project(
     Ok(())
 }
 
+/// Checks that `url` takes fctl's requests before a webhook is added there
+/// (`sealed`: the new webhook's secret) or pointed there: its workspace's
+/// HooksObject posts it a challenge, and an answer that doesn't give the
+/// challenge back is an error on `url` that says why.
+pub async fn challenge(
+    env: &Env,
+    workspace_id: &str,
+    project_id: Option<&str>,
+    webhook_id: &str,
+    url: &str,
+    sealed: Option<String>,
+) -> AppResult<()> {
+    let stub = internal::hooks_stub(env, workspace_id)?;
+    let answer: internal::HookChallenged = internal::post(
+        &stub,
+        "/challenge",
+        &internal::HookChallenge {
+            workspace_id: workspace_id.to_owned(),
+            project_id: project_id.map(str::to_owned),
+            webhook_id: webhook_id.to_owned(),
+            url: url.to_owned(),
+            sealed,
+        },
+    )
+    .await?;
+    match answer.refused {
+        None => Ok(()),
+        Some(why) => Err(crate::error::AppError(fctl_proto::ApiError::validation(
+            "url", &why,
+        ))),
+    }
+}
+
 /// Forgets everything a deleted workspace's webhooks sent.
 pub async fn purge(env: &Env, workspace_id: &str) -> AppResult<()> {
     forget_cached(workspace_id);

@@ -17,8 +17,8 @@ use crate::ctx::now_ms;
 use crate::error::AppResult;
 use crate::hooks::{self as hook_rows, HookRow};
 use crate::internal::{
-    self, HookDeliveries, HookDelivery, HookEmit, HookResendFailed, HookTest, HooksChanged,
-    HooksHealth, HooksHealthAnswer,
+    self, HookChallenge, HookChallenged, HookDeliveries, HookDelivery, HookEmit, HookResendFailed,
+    HookTest, HooksChanged, HooksHealth, HooksHealthAnswer,
 };
 use fctl_domain::hooks::{self as rules, By, Headers, Kind};
 use fctl_proto::hooks::{
@@ -58,6 +58,8 @@ const RESEND_FAILED_EVERY_MS: i64 = 10 * 60_000;
 const BODY_MAX: usize = 256 * 1024;
 const HOUR: i64 = 3_600_000;
 const DAY: i64 = 24 * HOUR;
+/// What `sends` counts a workspace's challenges by, beside its webhooks.
+const CHALLENGES: &str = "challenges";
 
 fn sv(s: &str) -> SqlStorageValue {
     SqlStorageValue::from(s)
@@ -364,6 +366,10 @@ impl DurableObject for HooksObject {
             "/test" => {
                 let b = body!(HookTest);
                 self.test(b).await.map(|d| serde_json::json!(d))
+            }
+            "/challenge" => {
+                let b = body!(HookChallenge);
+                self.challenge(b).await.map(|c| serde_json::json!(c))
             }
             "/resend-failed" => {
                 let b = body!(HookResendFailed);
@@ -807,7 +813,7 @@ impl HooksObject {
                 let headers = Headers {
                     event_id: &d.event_id,
                     kind: &d.kind,
-                    delivery_id: &d.id,
+                    delivery_id: Some(&d.id),
                     webhook_id: &hook.id,
                     workspace_id: &hook.workspace_id,
                     project_id: d.project_id.as_deref(),
@@ -1047,6 +1053,80 @@ impl HooksObject {
             .ok_or_else(|| ApiError::not_found("Delivery"))?;
         self.rearm(now_ms()).await;
         Ok(d.to_delivery(self.body(&d.event_id)))
+    }
+
+    /// Posts a challenge to an address a webhook is being added at or
+    /// pointed to, signed with the webhook's secret (a new one's, sealed in
+    /// `b`; else its own), and says whether the answer gave it back. The
+    /// workspace's webhooks post at most `CHALLENGES_PER_HOUR` of them an
+    /// hour, counted as they're asked for, as tests and resends are.
+    async fn challenge(&self, b: HookChallenge) -> std::result::Result<HookChallenged, ApiError> {
+        let now = now_ms();
+        let sent = self.number(
+            "SELECT COUNT(*) AS n FROM sends WHERE webhook_id = ? AND at > ?",
+            vec![sv(CHALLENGES), iv(now - HOUR)],
+        );
+        if sent >= i64::from(rules::CHALLENGES_PER_HOUR) {
+            return Err(err(
+                ErrorCode::RateLimited,
+                format!(
+                    "This workspace's webhooks checked {} addresses in the last hour, the most they may. Try again in an hour.",
+                    rules::CHALLENGES_PER_HOUR
+                ),
+            ));
+        }
+        self.exec(
+            "INSERT INTO sends (webhook_id, at, manual) VALUES (?, ?, 1)",
+            vec![sv(CHALLENGES), iv(now)],
+        );
+        let cfg = Config::from_env(&self.env);
+        // The API checked the address; settings narrowed since it did refuse it too.
+        let url = rules::check_url(&b.url, &cfg.webhook_reach)?;
+        let keys = crate::crypto::keys(&cfg).map_err(|e| e.0)?;
+        let signing = match &b.sealed {
+            Some(sealed) => hook_rows::open_secret(&keys, &b.webhook_id, sealed)
+                .map(|s| rules::key(&s).into_iter().collect::<Vec<_>>())
+                .map_err(|e| e.0)?,
+            None => self
+                .hook(&b.workspace_id, &b.webhook_id)
+                .await?
+                .signing_keys(&keys, now)
+                .map_err(|e| e.0)?,
+        };
+        if signing.is_empty() {
+            return Err(err(
+                ErrorCode::Internal,
+                "fctl couldn't open the webhook's secret to sign its challenge.",
+            ));
+        }
+        let challenge = rules::challenge(&fctl_domain::random_bytes::<32>());
+        let event_id = fctl_domain::ids::new_id(WebhookEventId::PREFIX, now);
+        let body = rules::challenge_body(&event_id, &challenge, now);
+        let timestamp = now / 1000;
+        let signature = rules::signatures(&signing, &event_id, timestamp, body.as_bytes());
+        let headers = Headers {
+            event_id: &event_id,
+            kind: rules::CHALLENGE,
+            delivery_id: None,
+            webhook_id: &b.webhook_id,
+            workspace_id: &b.workspace_id,
+            project_id: b.project_id.as_deref(),
+            timestamp,
+            signature: &signature,
+            attempt: 1,
+            version: env!("CARGO_PKG_VERSION"),
+            test: false,
+        }
+        .to_vec();
+        let posted = post(&url, &headers, &body).await;
+        Ok(HookChallenged {
+            refused: rules::challenge_refused(
+                &challenge,
+                posted.status,
+                posted.error.as_deref(),
+                posted.response.as_ref().and_then(|r| r.body.as_deref()),
+            ),
+        })
     }
 
     /// Posts a sample of an event to a webhook now, marked a test.

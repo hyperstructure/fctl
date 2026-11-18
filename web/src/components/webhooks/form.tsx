@@ -66,6 +66,8 @@ export function WebhookForm({
     [someProjects, projects, chosenProjects],
   );
   const problem = urlProblem(url, reach);
+  // A new address, which fctl posts a challenge to before the webhook points there.
+  const checking = !webhook || url.trim() !== webhook.url;
   const missing = !url.trim()
     ? "Give the address fctl posts to."
     : !every && events.length === 0
@@ -186,12 +188,16 @@ export function WebhookForm({
       {save.error && !failure?.field && <Banner tone="error">{save.error.message}</Banner>}
 
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-t border-line pt-4">
-        <p className="min-w-0 text-[12.5px] leading-snug text-ink-3">
+        <p className="min-w-0 text-[12.5px] leading-snug text-ink-3" aria-live="polite">
           {touched && missing
             ? missing
-            : webhook
-              ? "Changes reach new events within half a minute."
-              : "Adding it shows its signing secret, once."}
+            : save.isPending && checking
+              ? "Checking the address: fctl posted it a challenge, which it answers with the challenge…"
+              : !webhook
+                ? "fctl first posts the address a challenge, which your receiver answers with it; then its signing secret shows, once."
+                : checking
+                  ? "fctl first posts the new address a challenge, which your receiver answers with it."
+                  : "Changes reach new events within half a minute."}
         </p>
         <div className="flex gap-2 max-sm:ml-auto">
           <Button variant="ghost" onClick={() => onDone()}>

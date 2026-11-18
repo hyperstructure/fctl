@@ -219,6 +219,17 @@ async fn create(
     let keys = ctx.keys()?;
     let id = fctl_domain::ids::new_id(WebhookId::PREFIX, ctx.now);
     let secret = rules::secret(&fctl_domain::random_bytes::<32>());
+    let sealed = rows::seal_secret(&keys, &id, &secret)?;
+    // The address takes fctl's requests before the webhook exists.
+    rows::challenge(
+        &ctx.env,
+        workspace_id,
+        project_id,
+        &id,
+        &c.url,
+        Some(sealed.clone()),
+    )
+    .await?;
     let user = ctx.user()?.id.clone();
     let enabled = body.enabled.unwrap_or(true);
     q(
@@ -234,7 +245,7 @@ async fn create(
             s(&json!(c.events).to_string()),
             s(&json!(c.projects).to_string()),
             s(&json!(c.started_by).to_string()),
-            s(&rows::seal_secret(&keys, &id, &secret)?),
+            s(&sealed),
             b(enabled),
             s(&user),
             n(ctx.now),
@@ -359,8 +370,19 @@ pub async fn update(ctx: &Ctx, req: &mut Request, id: &str) -> AppResult<Respons
         Some(o) => Some(rules::check_started_by(o).map_err(AppError)?),
         None => None,
     };
-    if moved {
+    if let Some(u) = url.as_deref().filter(|_| moved) {
         ctx.verified(Sensitive::AddWebhook)?;
+        // The new address takes fctl's requests before the webhook points
+        // there; until then, it posts where it did.
+        rows::challenge(
+            &ctx.env,
+            &row.workspace_id,
+            row.project_id.as_deref(),
+            &row.id,
+            u,
+            None,
+        )
+        .await?;
     }
     let enabled = body.enabled.unwrap_or(row.enabled);
     let turned_on = enabled && !row.enabled;

@@ -855,7 +855,7 @@ a project's owners and maintainers add its own (`-p`):
 fctl webhooks -w acme                          # the workspace's webhooks and its projects', how each stands
 fctl webhooks -p web                           # web's own, and the workspace's that send its events
 fctl webhooks add https://hooks.example.com/fctl -p web --name "Deploy bot" \
-  --events session.question,session.ready_for_review,session.failed     # prints its secret, once
+  --events session.question,session.ready_for_review,session.failed     # once the address answers fctl's challenge; prints its secret, once
 fctl webhooks add https://example.com/reviews -w acme --events "review.*" --projects web,api
 fctl webhooks add https://example.com/nightly -w acme --events session.started,session.stopped --started-by schedules
 fctl webhooks show "Deploy bot" -p web         # by name, host or id: what it posts, how it stands, its newest deliveries
