@@ -449,6 +449,11 @@ Sessions a limited token starts are yours, in your lists, on your Claude
 subscription, but they don't notify you: follow the ones you want with the
 bell on their page or `fctl follow`.
 
+To create people's accounts and put them in workspaces and projects from
+your identity provider or a script, a self-hosted instance can let its
+admins make admin tokens instead
+([Provision people with admin tokens](self-hosting.md#provision-people-with-admin-tokens)).
+
 ## What agents may do on GitHub
 
 Each session's agent pushes, comments, triages or only reads, in the

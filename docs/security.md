@@ -142,6 +142,26 @@ owner and purpose), so a value copied between rows does not decrypt.
   sessions may hold its agents lower: one that does everything could
   change the settings that steer them. Make them expire, and revoke one that may have
   leaked in Settings or with `fctl tokens revoke`.
+- **Admin tokens** (`fctl_adm_…`) exist only where a self-hosted
+  instance's deployment turns them on (`FCTL_ADMIN_TOKENS=1`): app.fctl.sh
+  takes none, makes none, and a test checks that its configuration never
+  sets the variable. An instance admin makes one, which takes confirming
+  it's them where the instance asks for that, and it acts as them while
+  they are an active admin. It reaches the admin API's people endpoints
+  alone, by the same kind of rule in the router as limited tokens: it
+  creates accounts, changes people's names, addresses, commit emails,
+  pictures and Claude tokens, places them in any workspace and project,
+  and disables and deletes them, but changes no roles, nor the allowlist,
+  invitations, the instance's settings, or anything inside projects, and
+  makes no other token. No token changes the primary instance owner's
+  account, so that a leaked one can't point their address elsewhere and
+  take the instance over, and only the primary owner's change admins'.
+  Whoever holds one can still take over any member's account (changing
+  their address, then resetting their password), so keep it where you
+  keep your identity provider's secrets, make it expire, and revoke it
+  under Admin → Settings → Admin tokens, or with `fctl admin tokens
+  revoke`, when it may have leaked; the audit log marks everything one
+  did, and with which.
 - Sign-in, signup and reset endpoints are rate limited per address and per
   account; unknown emails take as long to fail as known ones. Signing up
   without an invitation, asking for a password reset or for early access,

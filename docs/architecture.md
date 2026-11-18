@@ -130,7 +130,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   issued through the device flow), `fctl_pat_` (personal access token,
   which may be limited: [Access tokens](#access-tokens)), `fctl_rt_`
   (runner), `fctl_et_` (an enrollment token, the workspace's or one of its
-  members', which only enrolls runners: [Enrollment tokens](#enrollment-tokens)).
+  members', which only enrolls runners: [Enrollment tokens](#enrollment-tokens)),
+  `fctl_adm_` (an instance admin's, which provisions people where the
+  deployment allows it: [Admin tokens](#admin-tokens)).
 - Cookie requests that change state must come from the app's origin
   (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
   `application/octet-stream`, which browsers cannot send cross-site without
@@ -494,6 +496,72 @@ have none. A control plane from before limits ignores them and makes a
 token without any, so `fctl token` revokes such a token and says so. The
 audit log records each token's limits as it is made, and which token
 started a session.
+
+### Admin tokens
+
+An organization that runs its own instance provisions people from its
+identity provider or HR system with admin tokens (`fctl_adm_…`,
+`fctl_domain::admin_tokens`,
+[ADR 0085](adr/0085-admin-tokens-provision-people-on-self-hosted-instances.md)).
+They exist only where the deployment turns them on (`FCTL_ADMIN_TOKENS=1`,
+`Config::admin_tokens`, which `admin_tokens = true` in `deploy/instances`
+sets, and the standalone server passes on); app.fctl.sh's never does, and
+`xtask`'s deploy tests check that its config doesn't. `Features::admin_tokens`
+tells the web app, which shows Admin → Settings → Admin tokens there, and
+elsewhere only the tokens left from when it did, to revoke.
+
+- **Making them.** Instance admins make them signed in (`POST
+  /api/v1/admin/tokens`, `fctl admin tokens create`; confirming it's them
+  first: `Sensitive::NewAdminToken`), list every one with who made it, and
+  revoke anyone's (`DELETE /api/v1/admin/tokens/{id}`). D1 keeps each one's
+  SHA-256, name, maker and expiry (`admin_tokens`), apart from `tokens`,
+  whose kinds clients know.
+- **Who they are.** `auth::authenticate` resolves one to the admin who
+  made it (`Authed::admin_token`), while the instance takes them, it
+  hasn't expired and its maker is an active admin: a token whose maker
+  was demoted, disabled or deleted stops working, and goes with their
+  other tokens (`auth::revoke_tokens`, `api::account::erase`, demotion in
+  `api::admin::update_user`). An instance that requires two-factor
+  sign-in holds the maker's tokens to it, as it does their sign-ins. Only
+  as a bearer token: one in a cookie is ignored.
+- **What they reach.** The router refuses one everything but the admin
+  API's people endpoints before a handler runs
+  (`admin_tokens::allows`): the list of people and workspaces, creating
+  (`POST /api/v1/admin/users`) and reading accounts (`GET
+  /api/v1/admin/users/{user}`, by id or any address, with their workspaces,
+  projects and the Claude token a token set, never the token), changing
+  them (`PATCH`), their pictures and Claude tokens, their workspaces and
+  projects (`PUT`/`DELETE …/workspaces/{workspace}`, `…/projects/{project}`),
+  reset links and deleting (`api::provision`, `api::admin`). What reaches
+  past what instance admins do signed in, who neither create accounts,
+  change what is someone's own nor look inside workspaces they aren't in,
+  takes an admin token (`admin_tokens::only_tokens`), and `PATCH` takes
+  names, addresses and commit emails only from one; a token changes no
+  roles. No token changes the primary instance owner's account, the
+  instance's account of last resort, and only the primary owner's change
+  admins', as only they rename, disable and delete admins
+  (`admin_tokens::check_target`). What takes confirming doesn't ask a
+  token: making it did (`Ctx::verified`). Every entry the audit log records
+  for one says which (`admin_token` in its data), with its maker as the
+  actor.
+- **Accounts.** A new account is an active member's, whose address the
+  allowlist admits from then on with an entry of its own (`Admin token`),
+  as an invitation's is, so that removing another entry doesn't disable it
+  (`api::admin::remove_allow`); it joins the workspaces its address was
+  invited to, as signing up does. A new primary address
+  (`provision::change_email`) takes the old one's place everywhere: it
+  signs in, keeps the old one's commit email, and the workspaces they
+  joined as the old one know them by it; the old one stops signing in, goes
+  from the allowlist with its invitations, and the reset links that may
+  have gone to it stop working. Someone is placed in a workspace as their
+  primary address, within the five workspaces a person may be in, and a
+  project's member must be its workspace's.
+- **Claude.** A token sets one Claude token per person
+  (`claude_credentials.provisioned`): the next replaces it in place, so
+  that people's and workspaces' choices of it stay, and forgets what Claude
+  reported of the one before; the first becomes their default. Their own
+  connections stay theirs, and they remove the one a token set as they
+  remove their own.
 
 ## Workspaces
 

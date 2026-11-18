@@ -139,6 +139,7 @@ Docker and Kubernetes secrets do.
 | `FCTL_TRUST_PROXY` | `0` | How many [reverse proxies](#https-and-reverse-proxies) in front add `X-Forwarded-For` |
 | `FCTL_WEBHOOK_PRIVATE_HOSTS` | none | IP ranges and host names on your network that webhooks may post to ([webhooks to your own network](#webhooks-to-your-own-network)) |
 | `FCTL_WEBHOOK_HTTP` | `0` | `1` lets webhooks post over plain `http://` ([webhooks to your own network](#webhooks-to-your-own-network)) |
+| `FCTL_ADMIN_TOKENS` | `0` | `1` lets instance admins make admin tokens, which create and change people's accounts ([admin tokens](#provision-people-with-admin-tokens)) |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
 | `GITHUB_REVIEW_APP_ID`, `GITHUB_REVIEW_APP_SLUG`, `GITHUB_REVIEW_APP_PRIVATE_KEY` | | [The app review agents post as](#a-review-app-optional) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET` | | [Linear](#connect-linear-optional) |
@@ -288,6 +289,10 @@ redirect every plain-http request to https, for a page, a file or the API,
 add `https_only = true`. The Worker then runs for every request, the web
 app's files included, and Cloudflare counts each as a Worker request.
 
+To let instance admins make admin tokens, with which your own programs
+create people's accounts and add them to workspaces and projects, add
+`admin_tokens = true` ([admin tokens](#provision-people-with-admin-tokens)).
+
 ### 2. Deploy
 
 ```sh
@@ -384,6 +389,66 @@ they have, every transcript too. To let them export more often, or less,
 choose under **Admin → Settings → Data exports** (or `fctl admin set
 --export-interval 1d`; `off` lets them export at any time, and a year is
 the longest wait).
+
+## Provision people with admin tokens
+
+To create people's accounts from your identity provider, your HR system or
+a script, put them in your workspaces and projects, and delete them when
+they leave, let instance admins make admin tokens: set
+`FCTL_ADMIN_TOKENS=1` on your own server, or add `admin_tokens = true` to
+your instance's file on Cloudflare and deploy again. (app.fctl.sh takes
+none.) An instance admin then makes one under **Admin → Settings → Admin
+tokens**, or with `fctl admin tokens create "Okta provisioning"`, and
+copies it: it is shown once.
+
+The token acts as the admin who made it, on the admin API's people
+endpoints alone ([the list](api.md#people-with-an-admin-token)), until it
+expires, someone revokes it, or they stop being an active admin:
+
+```sh
+export FCTL_SERVER=https://fctl.acme.dev FCTL_TOKEN=fctl_adm_…
+curl -sS -X POST "$FCTL_SERVER/api/v1/admin/users" -H "Authorization: Bearer $FCTL_TOKEN" \
+  -H "Content-Type: application/json" -d '{"email": "ada@acme.dev", "given_name": "Ada", "family_name": "Lovelace"}'
+curl -sS -X PUT "$FCTL_SERVER/api/v1/admin/users/ada@acme.dev/workspaces/acme" -H "Authorization: Bearer $FCTL_TOKEN" \
+  -H "Content-Type: application/json" -d '{"role": "member"}'
+curl -sS -X PUT "$FCTL_SERVER/api/v1/admin/users/ada@acme.dev/projects/web" -H "Authorization: Bearer $FCTL_TOKEN" \
+  -H "Content-Type: application/json" -d '{"role": "editor"}'
+```
+
+The CLI does the same with the token as `FCTL_TOKEN`: `fctl admin users
+create`, `show`, `set`, `add` and `remove`
+([The CLI](cli.md#provisioning-people-with-an-admin-token)).
+
+- **Signing in.** A new account has no password until someone sets one:
+  `password` as you create it, Google sign-in with its address where the
+  instance has [Google sign-in](#google-sign-in-optional), or the link
+  `POST /api/v1/admin/users/{user}/reset-link` makes (emailed to them where
+  the instance sends [email](#email-optional)). The allowlist admits the
+  address from then on, as an invitation's, and they join the workspaces it
+  was invited to.
+- **Leaving.** Disable an account first (`{"status": "disabled"}`): that
+  signs them out and stops the sessions that run on their Claude
+  subscription. Deleting it then works as deleting their own would: the
+  workspaces only they are in go with it, and what others use stays.
+- **What it can't do.** It changes no roles, nor the allowlist,
+  invitations or the instance's settings, sees nothing inside projects but
+  who is in them, and makes no other token. No token changes the primary
+  instance owner's account, and only the primary instance owner's tokens
+  change admins'. A workspace's primary admin stays its primary admin.
+- **Limits.** Someone is in at most five workspaces (the primary instance
+  owner in any number). A workspace that requires two-factor sign-in stays
+  closed to someone until they set it up, and an instance that requires it
+  holds the admin's tokens to it too.
+- **Confirming.** Where sensitive actions ask people to confirm it's them
+  (**Admin → Settings → Sensitive actions**), making a token asks, and what
+  the token does after doesn't.
+- **Keep it secret.** Whoever holds it can change a member's address and
+  so take their account over: keep it with your identity provider's
+  secrets, make it expire, and revoke it (**Admin → Settings → Admin
+  tokens**, or `fctl admin tokens revoke`) when it may have leaked. The
+  audit log records what each token did, as its admin, with an admin
+  token. Turning `FCTL_ADMIN_TOKENS` off stops every token at once, and
+  leaves them listed to revoke.
 
 ## Connect GitHub (optional, recommended)
 
