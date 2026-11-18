@@ -586,7 +586,8 @@ script) has it call fctl with a workspace's service account
   people with a secret they kept, as with enrollment tokens. It acts with
   their authority, so it also waits, as their own tokens do, while the
   instance or the workspace holds them to setting up two-factor sign-in
-  first (`service_accounts::authenticate`). Another admin
+  first (`service_accounts::Row::stopped`, which `authenticate` and the
+  tab's `stopped` both read). Another admin
   makes it a new secret (`POST /api/v1/service-accounts/{id}/secret`), which
   stops the old one at once and makes them its keeper; until then the
   tab and its page say why it stopped, and its requests are refused.

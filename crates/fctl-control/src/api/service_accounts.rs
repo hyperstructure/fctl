@@ -44,7 +44,7 @@ async fn reread(
     let row = sa::row(&ctx.db, &me, id)
         .await?
         .ok_or_else(|| not_found("Service account"))?;
-    Ok(row.to_api(sa::consent(&ctx.settings()), manages))
+    Ok(row.to_api(&ctx.settings(), manages))
 }
 
 /// `GET /api/v1/workspaces/{id}/service-accounts`: every member sees them,
@@ -54,11 +54,12 @@ pub async fn list(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let role = a.require_open()?;
     let me = ctx.user()?.id.clone();
     let rows = sa::of_workspace(&ctx.db, &me, a.id()).await?;
-    let consent = sa::consent(&ctx.settings());
+    let settings = ctx.settings();
+    let consent = sa::consent(&settings);
     http::ok(&ServiceAccountList {
         service_accounts: rows
             .iter()
-            .map(|r| r.to_api(consent, role.is_admin()))
+            .map(|r| r.to_api(&settings, role.is_admin()))
             .collect(),
         consent,
         limit: policy::MAX_PER_WORKSPACE,
@@ -126,7 +127,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
 pub async fn get(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let (row, a) = load(ctx, id).await?;
     let role = a.require_open()?;
-    http::ok(&row.to_api(sa::consent(&ctx.settings()), role.is_admin()))
+    http::ok(&row.to_api(&ctx.settings(), role.is_admin()))
 }
 
 /// `PATCH /api/v1/service-accounts/{id}` (its workspace's admins): its
@@ -228,7 +229,7 @@ pub async fn new_secret_for(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         Some(a.id()),
         "workspace.service_account_secret_changed",
         Some(&row.id),
-        Some(json!({ "name": row.name, "was_stopped": row.stopped().is_some().then_some(true) })),
+        Some(json!({ "name": row.name, "was_stopped": row.stopped(&ctx.settings()).is_some().then_some(true) })),
     );
     http::ok(&CreatedServiceAccount {
         service_account: reread(ctx, &row.id, true).await?,
@@ -376,7 +377,7 @@ pub async fn whoami(ctx: &Ctx) -> AppResult<Response> {
             answer: None,
             answered_at: None,
             acts_for_you: false,
-            ..row.to_api(sa::consent(&ctx.settings()), true)
+            ..row.to_api(&ctx.settings(), true)
         },
         acting_for_email: acting_for.as_ref().and_then(|(_, e)| e.clone()),
         acting_for: acting_for.map(|(u, _)| u),
