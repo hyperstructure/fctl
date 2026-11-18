@@ -4,13 +4,23 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
+import { WebhookForm } from "./form";
 import { WebhooksPanel } from "./panel";
 
-const { createWorkspaceWebhook } = vi.hoisted(() => ({ createWorkspaceWebhook: vi.fn() }));
-// Only adding a webhook is answered; other requests wait, and the panel shows what the cache holds.
+const { createWorkspaceWebhook, updateWebhook } = vi.hoisted(() => ({
+  createWorkspaceWebhook: vi.fn(),
+  updateWebhook: vi.fn(),
+}));
+// Only adding and changing a webhook are answered; other requests wait, and the panel shows what the
+// cache holds.
 vi.mock("@/lib/api", () => ({
   api: new Proxy({} as Record<string, unknown>, {
-    get: (_, k) => (k === "createWorkspaceWebhook" ? createWorkspaceWebhook : () => new Promise(() => {})),
+    get: (_, k) =>
+      k === "createWorkspaceWebhook"
+        ? createWorkspaceWebhook
+        : k === "updateWebhook"
+          ? updateWebhook
+          : () => new Promise(() => {}),
   }),
   ApiFailure: class extends Error {},
 }));
@@ -211,5 +221,31 @@ describe("a project's webhooks", () => {
     act(() => [...c.querySelectorAll("button")].find((b) => b.textContent?.includes("Web's own"))?.click());
     expect(open).toHaveBeenCalledWith("whk_own");
     expect([...c.querySelectorAll("button")].some((b) => b.textContent?.includes("Acme-wide"))).toBe(false);
+  });
+});
+
+describe("changing a webhook", () => {
+  it("keeps a workspace's webhook's projects when its admin changes it from a project's page", async () => {
+    seed("project", []);
+    const w = hook({ id: "whk_ws", name: "Acme-wide", projects: ["prj_web"], events: ["session.failed"] });
+    updateWebhook.mockResolvedValue(w);
+    const done = vi.fn();
+    const c = render(
+      <WebhookForm
+        scope={{ kind: "project", project }}
+        webhook={w}
+        catalog={CATALOG.events}
+        groups={CATALOG.groups}
+        projects={[project]}
+        onDone={done}
+      />,
+    );
+    await settle();
+    // Its projects show, as on the workspace's tab.
+    expect(text(c)).toContain("Projects");
+    await act(async () => button(c, "Save").click());
+    await settle();
+    expect(updateWebhook).toHaveBeenCalledWith("whk_ws", expect.objectContaining({ projects: ["prj_web"] }));
+    expect(done).toHaveBeenCalled();
   });
 });

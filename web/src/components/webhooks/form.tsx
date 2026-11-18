@@ -54,7 +54,9 @@ export function WebhookForm({
   const [chosenProjects, setChosenProjects] = useState<string[]>(webhook?.projects ?? []);
   const [startedBy, setStartedBy] = useState<G.WebhookOrigin[]>(webhook?.started_by ?? []);
   const [touched, setTouched] = useState(false);
-  const workspaceHook = scope.kind === "workspace" && !webhook?.project;
+  // A workspace's webhook is narrowed to its projects, wherever it's changed from: a project's page
+  // lists the workspace's that send its events, which its admins change there too.
+  const workspaceHook = webhook ? !webhook.project : scope.kind === "workspace";
 
   const chosen = every ? [] : events;
   const sessionsChosen = every || catalog.some((e) => e.sessions && events.includes(e.type));
@@ -166,7 +168,11 @@ export function WebhookForm({
           chosen={chosenProjects}
           onSome={setSomeProjects}
           onChosen={setChosenProjects}
-          workspace={scope.kind === "workspace" ? scope.workspace.name : ""}
+          workspace={
+            scope.kind === "workspace"
+              ? scope.workspace.name
+              : (scope.project.workspace?.name ?? "the workspace")
+          }
           error={fieldError("projects")}
         />
       )}
@@ -354,6 +360,7 @@ function EventsField({
                       )
                     }
                     aria-pressed={on === of.length}
+                    aria-label={`All of ${g.label}, ${on} of ${of.length} chosen`}
                     className="mb-1 flex w-full items-center gap-2.5 rounded-md py-1 text-left"
                   >
                     <Tick on={on === of.length} some={on > 0} />
@@ -374,6 +381,8 @@ function EventsField({
                             type="button"
                             role="checkbox"
                             aria-checked={checked}
+                            aria-label={e.label}
+                            aria-describedby={`event-${e.type}`}
                             onClick={() => toggle(e.type)}
                             className="group flex w-full items-start gap-2.5 rounded-md py-1.5 pr-2 pl-0 text-left transition-colors hover:bg-hover/40 pointer-coarse:py-2"
                           >
@@ -385,7 +394,10 @@ function EventsField({
                                 <span className="text-[13.5px] text-ink">{e.label}</span>
                                 <span className="font-mono text-[11px] text-ink-4">{e.type}</span>
                               </span>
-                              <span className="block text-[12px] leading-snug text-ink-3">
+                              <span
+                                id={`event-${e.type}`}
+                                className="block text-[12px] leading-snug text-ink-3"
+                              >
                                 {e.description}
                               </span>
                             </span>
@@ -462,7 +474,7 @@ function ProjectsField({
         </ul>
       ) : (
         <p className="text-[13px] leading-relaxed text-ink-3">
-          The events of all of {workspace}'s projects, those made later too.
+          Every project's events in {workspace}, those made later too.
         </p>
       )}
       {error && <p className="mt-2 text-[12.5px] text-danger">{error}</p>}

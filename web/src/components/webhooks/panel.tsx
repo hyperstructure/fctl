@@ -122,6 +122,11 @@ export function WebhooksPanel({
       ) : (
         <Header
           webhooks={own}
+          none={
+            scope.kind === "project"
+              ? `${scope.project.name} has no webhooks of its own yet.`
+              : "No webhooks yet."
+          }
           count={list.data.count}
           limit={list.data.limit}
           onAdd={() => {
@@ -136,13 +141,6 @@ export function WebhooksPanel({
             <Row key={w.id} webhook={w} catalog={events} projects={projects} onOpen={() => onOpen(w.id)} />
           ))}
         </ul>
-      )}
-      {own.length === 0 && !adding && (
-        <p className="text-[13px] text-ink-4">
-          {scope.kind === "project"
-            ? `${scope.project.name} has no webhooks of its own yet.`
-            : "No webhooks yet."}
-        </p>
       )}
       {inherited.length > 0 && scope.kind === "project" && (
         <section aria-labelledby="inherited-heading" className="mt-2">
@@ -174,11 +172,14 @@ export function WebhooksPanel({
 /** How many there are, how many fail, and the button that adds another. */
 function Header({
   webhooks,
+  none,
   count,
   limit,
   onAdd,
 }: {
   webhooks: G.Webhook[];
+  /** What it says while there are none. */
+  none: string;
   count: number;
   limit: number;
   onAdd: () => void;
@@ -193,7 +194,7 @@ function Header({
   ].filter(Boolean);
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <p className="text-[13px] text-ink-3">{facts.join(" · ")}</p>
+      <p className="text-[13px] text-ink-3">{webhooks.length ? facts.join(" · ") : none}</p>
       <div className="flex items-center gap-3">
         {full && (
           <span className="text-[12.5px] text-ink-4">The workspace has {limit}, the most it may have</span>
