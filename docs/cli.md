@@ -922,6 +922,10 @@ fctl service-accounts allow "Acme portal"      # let it start sessions for you
 fctl service-accounts deny "Acme portal"       # or not, or no longer
 ```
 
+`fctl workspaces` and `fctl workspaces join` say which service accounts
+wait for your answer, and an invitation names the workspace's service
+accounts before you join.
+
 With a service account's token, `fctl whoami` says what it is and whom it
 acts for, `fctl service-accounts people` whom it may act for, and the
 other commands act for the person `--on-behalf-of` names (`fctl run`,

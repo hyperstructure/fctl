@@ -484,7 +484,7 @@ curl -sS -X POST "$FCTL_SERVER/api/v1/projects/web/sessions" \
 ```
 
 Without the header, it reads the workspace's projects, sessions (with
-their events and diffs) and schedules (with their runs), and runs a
+their events) and schedules (with their runs), and runs a
 schedule for the person it runs for. Live connections (`/ws`) take no
 service account: read events with `GET /api/v1/sessions/{id}/events`, or
 have [webhooks](#webhooks) post them, narrowed to `started_by:
