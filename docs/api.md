@@ -277,7 +277,8 @@ repositories: `{"kind": "issue_opened" | "issue_labeled" |
 "max_per_day": 10}`. Only `kind` is needed:
 `repos` (empty: those the project's agents write to) narrow it to some of
 the project's repositories; `labels` to issues and pull requests with one
-of them (for `issue_labeled`, which needs one, the label the issue gets);
+of them (for `issue_labeled`, which needs one, the label the issue gets,
+which only a person who may triage the repository's label counts as);
 `branches` to pull requests into one of them, or for `checks_failed` the
 branches it watches (empty: each repository's default branch); `by` to
 issues and pull requests opened by anyone, by people who may write to the
@@ -324,7 +325,7 @@ what events start.
 | `POST /api/v1/workspaces/{workspace}/webhooks` | `{"url", "name", "events": […], "projects": […], "started_by": […], "enabled": false}`: one of the workspace's, for every project or those in `projects` (its admins), once its address answers fctl's challenge ([checking the address](automation.md#checking-the-address): otherwise a `validation_failed` error on `url` says why, and `rate_limited` after a workspace's 20 challenges an hour); answers `{"webhook", "secret"}`, the secret once |
 | `GET /api/v1/projects/{project}/webhooks` | the project's own webhooks, and the workspace's that send its events (`can_manage`: false for those the caller doesn't manage, whose `url` is its scheme and host alone, since a path can hold a credential) |
 | `POST /api/v1/projects/{project}/webhooks` | the same, for one of the project's own (its owners and maintainers) |
-| `GET`, `PATCH`, `DELETE /api/v1/webhooks/{id}` | read (with `health`: the last attempt, how many delivered and failed in the last day, how many wait, `failing_since`, `dropped`), change (absent fields stay; `"name": ""` for none; a new `url` once it answers fctl's challenge, as adding one does; `"enabled": true` turns it on again, after fctl turned it off too), delete with what went out to it |
+| `GET`, `PATCH`, `DELETE /api/v1/webhooks/{id}` | read (with `health`: the last attempt, how many delivered and failed in the last day, how many wait, `failing_since`, `dropped`), change (absent fields stay; `"name": ""` for none; a new `url` once it answers fctl's challenge, as adding one does; `"enabled": true` turns it on again, after fctl turned it off too; a new `url` or turning it on makes the caller its keeper: it posts while its keeper manages it, and fctl turns it off, with `disabled_reason`, once they don't), delete with what went out to it |
 | `GET /api/v1/webhooks/{id}/secret` | `{"secret", "previous_until"}`: its signing secret |
 | `POST /api/v1/webhooks/{id}/secret` | a new secret, which the answer has; the one before signs too until `previous_until`, a day on |
 | `POST /api/v1/webhooks/{id}/test` | `{"event": "session.ready_for_review"}`: posts a made-up event of that type now, marked `test`, and answers the delivery with how it went |

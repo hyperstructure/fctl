@@ -309,7 +309,10 @@ describe("Schedules that run on events", () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(label, " agent, fctl ");
       label.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(tab.textContent).toContain("gets the label agent or fctl starts a session of its own");
+    expect(tab.textContent).toContain(
+      "gets the label agent or fctl from a person who may triage the repository starts a session of its own",
+    );
+    expect(tab.textContent).toContain("Labels from apps, fctl's agents and issue templates start nothing.");
     createSchedule.mockReturnValue(new Promise(() => {}));
     press(named(tab, "Set up schedule"));
     await settle();

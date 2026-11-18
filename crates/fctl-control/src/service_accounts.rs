@@ -28,8 +28,11 @@ pub const SELECT: &str = "SELECT sa.id, sa.workspace_id, sa.name, sa.description
     sa.created_at, sa.last_used_at, \
     EXISTS (SELECT 1 FROM workspace_members km WHERE km.workspace_id = sa.workspace_id \
       AND km.user_id = sa.keeper_id AND km.role IN ('owner', 'admin') AND ku.status = 'active') AS keeper_admin, \
+    ku.password_hash IS NOT NULL AS keeper_password, \
+    EXISTS (SELECT 1 FROM authenticator_apps kaa WHERE kaa.user_id = sa.keeper_id) AS keeper_authenticator, \
+    (SELECT COUNT(*) FROM passkeys kpk WHERE kpk.user_id = sa.keeper_id) AS keeper_passkeys, \
     w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
-    w.avatar_updated_at AS workspace_avatar_at, \
+    w.avatar_updated_at AS workspace_avatar_at, w.require_two_factor AS workspace_two_factor, \
     (SELECT COUNT(*) FROM workspace_members x WHERE x.workspace_id = sa.workspace_id) AS members, \
     (SELECT COUNT(*) FROM service_account_answers a JOIN workspace_members am \
       ON am.workspace_id = sa.workspace_id AND am.user_id = a.user_id \
@@ -67,11 +70,22 @@ pub struct Row {
     /// works for nobody.
     #[serde(deserialize_with = "int_bool", default)]
     pub keeper_admin: bool,
+    /// Its keeper's sign-in methods, which say whether they have to set up
+    /// two-factor sign-in first ([`Row::keeper_waits`]).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub keeper_password: bool,
+    #[serde(deserialize_with = "int_bool", default)]
+    pub keeper_authenticator: bool,
+    #[serde(deserialize_with = "int", default)]
+    pub keeper_passkeys: i64,
     pub workspace_slug: String,
     pub workspace_name: String,
     pub workspace_color: Option<String>,
     #[serde(deserialize_with = "opt_int", default)]
     pub workspace_avatar_at: Option<i64>,
+    /// Its workspace requires two-factor sign-in.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub workspace_two_factor: bool,
     #[serde(deserialize_with = "int", default)]
     pub members: i64,
     #[serde(deserialize_with = "int", default)]
@@ -117,13 +131,37 @@ pub fn answer(allowed: Option<i64>) -> Option<ServiceAccountAnswer> {
 }
 
 impl Row {
-    /// Why it works for nobody now, when it doesn't.
-    pub fn stopped(&self) -> Option<String> {
+    /// Why it works for nobody now, when it doesn't: its keeper is no
+    /// longer an active admin of its workspace, or, under the instance's
+    /// `settings`, has to set up two-factor sign-in first.
+    pub fn stopped(&self, settings: &InstanceSettings) -> Option<String> {
         policy::stopped(
             self.keeper_admin,
             self.keeper_name.as_deref(),
             &self.workspace_name,
         )
+        .or_else(|| {
+            self.keeper_waits(settings).then(|| {
+                policy::keeper_needs_two_factor(self.keeper_name.as_deref().unwrap_or("Its keeper"))
+            })
+        })
+    }
+
+    /// Whether its keeper has to set up two-factor sign-in, which the
+    /// instance or its workspace requires, before they do anything else:
+    /// it acts with their authority, and waits as their own tokens do.
+    pub fn keeper_waits(&self, settings: &InstanceSettings) -> bool {
+        let factors = fctl_domain::two_factor::Factors {
+            authenticator: self.keeper_authenticator,
+            passkeys: self.keeper_passkeys > 0,
+        };
+        fctl_domain::two_factor::setup_required(settings, self.keeper_password, factors)
+            || (self.workspace_two_factor
+                && fctl_domain::two_factor::workspace_blocked(
+                    settings,
+                    self.keeper_password,
+                    factors,
+                ))
     }
 
     pub fn workspace(&self) -> fctl_proto::session::WorkspaceRef {
@@ -136,10 +174,11 @@ impl Row {
         )
     }
 
-    /// As the caller sees it: every member its name, what it is and their
-    /// own answer (`consent`: whether the instance asks people); its
-    /// admins (`manages`) the rest.
-    pub fn to_api(&self, consent: bool, manages: bool) -> ServiceAccount {
+    /// As the caller sees it, under the instance's `settings`: every member
+    /// its name, what it is and their own answer; its admins (`manages`)
+    /// the rest.
+    pub fn to_api(&self, settings: &InstanceSettings, manages: bool) -> ServiceAccount {
+        let consent = consent(settings);
         let answer = answer(self.my_answer);
         let tally = ServiceAccountTally {
             allowed: count(self.allowed),
@@ -160,7 +199,7 @@ impl Row {
             keeper: manages
                 .then(|| user_ref(&self.keeper_id, &self.keeper_name, &self.keeper_avatar))
                 .flatten(),
-            stopped: manages.then(|| self.stopped()).flatten(),
+            stopped: manages.then(|| self.stopped(settings)).flatten(),
             secret_hint: manages.then(|| self.hint.clone()),
             secret_made_at: manages.then_some(self.secret_made_at),
             last_used_at: self.last_used_at.filter(|_| manages),
@@ -234,7 +273,11 @@ pub async fn authenticate(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             "Unknown service account: its workspace's admins may have deleted it, or made it a new secret. Ask one of them for the one it has now.",
         )));
     };
-    if let Some(why) = found.stopped() {
+    let settings = crate::instance::settings(&ctx.db).await?;
+    // Its keeper left or lost the role, or, as it acts with their
+    // authority, has to set up two-factor sign-in first, as their own
+    // tokens wait too.
+    if let Some(why) = found.stopped(&settings) {
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::AccessDenied,
             format!("This service account works for nobody now: {why}"),
@@ -266,7 +309,6 @@ pub async fn authenticate(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             Ok(())
         });
     }
-    let settings = crate::instance::settings(&ctx.db).await?;
     ctx.auth = Some(crate::ctx::Authed {
         user: keeper,
         token_id: found.id.clone(),
@@ -634,8 +676,9 @@ mod tests {
             .await?
             .ok_or_else(|| crate::error::internal("no service account"))?;
         assert!(found.keeper_admin);
-        assert_eq!(found.stopped(), None);
-        let admin = found.to_api(true, true);
+        let settings = InstanceSettings::default();
+        assert_eq!(found.stopped(&settings), None);
+        let admin = found.to_api(&settings, true);
         assert_eq!(
             admin.people,
             Some(ServiceAccountTally {
@@ -646,7 +689,7 @@ mod tests {
         );
         assert_eq!(admin.secret_hint.as_deref(), Some("x8Kq"));
         // Bob's own view: his answer, nothing of the others'.
-        let bob = found.to_api(true, false);
+        let bob = found.to_api(&settings, false);
         assert_eq!(bob.answer, Some(ServiceAccountAnswer::Allowed));
         assert!(bob.acts_for_you);
         assert_eq!(bob.people, None);
@@ -672,7 +715,7 @@ mod tests {
         assert!(!found.keeper_admin);
         assert!(
             found
-                .stopped()
+                .stopped(&InstanceSettings::default())
                 .is_some_and(|w| w.starts_with("Ada, who made its secret"))
         );
         forget_answers(&db, "wsp_acme", "usr_bob")?.run().await?;
@@ -681,6 +724,61 @@ mod tests {
             .ok_or_else(|| crate::error::internal("no service account"))?;
         assert_eq!(found.my_answer, None);
         Ok(())
+    }
+
+    /// It waits while its keeper has to set up two-factor sign-in, which
+    /// the instance or its workspace requires, and its admins see why.
+    #[wasm_bindgen_test]
+    async fn it_waits_while_its_keeper_has_to_set_up_two_factor() -> AppResult<()> {
+        let db = testing::database();
+        acme(&db).await?;
+        run(
+            &db,
+            "UPDATE users SET password_hash = 'phc' WHERE id = 'usr_ada'",
+        )
+        .await?;
+        let open = InstanceSettings::default();
+        let required = InstanceSettings {
+            require_two_factor: true,
+            ..InstanceSettings::default()
+        };
+        let waits = policy::keeper_needs_two_factor("Ada");
+        let sa = portal(&db).await?;
+        // Nothing asks it of Ada yet.
+        assert_eq!(sa.stopped(&open), None);
+        // The instance requires it: Ada, with a password and nothing else,
+        // sets it up first, and the portal waits, as her tokens do.
+        assert_eq!(sa.stopped(&required).as_deref(), Some(waits.as_str()));
+        assert_eq!(
+            sa.to_api(&required, true).stopped.as_deref(),
+            Some(waits.as_str())
+        );
+        assert_eq!(sa.to_api(&required, false).stopped, None);
+        // So does the workspace's own requirement.
+        run(
+            &db,
+            "UPDATE workspaces SET require_two_factor = 1 WHERE id = 'wsp_acme'",
+        )
+        .await?;
+        let sa = portal(&db).await?;
+        assert_eq!(sa.stopped(&open).as_deref(), Some(waits.as_str()));
+        // With an authenticator app, it works again.
+        run(
+            &db,
+            "INSERT INTO authenticator_apps (user_id, secret_enc, created_at) VALUES ('usr_ada', 'sealed', 1)",
+        )
+        .await?;
+        let sa = portal(&db).await?;
+        assert_eq!(sa.stopped(&required), None);
+        assert_eq!(sa.stopped(&open), None);
+        Ok(())
+    }
+
+    /// Acme's portal, as nobody in particular reads it.
+    async fn portal(db: &D1Database) -> AppResult<Row> {
+        row(db, "", "sva_portal")
+            .await?
+            .ok_or_else(|| crate::error::internal("no service account"))
     }
 
     /// Members' lists carry each service account with their own answer.

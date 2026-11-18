@@ -288,6 +288,9 @@ webhook keeps what went out in the last 30 days, to read and resend
 post to `https://` addresses on the public internet; an instance of yours
 can let them reach receivers on your own network, and post over `http://`
 ([Webhooks to your own network](self-hosting.md#webhooks-to-your-own-network)).
+A webhook posts while whoever chose its address still manages it: when
+they leave the workspace or lose the role, fctl turns it off and says
+why, and the admin who turns it on again keeps it from then on.
 
 ## Runners for a fleet
 
@@ -333,7 +336,7 @@ hold it to the images you choose
 | Credential | Who makes it | Acts as | Reaches | Stops working when |
 |---|---|---|---|---|
 | Access token, `fctl_pat_…` | anyone, for themselves | its person | their projects and sessions, as limited when made | it expires, they revoke it, or their account is disabled |
-| Service account, `fctl_svc_…` | a workspace's admins | the person each request names | that person's sessions in its workspace's projects, as a token that runs sessions; without a person, reading | it's deleted or gets a new secret, or the admin who made its secret is no longer an admin of the workspace |
+| Service account, `fctl_svc_…` | a workspace's admins | the person each request names | that person's sessions in its workspace's projects, as a token that runs sessions; without a person, reading | it's deleted or gets a new secret, or the admin who made its secret is no longer an admin of the workspace (or has to set up two-factor sign-in first) |
 | Admin token, `fctl_adm_…` | an instance admin, where the instance takes them | its admin | the people endpoints of the admin API | it expires, someone revokes it, its admin is no longer an active one, or `FCTL_ADMIN_TOKENS` is off |
 | Enrollment token, `fctl_et_…` | a workspace's admins, or a member for their own sessions | nobody | enrolling machines as the workspace's runners | it expires (90 days unless set) or someone revokes it; its runners stay |
-| Webhook secret, `whsec_…` | made with the webhook | nobody | signing what fctl posts to it | a day after it's rotated, or when the webhook is deleted |
+| Webhook secret, `whsec_…` | made with the webhook | nobody | signing what fctl posts to it | a day after it's rotated, or when the webhook is deleted; the webhook stops posting once whoever chose its address no longer manages it |

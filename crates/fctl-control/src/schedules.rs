@@ -255,14 +255,14 @@ impl ScheduleRow {
     }
 
     /// What it waits for on GitHub: `None` for a schedule that doesn't,
-    /// and for a kind this version doesn't know.
+    /// and for a kind or what narrows it down that this version can't
+    /// read, which would otherwise take every event of its kind.
     pub fn event(&self) -> Option<ScheduleEvent> {
         let kind = ScheduleEventKind::parse(self.event_kind.as_deref()?)?;
-        let filter: EventFilter = self
-            .event_filter
-            .as_deref()
-            .and_then(|j| serde_json::from_str(j).ok())
-            .unwrap_or_default();
+        let filter: EventFilter = match self.event_filter.as_deref() {
+            Some(j) => serde_json::from_str(j).ok()?,
+            None => EventFilter::default(),
+        };
         Some(ScheduleEvent {
             kind,
             repos: filter.repos,
@@ -318,12 +318,16 @@ impl ScheduleRow {
     /// What its sessions' agents may do on GitHub as its runs start: what
     /// it says, else triage for one that anyone on GitHub can start
     /// (`fctl_domain::triggers::default_github`), so that what they wrote
-    /// reaches an agent that pushes only where the schedule asks for it;
-    /// `None`: as much as the project allows. Runs hold it to the
-    /// project's too.
+    /// reaches an agent that pushes only where the schedule asks for it,
+    /// and for one whose event this version can't read, which a later one
+    /// may let anyone start; `None`: as much as the project allows. Runs
+    /// hold it to the project's too.
     pub fn run_github(&self) -> Option<GithubAccess> {
         self.github()
-            .or_else(|| fctl_domain::triggers::default_github(self.event().as_ref()))
+            .or_else(|| match (&self.event_kind, self.event()) {
+                (Some(_), None) => Some(GithubAccess::Triage),
+                (_, event) => fctl_domain::triggers::default_github(event.as_ref()),
+            })
     }
 
     pub fn to_api(&self, last_run: Option<ScheduleRun>, problem: Option<String>) -> Schedule {
@@ -1361,7 +1365,9 @@ mod tests {
              ('sch_prs', 'prj_web', 'Check pull requests', 'Check it.', 'usr_ada', 0, 0, 'pull_request_opened', '{\"by\":\"anyone\"}', NULL), \
              ('sch_writers', 'prj_web', 'Check writers', 'Check it.', 'usr_ada', 0, 0, 'pull_request_opened', NULL, NULL), \
              ('sch_labeled', 'prj_web', 'Work on labeled', 'Do it.', 'usr_ada', 0, 0, 'issue_labeled', '{\"labels\":[\"fctl\"]}', NULL), \
-             ('sch_weekly', 'prj_web', 'Weekly', 'Update.', 'usr_ada', 0, 0, NULL, NULL, NULL)",
+             ('sch_weekly', 'prj_web', 'Weekly', 'Update.', 'usr_ada', 0, 0, NULL, NULL, NULL), \
+             ('sch_later', 'prj_web', 'From later', 'Do it.', 'usr_ada', 0, 0, 'issue_opened', '{\"by\":', NULL), \
+             ('sch_unknown', 'prj_web', 'Unknown', 'Do it.', 'usr_ada', 0, 0, 'discussion_opened', NULL, NULL)",
             "UPDATE schedules SET cron = '0 9 * * 1' WHERE id = 'sch_weekly'",
         ] {
             q(&db, sql, &[])?.run().await?;
@@ -1386,6 +1392,10 @@ mod tests {
         for id in ["sch_writers", "sch_labeled", "sch_weekly"] {
             assert_eq!(access(id).await?, (None, None), "{id}");
         }
+        // One whose filter or kind this version can't read, as a later
+        // version wrote it: triage, should someone run it now.
+        assert_eq!(access("sch_later").await?, (triage, triage));
+        assert_eq!(access("sch_unknown").await?, (triage, triage));
         Ok(())
     }
 

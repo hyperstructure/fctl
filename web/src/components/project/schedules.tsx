@@ -2710,7 +2710,7 @@ function eachRun(f: EventForm, where: string): string {
     case "issue_opened":
       return `An issue opened in ${where}${labels ? ` with the label ${labels}` : ""} starts a session of its own, whose agent gets the issue's title, text and labels after the task.`;
     case "issue_labeled":
-      return `An issue in ${where} that gets the label ${labels || "you name"} starts a session of its own, whose agent gets the issue after the task. Taking the label off and putting it back on runs it again.`;
+      return `An issue in ${where} that gets the label ${labels || "you name"} from a person who may triage the repository starts a session of its own, whose agent gets the issue after the task. Labels from apps, fctl's agents and issue templates start nothing. Taking the label off and putting it back on runs it again.`;
     case "pull_request_opened":
       return `A pull request opened in ${where}${branches ? ` into ${branches}` : ""}, or a draft marked ready for review, starts a session of its own, whose agent gets its title, text and branches after the task.`;
     case "pull_request_merged":

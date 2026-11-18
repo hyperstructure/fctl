@@ -8,6 +8,7 @@ import { createPrivateKey, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { join } from "node:path";
+import { rootCertificates } from "node:tls";
 
 /** Passed to the Worker as they are, when set. */
 const VARS = [
@@ -198,6 +199,47 @@ export function webhookReach(env) {
 }
 
 /**
+ * The network webhooks post through, the Worker's FCTL_WEBHOOK_NETWORK binding
+ * (crates/fctl-control/src/do_hooks.rs): workerd connects it only to public addresses and the IP
+ * ranges FCTL_WEBHOOK_PRIVATE_HOSTS lists, checking every address a host name resolves to as it
+ * connects, so that a name someone points at this server's own network reaches nothing there. The
+ * host names it lists the Worker reaches through its own fetch, to where they resolve. Its TLS
+ * trusts what the Worker's own requests do (Miniflare's): browsers' authorities, Node's on Windows,
+ * and the certificates NODE_EXTRA_CA_CERTS names.
+ */
+export function webhookNetwork(env, extraCerts = process.env.NODE_EXTRA_CA_CERTS) {
+  const bare = (s) => s.replace(/^\[/, "").replace(/\]$/, "");
+  const ranges = (value(env, "FCTL_WEBHOOK_PRIVATE_HOSTS") ?? "")
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .flatMap((entry) => {
+      const slash = entry.indexOf("/");
+      const ip = bare(slash >= 0 ? entry.slice(0, slash) : entry);
+      const family = isIP(ip);
+      if (family === 0) return [];
+      return [`${ip}/${slash >= 0 ? entry.slice(slash + 1) : family === 4 ? 32 : 128}`];
+    });
+  const trustedCertificates = process.platform === "win32" ? [...rootCertificates] : [];
+  if (extraCerts) {
+    try {
+      const pem = readFileSync(extraCerts, "utf8");
+      trustedCertificates.push(
+        ...(pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? []),
+      );
+    } catch {
+      // As Miniflare does: a file it can't read adds nothing.
+    }
+  }
+  return {
+    network: {
+      allow: ["public", ...ranges],
+      deny: [],
+      tlsOptions: { trustBrowserCas: true, trustedCertificates },
+    },
+  };
+}
+
+/**
  * Whether instance admins make admin tokens, which provision people: FCTL_ADMIN_TOKENS is 1 (or
  * true) or 0; anything else stops the server, rather than the Worker reading it as off.
  */
@@ -227,6 +269,7 @@ export function readConfig(env) {
   vars.FCTL_SETUP_TOKEN = setupToken;
   return {
     publicUrl: url,
+    webhookNetwork: webhookNetwork(env),
     listen: value(env, "FCTL_LISTEN") ?? "0.0.0.0",
     port: port(value(env, "FCTL_PORT") ?? value(env, "PORT") ?? "8787"),
     dataDir: value(env, "FCTL_DATA_DIR") ?? join(process.cwd(), "fctl-data"),

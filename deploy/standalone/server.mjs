@@ -206,6 +206,10 @@ async function main() {
           ],
           // In place of wrangler.toml's [vars], which are for development.
           bindings: { ...cfg.vars, FCTL_MASTER_KEY: key.key },
+          // What webhooks post through: public addresses and the ranges
+          // FCTL_WEBHOOK_PRIVATE_HOSTS lists, checked as workerd connects,
+          // whatever a name resolves to (`webhookNetwork`).
+          serviceBindings: { ...workerOptions.serviceBindings, FCTL_WEBHOOK_NETWORK: cfg.webhookNetwork },
         },
       ],
     }),

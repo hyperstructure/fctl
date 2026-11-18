@@ -82,7 +82,7 @@ its own, whose agent gets the task, then what GitHub said of it:
 | Event | `--on` | What the agent gets | For |
 |---|---|---|---|
 | **An issue is opened** | `issue-opened` | the issue: title, text, labels, who opened it | triaging each issue as it comes in |
-| **An issue gets a label** | `issue-labeled` | the issue, and who added the label | handing an issue to an agent: label it `fctl` |
+| **An issue gets a label** | `issue-labeled` | the issue, and who added the label | handing an issue to an agent: label it `fctl` (a person who may triage the repository) |
 | **A pull request is opened** | `pr-opened` | the pull request, its branches; a draft once it's marked ready | checks a review agent doesn't make |
 | **A pull request merges** | `pr-merged` | the pull request, who merged it and as which commit | learning from what people said in its review |
 | **A release is published** | `release` | the release: tag, name, notes | trying or announcing each release |
@@ -98,6 +98,12 @@ its own, whose agent gets the task, then what GitHub said of it:
   Pull requests opened start runs only for people who may write to the
   repository unless you choose anyone, as review agents do: an outsider's
   pull request starts nothing on your subscription by itself.
+- **A label is a person's.** An issue's label starts a run only when a
+  person whom GitHub says may triage the repository added it: not a
+  label an app or an Action adds, nor fctl's own agents (a triage agent
+  reads what anyone writes, so it can't hand an issue to an agent that
+  may do more), nor one an issue's template gives it as someone opens
+  it.
 - **What GitHub says is information.** Anyone can open an issue on a
   public repository, so the agent gets what they wrote after fctl's note,
   marked as information for the task and never as instructions. A
@@ -319,6 +325,15 @@ doesn't. A development instance takes `http://` and local addresses, to
 try a receiver on the same machine. The address field says what the
 instance takes, and so does `fctl webhooks events`. A change to a webhook
 reaches new events within half a minute.
+
+A webhook posts while the person who chose its address still manages
+it: whoever added it, or last pointed it elsewhere or turned it on, as
+long as they are an admin of the workspace, or for a project's webhook
+an owner or maintainer of the project. Once they leave, lose that role,
+or their account is disabled or deleted, fctl turns the webhook off and
+says why on its page, so that the workspace's events stop going where
+they chose. Check its address, then turn it on again: you keep it from
+then on.
 
 ### Checking the address
 
