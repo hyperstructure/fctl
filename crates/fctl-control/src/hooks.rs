@@ -423,17 +423,20 @@ mod tests {
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["whk_slack", "whk_web", "whk_off"]);
         assert_eq!(count(&db, "wsp_1").await?, 3);
-        let slack = rows[0].to_webhook(None, true);
+        let [slack, web, off] = rows.as_slice() else {
+            return Err(crate::error::internal("the workspace has three webhooks"));
+        };
+        let slack = slack.to_webhook(None, true);
         assert_eq!(slack.name.as_deref(), Some("Slack"));
         assert_eq!(slack.events, ["session.question"]);
         assert_eq!(slack.projects.len(), 2);
         assert_eq!(slack.started_by, [WebhookOrigin::Person]);
         assert_eq!(slack.created_by.map(|u| u.name), Some("Ada".to_owned()));
         assert!(slack.project.is_none());
-        let web = rows[1].to_webhook(None, false);
+        let web = web.to_webhook(None, false);
         assert_eq!(web.project.map(|p| p.slug), Some("web".to_owned()));
         assert!(web.events.is_empty() && !web.can_manage);
-        let off = rows[2].to_webhook(None, true);
+        let off = off.to_webhook(None, true);
         assert!(!off.enabled);
         assert_eq!(
             off.disabled_reason.as_deref(),
