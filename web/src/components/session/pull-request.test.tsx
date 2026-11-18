@@ -60,8 +60,21 @@ function mount(node: ReactNode) {
 
 const render = (node: ReactNode) => mount(node).container;
 
-/** Lets queries and mutations answer, and React render what they say. */
-const settle = () => act(() => new Promise<void>((r) => setTimeout(r, 0)));
+const tick = () => act(() => new Promise<void>((r) => setTimeout(r, 0)));
+
+/**
+ * Lets queries and mutations answer, and React render what they say. An answer can take more
+ * than a tick to come, and React Query hands it to components a tick after it came: wait until
+ * nothing is fetching or mutating (or 50 ticks, for a promise a test leaves pending), then a tick
+ * more.
+ */
+async function settle() {
+  for (let i = 0; i < 50; i++) {
+    await tick();
+    if (!queryClient.isFetching() && !queryClient.isMutating()) break;
+  }
+  await tick();
+}
 
 const review = (state: G.ReviewState, more: Partial<G.ReviewCheck> = {}): G.ReviewCheck => ({
   state,
