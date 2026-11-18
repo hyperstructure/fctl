@@ -253,8 +253,8 @@ describe("a workspace's service accounts, for its members", () => {
     const c = render(<ServiceAccountsPanel workspace={workspace("member")} onOpen={() => {}} />);
     await settle();
     expect(text(c)).toContain("Each starts sessions for you only if you allow it");
-    expect(text(c)).toContain("Asks to start sessions for you");
-    expect(text(c)).toContain("Starts sessions for you");
+    expect(text(c)).toContain("Asks to start agents for you");
+    expect(text(c)).toContain("Starts agents for you");
     expect(c.querySelector('[role="switch"][aria-checked="true"]')).toBeTruthy();
     expect(text(c)).not.toContain("Make a service account");
   });

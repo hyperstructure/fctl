@@ -71,8 +71,8 @@ export function useAnswer(account: Pick<G.ServiceAccount, "id" | "name">) {
       refreshServiceAccounts(a.id);
       toast(
         allow
-          ? `${a.name} may start sessions for you now. Take it back any time, in ${a.workspace.name}'s Service accounts.`
-          : `${a.name} won't start sessions for you`,
+          ? `${a.name} may start agents for you now. Take it back any time, in ${a.workspace.name}'s Service accounts.`
+          : `${a.name} won't start agents for you`,
       );
     },
     onError: (e) => toast(e.message, "error"),
@@ -127,7 +127,7 @@ export function AnswerControl({
         checked={on}
         disabled={answer.isPending}
         onChange={(v) => answer.mutate(v)}
-        label={`Let ${a.name} start sessions for you`}
+        label={`Let ${a.name} start agents for you`}
       />
     </div>
   );

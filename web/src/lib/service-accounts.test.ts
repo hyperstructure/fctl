@@ -65,11 +65,11 @@ describe("asksOf", () => {
 
 describe("answerWords", () => {
   it("says how it stands for you", () => {
-    expect(answerWords(account())).toBe("Asks to start sessions for you");
-    expect(answerWords(account({ answer: "allowed" }))).toBe("Starts sessions for you");
+    expect(answerWords(account())).toBe("Asks to start agents for you");
+    expect(answerWords(account({ answer: "allowed" }))).toBe("Starts agents for you");
     expect(answerWords(account({ answer: "declined" }))).toBe("You didn't allow it");
     expect(answerWords(account({ consent: false, answer: "declined" }))).toBe(
-      "Starts sessions for anyone here",
+      "Starts agents for anyone here",
     );
   });
 });

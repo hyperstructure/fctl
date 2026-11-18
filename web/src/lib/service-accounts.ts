@@ -30,10 +30,10 @@ export function asksOf(workspaces: readonly G.Workspace[] | undefined): Ask[] {
 
 /** How a service account stands for you, in a few words. */
 export function answerWords(a: G.ServiceAccount): string {
-  if (!a.consent) return "Starts sessions for anyone here";
-  if (a.answer === "allowed") return "Starts sessions for you";
+  if (!a.consent) return "Starts agents for anyone here";
+  if (a.answer === "allowed") return "Starts agents for you";
   if (a.answer === "declined") return "You didn't allow it";
-  return "Asks to start sessions for you";
+  return "Asks to start agents for you";
 }
 
 /** How a service account's people answered: "4 of 12 allowed it · 1 didn't · 7 haven't answered". */
