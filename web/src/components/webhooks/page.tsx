@@ -363,7 +363,7 @@ function Deliveries({
           </h3>
           <p className="mt-1 text-[13px] text-ink-3">
             {h
-              ? `${h.delivered} delivered and ${h.failed} failed in the last day${h.pending ? `, ${h.pending} waiting now` : ""}. Kept for 30 days.`
+              ? `${h.delivered} delivered${h.failed ? `, ${h.failed} failed` : ""} in the last day${h.pending ? `, ${h.pending} waiting now` : ""}. Kept for 30 days.`
               : "What went out to it in the last 30 days."}
           </p>
         </div>
