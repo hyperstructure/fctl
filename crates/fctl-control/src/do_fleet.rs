@@ -495,7 +495,7 @@ impl DurableObject for FleetObject {
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
             (worker::Method::Post, "/homes") => match req.json::<internal::Homes>().await {
-                Ok(b) => Ok(serde_json::json!(self.homes(&b.runner_id))),
+                Ok(b) => self.homes(&b.runner_id).map(|h| serde_json::json!(h)),
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
             (worker::Method::Post, "/drain") => match req.json::<Drain>().await {
@@ -2532,7 +2532,7 @@ impl FleetObject {
 
     /// The sessions whose sandboxes `runner_id` keeps, which a resume
     /// starts there.
-    fn homes(&self, runner_id: &str) -> internal::HomeSessions {
+    fn homes(&self, runner_id: &str) -> std::result::Result<internal::HomeSessions, ApiError> {
         #[derive(Deserialize)]
         struct H {
             session_id: String,
@@ -2544,10 +2544,13 @@ impl FleetObject {
                 Some(vec![sv(runner_id)]),
             )
             .and_then(|c| c.to_array::<H>())
-            .unwrap_or_default();
-        internal::HomeSessions {
+            .map_err(|e| {
+                worker::console_error!("the sandboxes runner {runner_id} keeps: {e}");
+                ApiError::internal(e.to_string())
+            })?;
+        Ok(internal::HomeSessions {
             sessions: rows.into_iter().map(|h| h.session_id).collect(),
-        }
+        })
     }
 
     /// Whether the fleet gave the session to `runner_id`.
