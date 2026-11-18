@@ -614,8 +614,33 @@ async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
     )?
     .all()
     .await?;
+    // The autopilots that wake here: best effort, as the rest of the
+    // runner's detail matters more, but logged, since an empty list tells
+    // its host that none would.
+    let homes: AppResult<internal::HomeSessions> = match internal::fleet_stub(&ctx.env) {
+        Ok(stub) => {
+            internal::post(
+                &stub,
+                "/homes",
+                &internal::Homes {
+                    runner_id: id.to_owned(),
+                },
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
+    let autopilots = match homes {
+        Ok(homes) => autopilots_here(&ctx.db, &homes.sessions, ctx.now).await,
+        Err(e) => Err(e),
+    }
+    .unwrap_or_else(|e| {
+        worker::console_error!("the autopilots that wake on runner {id}: {}", e.0.message);
+        Vec::new()
+    });
     Ok(RunnerDetail {
         runner,
+        autopilots,
         sessions: sessions
             .into_iter()
             .filter_map(|r| {
@@ -630,6 +655,86 @@ async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
             })
             .collect(),
     })
+}
+
+/// The autopilots that are on whose own session is among `homes`, the
+/// sessions whose sandboxes a runner keeps, and whose next wake resumes it
+/// there rather than start a fresh session anywhere: those a runner that
+/// shuts down would cut off, or make carry on elsewhere without their
+/// conversation. Soonest to wake first.
+async fn autopilots_here(
+    db: &worker::D1Database,
+    homes: &[String],
+    now: i64,
+) -> AppResult<Vec<RunnerAutopilot>> {
+    use fctl_domain::autopilot as ap;
+    use fctl_proto::autopilot::{AutopilotScope, AutopilotWakeReason};
+    use fctl_proto::session::SessionStatus;
+    #[derive(serde::Deserialize)]
+    struct Row {
+        id: String,
+        project_slug: String,
+        #[serde(deserialize_with = "crate::db::int")]
+        number: i64,
+        title: String,
+        status: String,
+        #[serde(deserialize_with = "crate::db::opt_int", default)]
+        resume_at: Option<i64>,
+        #[serde(deserialize_with = "crate::db::int")]
+        created_at: i64,
+        #[serde(deserialize_with = "crate::db::opt_int", default)]
+        context: Option<i64>,
+        #[serde(deserialize_with = "crate::db::opt_int", default)]
+        handoff_at: Option<i64>,
+        #[serde(deserialize_with = "crate::db::opt_int", default)]
+        wake_at: Option<i64>,
+        #[serde(default)]
+        wake_reasons: String,
+        scope: String,
+    }
+    if homes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<Row> = q(
+        db,
+        "SELECT s.id, p.slug AS project_slug, s.number, s.title, s.status, s.resume_at, s.created_at, \
+         json_extract(s.stats, '$.context_tokens') AS context, a.handoff_at, a.wake_at, a.wake_reasons, a.scope \
+         FROM autopilots a JOIN sessions s ON s.id = a.session_id JOIN projects p ON p.id = s.project_id \
+         WHERE a.state = 'on' AND a.session_id IN (SELECT value FROM json_each(?)) \
+         ORDER BY a.wake_at IS NULL, a.wake_at",
+        &[s(&serde_json::to_string(homes)?)],
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            let status = SessionStatus::parse(&r.status)?;
+            let own = ap::OwnSession {
+                status,
+                started_at: r.created_at,
+                context_tokens: r.context.and_then(|t| u64::try_from(t).ok()),
+            };
+            let handoff_at = r.handoff_at.and_then(|t| u32::try_from(t).ok());
+            let asked = r
+                .wake_reasons
+                .split(',')
+                .any(|w| AutopilotWakeReason::parse(w.trim()) == Some(AutopilotWakeReason::Fresh));
+            let wake = r.wake_at.unwrap_or(now).max(now);
+            ap::wakes_in_own(own, handoff_at, asked, wake).then(|| RunnerAutopilot {
+                session: RunnerSession {
+                    id: fctl_proto::SessionId(r.id),
+                    project_slug: r.project_slug,
+                    number: r.number.max(0) as u32,
+                    title: r.title,
+                    status,
+                    resume_at: r.resume_at,
+                },
+                scope: AutopilotScope::parse(&r.scope).unwrap_or_default(),
+                wake_at: r.wake_at,
+            })
+        })
+        .collect())
 }
 
 /// `GET /api/v1/runner`: the runner whose token this is, and its sessions.
@@ -801,4 +906,96 @@ pub async fn feed(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let stub = internal::fleet_stub(&ctx.env)?;
     let json = serde_json::to_string(&ident)?;
     internal::upgrade(&stub, "/feed", &[(internal::HDR_VIEWER, &json)]).await
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use fctl_proto::session::SessionStatus;
+    use wasm_bindgen_test::wasm_bindgen_test;
+    use worker::D1Database;
+
+    const NOW: i64 = 1_790_000_000_000;
+    const HOUR: i64 = 3_600_000;
+
+    /// Project `slug`'s autopilot, `state`, waking at `wake_at`, and its own
+    /// session `ses_<slug>`, `status`, which started `ago` before now.
+    async fn autopilot(
+        db: &D1Database,
+        slug: &str,
+        state: &str,
+        status: &str,
+        ago: i64,
+        wake_at: i64,
+    ) -> AppResult<()> {
+        q(
+            db,
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_' || ?1, ?1, ?1, 'usr_ada', 0, 0, 'wsp_acme')",
+            &[s(slug)],
+        )?
+        .run()
+        .await?;
+        q(
+            db,
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, claude_session_id, created_at, updated_at, \
+             autopilot_id, autopilot_role) \
+             VALUES ('ses_' || ?1, 'prj_' || ?1, 7, 'Autopilot', 'Run it', ?2, 'usr_ada', 'ses_' || ?1, ?3, ?3, 'prj_' || ?1, 'pilot')",
+            &[s(slug), s(status), n(NOW - ago)],
+        )?
+        .run()
+        .await?;
+        q(
+            db,
+            "INSERT INTO autopilots (project_id, workspace_id, state, owner_id, direction, direction_at, session_id, \
+             wake_at, created_at, updated_at) \
+             VALUES ('prj_' || ?1, 'wsp_acme', ?2, 'usr_ada', 'Run it.', 0, 'ses_' || ?1, ?3, 0, 0)",
+            &[s(slug), s(state), n(wake_at)],
+        )?
+        .run()
+        .await?;
+        Ok(())
+    }
+
+    /// Only the autopilots that are on, whose own session's sandbox is
+    /// here, and whose next wake resumes that session rather than start a
+    /// fresh one, soonest first.
+    #[wasm_bindgen_test]
+    async fn lists_the_autopilots_whose_next_wake_resumes_here() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at, autopilots) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0, 1)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        autopilot(&db, "shop", "on", "stopped", HOUR, NOW + HOUR).await?;
+        autopilot(&db, "blog", "on", "idle", HOUR, NOW + 30 * 60_000).await?;
+        autopilot(&db, "paused", "paused", "stopped", HOUR, NOW + HOUR).await?;
+        // Its shift ends before it wakes: a fresh session starts anywhere.
+        autopilot(&db, "old", "on", "stopped", 11 * HOUR, NOW + 2 * HOUR).await?;
+        autopilot(&db, "failed", "on", "failed", HOUR, NOW + HOUR).await?;
+        autopilot(&db, "away", "on", "stopped", HOUR, NOW + HOUR).await?;
+        let homes: Vec<String> = ["shop", "blog", "paused", "old", "failed"]
+            .iter()
+            .map(|p| format!("ses_{p}"))
+            .collect();
+        let here = autopilots_here(&db, &homes, NOW).await?;
+        let listed: Vec<(&str, Option<i64>)> = here
+            .iter()
+            .map(|a| (a.session.project_slug.as_str(), a.wake_at))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("blog", Some(NOW + 30 * 60_000)),
+                ("shop", Some(NOW + HOUR))
+            ]
+        );
+        let shop = here.last().map(|a| (a.session.number, a.session.status));
+        assert_eq!(shop, Some((7, SessionStatus::Stopped)));
+        assert!(autopilots_here(&db, &[], NOW).await?.is_empty());
+        Ok(())
+    }
 }

@@ -12,7 +12,8 @@ use fctl_host::docker_access::{self, Problem};
 use fctl_host::driver::{DiskSpot, Driver};
 use fctl_host::{HostConfig, caches, claude_token, refresh, service, update};
 use fctl_proto::api::{
-    EnrollRunnerRequest, EnrollmentInfo, Runner, RunnerDetail, RunnerFacts, RunnerStatus,
+    EnrollRunnerRequest, EnrollmentInfo, Runner, RunnerAutopilot, RunnerDetail, RunnerFacts,
+    RunnerStatus,
 };
 use fctl_proto::runner::DriverInfo;
 use std::io::IsTerminal;
@@ -567,6 +568,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         println!("sessions:");
                         admin::print_sessions(&d.sessions);
                     }
+                    print_autopilots(&d.autopilots);
                 }
                 Err(e) => println!(
                     "runner:   {}",
@@ -686,6 +688,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             if wait {
                 d = wait_until_drained(&api, d, json).await?;
+                if !json {
+                    print_autopilots(&d.autopilots);
+                }
             } else if !json && !d.sessions.is_empty() {
                 println!(
                     "{}",
@@ -1484,6 +1489,39 @@ pub(crate) async fn this_runner(api: &fctl_client::Api) -> Result<Runner> {
             )
         })?;
     Ok(d.runner)
+}
+
+/// The autopilots whose next wake resumes their own session here, where
+/// its sandbox is, even while the runner drains, and what shutting the
+/// machine down does to them.
+fn print_autopilots(autopilots: &[RunnerAutopilot]) {
+    if autopilots.is_empty() {
+        return;
+    }
+    println!(
+        "autopilots: their sessions' sandboxes are here, so they wake on this runner, even while it drains:"
+    );
+    for a in autopilots {
+        let s = &a.session;
+        let wake = a
+            .wake_at
+            .map(|at| format!(", wakes {}", style::until(at)))
+            .unwrap_or_default();
+        println!(
+            "  {} {}#{} {}{}",
+            style::status(s.status),
+            s.project_slug,
+            s.number,
+            style::dim(&style::plain(&s.title)),
+            style::dim(&wake)
+        );
+    }
+    println!(
+        "{}",
+        style::dim(
+            "Shutting this machine down cuts off one at work, which fctl stops 10 minutes later. While the machine is away, each one's next wake resumes its session on another runner, in a new sandbox without its conversation: it starts again from its briefing, plan and log."
+        )
+    );
 }
 
 /// Polls until no session runs on this runner, saying what changes.

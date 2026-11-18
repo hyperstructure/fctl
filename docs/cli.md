@@ -1020,7 +1020,7 @@ fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
 fctl host install --agent-as-root off # run fctl-agent as the sandbox's user, not root
 fctl host run                    # run in the foreground (what the service runs)
-fctl host status                 # with the runner's id and sessions, and whether it drains
+fctl host status                 # with the runner's id and sessions, whether it drains, and the autopilots that wake here
 fctl host doctor                 # check the configuration, tokens, connection, driver, images, disk and service
 fctl host logs -n 200            # the last 200 lines of its log (on Linux, from the journal)
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
@@ -1046,6 +1046,17 @@ runner, where its sandbox has Claude's conversation. So the runner is empty
 whenever no turn runs, and `--wait` returns then. Admins can drain a runner
 too, from the runners list or with `fctl admin drain`; whoever drained it,
 either can stop the drain.
+
+An autopilot's own session wakes again by itself, so it comes back to the
+runner that has its sandbox, even while that drains. `fctl host status`,
+and `fctl host drain --wait` as it returns, list the autopilots whose next
+wake resumes their session here, with when each wakes. Shutting the machine
+down cuts off one at work, which fctl stops ten minutes later; while the
+machine is away, the next wake of each resumes its session on another
+runner, in a new sandbox without its conversation, where it starts again
+from its briefing, plan and log. An autopilot whose next wake starts a
+fresh session anyway (its shift is over, or its context is full) isn't
+listed.
 
 `fctl host uninstall` stops the service, so it never leaves sessions to
 agents nobody sees: when sessions run on the machine, it lists them and asks

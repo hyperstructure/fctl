@@ -188,6 +188,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::DrainRequest,
         api::RunnerDetail,
         api::RunnerSession,
+        api::RunnerAutopilot,
         api::RunnerEnrollment,
         api::RunnerFacts,
         api::EnrollRunnerRequest,

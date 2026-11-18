@@ -1360,7 +1360,13 @@ can end it.
 
 The runners list, `fctl admin runners` and `fctl host status`
 (`GET /api/v1/runner`, with the runner token) show who started the drain,
-when, and the sessions that still run.
+when, and the sessions that still run. The host's view also lists the
+autopilots that are on whose own session's sandbox the runner has
+(FleetDO's `sandboxes`, `POST /homes`) and whose next wake resumes that
+session rather than start a fresh one (`fctl_domain::autopilot::wakes_in_own`,
+at its `wake_at`): such a wake comes back here even while the runner
+drains, so a runner that `--wait` emptied is busy again at their next
+check-in.
 
 Removing a machine is the step that moves its sessions elsewhere.
 `fctl host uninstall` asks the control plane which sessions run on the
