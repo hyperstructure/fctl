@@ -6,6 +6,7 @@
 
 import { createPrivateKey, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { join } from "node:path";
 
 /** Passed to the Worker as they are, when set. */
@@ -27,6 +28,8 @@ const VARS = [
   "LINEAR_WEBHOOK_SECRET",
   "RESEND_API_KEY",
   "FCTL_EMAIL_FROM",
+  "FCTL_WEBHOOK_HTTP",
+  "FCTL_WEBHOOK_PRIVATE_HOSTS",
 ];
 
 const MASTER_KEY = /^[A-Za-z0-9+/]{43}=$/;
@@ -156,8 +159,46 @@ export function masterKey(env, dataDir) {
   return { key, made: true, path };
 }
 
+const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+/**
+ * One entry of FCTL_WEBHOOK_PRIVATE_HOSTS, as the Worker reads it (fctl_domain::hooks::Private):
+ * an IP range (`10.0.0.0/8`, `fd00::/8`), an address, a host name (`hooks.lan`) or the names under
+ * a domain (`*.corp.internal`).
+ */
+export function privateHost(entry) {
+  const bare = (s) => s.replace(/^\[/, "").replace(/\]$/, "");
+  const slash = entry.indexOf("/");
+  if (slash >= 0) {
+    const family = isIP(bare(entry.slice(0, slash)));
+    const bits = entry.slice(slash + 1);
+    return family !== 0 && /^\d{1,3}$/.test(bits) && Number(bits) <= (family === 4 ? 32 : 128);
+  }
+  if (isIP(bare(entry)) !== 0) return true;
+  const name = entry.replace(/\.$/, "").replace(/^\*\./, "");
+  return name.length <= 253 && name.split(".").every((l) => LABEL.test(l));
+}
+
+/**
+ * Where webhooks may post besides public https:// addresses: FCTL_WEBHOOK_HTTP is 1 (or true)
+ * or 0, and FCTL_WEBHOOK_PRIVATE_HOSTS lists only entries the Worker reads, separated by commas or
+ * spaces; anything else stops the server, rather than the Worker leaving it out.
+ */
+export function webhookReach(env) {
+  const http = value(env, "FCTL_WEBHOOK_HTTP");
+  if (http !== undefined && !["0", "1", "true", "false"].includes(http))
+    throw new ConfigError(`FCTL_WEBHOOK_HTTP must be 1 or 0 (got ${http})`);
+  const hosts = (value(env, "FCTL_WEBHOOK_PRIVATE_HOSTS") ?? "").split(/[\s,]+/).filter(Boolean);
+  const unread = hosts.filter((h) => !privateHost(h));
+  if (unread.length > 0)
+    throw new ConfigError(
+      `FCTL_WEBHOOK_PRIVATE_HOSTS lists IP ranges (10.0.0.0/8), addresses, host names (hooks.lan) and the names under a domain (*.corp.internal): fctl can't read ${unread.join(", ")}`,
+    );
+}
+
 /** Everything but the master key, which lives in the data directory (`masterKey`). */
 export function readConfig(env) {
+  webhookReach(env);
   const url = publicUrl(value(env, "FCTL_PUBLIC_URL") ?? "http://localhost:8787");
   const vars = { FCTL_PUBLIC_URL: url };
   for (const name of VARS) {

@@ -241,9 +241,13 @@ schedule's session finishes, a dashboard follows sessions and reviews.
    marked `test`, whose answer shows at once.
 
 Addresses are `https://` on the public internet: fctl doesn't post to
-private networks, loopback or local names (a development instance also
-takes `http://` and local addresses, to try a receiver on the same
-machine). A change to a webhook reaches new events within half a minute.
+private networks, loopback or local names. A self-hosted instance can
+let webhooks reach hosts on its own network and post over `http://`
+([Self-hosting](self-hosting.md#webhooks-to-your-own-network)); app.fctl.sh
+doesn't. A development instance takes `http://` and local addresses, to
+try a receiver on the same machine. The address field says what the
+instance takes, and so does `fctl webhooks events`. A change to a webhook
+reaches new events within half a minute.
 
 ### What a request carries
 

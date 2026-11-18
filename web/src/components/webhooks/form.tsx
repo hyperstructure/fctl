@@ -10,8 +10,8 @@ import { Banner, Button, Field, Input } from "@/components/ui";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { keys, queryClient, useInstance } from "@/lib/queries";
-import { describeWebhook, hostOf, ORIGINS, PRESETS, presetOf, urlProblem } from "@/lib/webhooks";
+import { keys, queryClient } from "@/lib/queries";
+import { addressHint, describeWebhook, hostOf, ORIGINS, PRESETS, presetOf, urlProblem } from "@/lib/webhooks";
 
 /** Whose webhooks: a workspace's (for all its projects, or some), or a project's own. */
 export type HookScope =
@@ -32,6 +32,7 @@ export function WebhookForm({
   webhook,
   catalog,
   groups,
+  reach,
   projects,
   onDone,
 }: {
@@ -40,12 +41,12 @@ export function WebhookForm({
   webhook?: G.Webhook;
   catalog: G.WebhookEventInfo[];
   groups: G.WebhookEventGroup[];
+  /** Where the instance lets webhooks post besides public https:// addresses. */
+  reach?: G.WebhookReach;
   /** The workspace's projects, which a workspace's webhook may be narrowed to. */
   projects: G.Project[];
   onDone: (result?: { created?: G.CreatedWebhook; saved?: G.Webhook }) => void;
 }) {
-  const { data: instance } = useInstance();
-  const dev = !!instance?.features.local_webhooks;
   const [url, setUrl] = useState(webhook?.url ?? "");
   const [name, setName] = useState(webhook?.name ?? "");
   const [every, setEvery] = useState(webhook ? webhook.events.length === 0 : false);
@@ -64,7 +65,7 @@ export function WebhookForm({
     () => (someProjects ? projects.filter((p) => chosenProjects.includes(p.id)).map((p) => p.name) : []),
     [someProjects, projects, chosenProjects],
   );
-  const problem = urlProblem(url, dev);
+  const problem = urlProblem(url, reach);
   const missing = !url.trim()
     ? "Give the address fctl posts to."
     : !every && events.length === 0
@@ -127,11 +128,7 @@ export function WebhookForm({
         <Field
           label="Address"
           error={fieldError("url") ?? ((touched || url.includes("://")) && problem ? problem : undefined)}
-          hint={
-            dev
-              ? "fctl posts each event there as JSON, signed with its secret. This development instance also takes http:// and local addresses."
-              : "fctl posts each event there as JSON, signed with its secret: an https:// address on the public internet."
-          }
+          hint={addressHint(url, reach)}
         >
           {(id) => (
             <Input

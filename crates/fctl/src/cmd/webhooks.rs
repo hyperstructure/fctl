@@ -563,6 +563,7 @@ pub async fn run(server: Option<&str>, args: WebhooksArgs, json: bool) -> Result
                 }
                 println!();
             }
+            println!("{}", reach_words(&catalog.reach));
             Ok(())
         }
         WebhooksCmd::Verify { .. } => Ok(()),
@@ -1000,6 +1001,25 @@ fn verdict(
     }
 }
 
+/// Where the instance lets webhooks post, in a sentence.
+fn reach_words(reach: &fctl_proto::hooks::WebhookReach) -> String {
+    let scheme = if reach.http {
+        "https:// and http://"
+    } else {
+        "https://"
+    };
+    if reach.private.iter().any(|p| p == "*") {
+        return "Webhooks post to any address, http:// too: this is a development instance.".into();
+    }
+    if reach.private.is_empty() {
+        return format!("Webhooks post to {scheme} addresses on the public internet.");
+    }
+    format!(
+        "Webhooks post to {scheme} addresses on the public internet, and on this instance's network to {}.",
+        reach.private.join(", ")
+    )
+}
+
 impl WebhooksCmd {
     /// The webhook it's about, where it's about one.
     fn webhook(&self) -> Option<&str> {
@@ -1069,6 +1089,22 @@ mod tests {
                 .starts_with("No signature matches")
         );
         assert!(verdict(secret, "evt_1", "soon", body, &sig, at, true).is_err());
+    }
+
+    #[test]
+    fn events_say_where_the_instance_lets_webhooks_post() {
+        use fctl_proto::hooks::WebhookReach;
+        assert_eq!(
+            reach_words(&WebhookReach::default()),
+            "Webhooks post to https:// addresses on the public internet."
+        );
+        assert_eq!(
+            reach_words(&WebhookReach {
+                http: true,
+                private: vec!["10.0.0.0/8".into(), "*.corp.internal".into()],
+            }),
+            "Webhooks post to https:// and http:// addresses on the public internet, and on this instance's network to 10.0.0.0/8, *.corp.internal."
+        );
     }
 
     #[test]

@@ -759,7 +759,16 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   Where the control plane's network holds services that trust whatever
   comes from it, keep who may add webhooks (a workspace's admins, a
   project's owners and maintainers) to people you trust with that, or
-  keep the server's egress to the internet.
+  keep the server's egress to the internet. `FCTL_WEBHOOK_PRIVATE_HOSTS`
+  lets webhooks reach the IP ranges and host names it lists, and
+  `FCTL_WEBHOOK_HTTP` lets them post over plain `http://`
+  ([Self-hosting](self-hosting.md#webhooks-to-your-own-network)): anyone
+  who manages a webhook can then have the server post to any of those,
+  so list only receivers' ranges, never the server's own address, cloud
+  metadata (`169.254.169.254`) or networks with admin interfaces. The
+  server checks a webhook's address against them again before each post,
+  so narrowing them stops webhooks that pointed past them. app.fctl.sh
+  sets neither.
 - Errors the Worker throws come back as plain 500s, without the stack
   traces Miniflare shows in development.
 - Request bodies are read as they come and refused once they pass their

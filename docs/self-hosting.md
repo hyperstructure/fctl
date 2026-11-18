@@ -137,6 +137,8 @@ Docker and Kubernetes secrets do.
 | `FCTL_PORT`, `FCTL_LISTEN` | `8787` (or `PORT`), `0.0.0.0` | Where it listens |
 | `FCTL_SEARCH_ENGINES` | `0` | `1` lets search engines index the sign-in page ([search engines](#search-engines)) |
 | `FCTL_TRUST_PROXY` | `0` | How many [reverse proxies](#https-and-reverse-proxies) in front add `X-Forwarded-For` |
+| `FCTL_WEBHOOK_PRIVATE_HOSTS` | none | IP ranges and host names on your network that webhooks may post to ([webhooks to your own network](#webhooks-to-your-own-network)) |
+| `FCTL_WEBHOOK_HTTP` | `0` | `1` lets webhooks post over plain `http://` ([webhooks to your own network](#webhooks-to-your-own-network)) |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
 | `GITHUB_REVIEW_APP_ID`, `GITHUB_REVIEW_APP_SLUG`, `GITHUB_REVIEW_APP_PRIVATE_KEY` | | [The app review agents post as](#a-review-app-optional) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET` | | [Linear](#connect-linear-optional) |
@@ -178,6 +180,39 @@ outermost proxy saw, and ignores what a client wrote there itself. It
 counts proxies rather than knowing them, so the server's port must be
 reachable only through them: a client that connects to it directly would
 choose its own address.
+
+### Webhooks to your own network
+
+[Webhooks](automation.md#webhooks) post to `https://` addresses on the
+public internet alone, so that whoever manages one, a workspace's admin or
+a project's owner or maintainer, can't have the server reach machines on
+its own network. A receiver of yours on that network (a chat bot, a deploy
+script, a CI server without TLS) needs you to let them there:
+
+```sh
+FCTL_WEBHOOK_PRIVATE_HOSTS="10.20.0.0/16, 192.168.1.20, hooks.lan, *.corp.internal"
+FCTL_WEBHOOK_HTTP=1
+```
+
+- `FCTL_WEBHOOK_PRIVATE_HOSTS` lists, separated by commas or spaces, IP
+  ranges (`10.20.0.0/16`, `fd00::/8`), addresses (`192.168.1.20`), host
+  names (`hooks.lan`, `jenkins`) and the names under a domain
+  (`*.corp.internal`: `ci.corp.internal`, not `corp.internal` itself).
+  The server doesn't start with an entry it can't read.
+- `FCTL_WEBHOOK_HTTP=1` lets webhooks post over plain `http://`, to any
+  address they may reach. What they post then travels unencrypted, and
+  the address field says so as someone types one.
+
+List the receivers' ranges, not whole networks: anyone who manages a
+webhook can have the server post to whatever you list. Leave out the
+server's own address, cloud metadata (`169.254.169.254`) and networks
+with admin interfaces. A host name is checked as written, not where it
+resolves ([Security](security.md)). The address field and `fctl webhooks
+events` show what the instance takes. The server checks each address
+again before it posts, so after a restart with narrower settings a
+webhook that points past them fails, with the reason in its log, and
+turns itself off after three days. On Cloudflare, a Worker reaches only
+the public internet, and app.fctl.sh sets neither.
 
 ### Operating it
 

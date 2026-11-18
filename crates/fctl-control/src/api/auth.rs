@@ -44,7 +44,6 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
                 .linear
                 .as_ref()
                 .is_some_and(|l| l.webhook_secret.is_some()),
-            local_webhooks: ctx.cfg.dev,
         },
     })
 }

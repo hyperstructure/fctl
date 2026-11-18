@@ -94,6 +94,7 @@ export function WebhooksPanel({
       scope={scope}
       catalog={events}
       groups={catalog.data.groups}
+      reach={catalog.data.reach}
       projects={projects}
       onDone={(r) => {
         setAdding(false);

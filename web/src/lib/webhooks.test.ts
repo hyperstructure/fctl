@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import {
+  addressHint,
   againIn,
   attemptWords,
   describeWebhook,
@@ -166,8 +167,27 @@ describe("the form's starting points", () => {
     expect(urlProblem("https://example.com/hook")).toBeUndefined();
     expect(urlProblem("example.com")).toMatch(/isn't an address/);
     expect(urlProblem("http://example.com")).toMatch(/Use https/);
-    expect(urlProblem("http://127.0.0.1:9099/hook", true)).toBeUndefined();
+    expect(urlProblem("ftp://example.com")).toBe("Use an https:// address.");
     expect(urlProblem("https://u:p@example.com")).toMatch(/user name and password/);
+    // An instance that lets webhooks post over http:// takes it; the server checks its network.
+    const http = { http: true, private: ["10.0.0.0/8"] };
+    expect(urlProblem("http://10.1.2.3:9099/hook", http)).toBeUndefined();
+    expect(urlProblem("ftp://example.com", http)).toBe("Use an https:// or http:// address.");
+  });
+
+  it("says in the address field what the instance lets webhooks reach", () => {
+    expect(addressHint("")).toBe(
+      "fctl posts each event there as JSON, signed with its secret: an https:// address on the public internet.",
+    );
+    expect(addressHint("", { http: false, private: ["10.20.0.0/16", "*.corp.internal"] })).toBe(
+      "fctl posts each event there as JSON, signed with its secret: an https:// address on the public internet, or on this instance's network (10.20.0.0/16, *.corp.internal).",
+    );
+    expect(addressHint("https://x", { http: true, private: ["a", "b", "c", "d", "e", "f"] })).toMatch(
+      /an https:\/\/ or http:\/\/ address on the public internet, or on this instance's network \(a, b, c, d and 2 more\)\.$/,
+    );
+    // An http:// address goes unencrypted, which it says as it's typed.
+    expect(addressHint("http://10.1.2.3/hook", { http: true, private: [] })).toMatch(/anyone on the way/);
+    expect(addressHint("http://127.0.0.1/", { http: true, private: ["*"] })).toMatch(/development instance/);
   });
 });
 

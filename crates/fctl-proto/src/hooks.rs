@@ -235,12 +235,33 @@ pub struct WebhookEventGroup {
     pub label: String,
 }
 
-/// `GET /api/v1/webhook-events`: every event webhooks get, in their groups.
+/// `GET /api/v1/webhook-events`: every event webhooks get, in their groups,
+/// and where this instance lets them post.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct WebhookEvents {
     pub groups: Vec<WebhookEventGroup>,
     pub events: Vec<WebhookEventInfo>,
+    #[serde(default)]
+    pub reach: WebhookReach,
+}
+
+/// Where an instance's webhooks may post besides public `https://`
+/// addresses, as a self-hosted instance's settings let them
+/// (`FCTL_WEBHOOK_HTTP`, `FCTL_WEBHOOK_PRIVATE_HOSTS`): nowhere else on
+/// app.fctl.sh.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WebhookReach {
+    /// Plain `http://` as well.
+    #[serde(default)]
+    pub http: bool,
+    /// The private networks and local names they may reach, as the
+    /// settings list them: IP ranges (`10.0.0.0/8`), addresses, host names
+    /// (`hooks.lan`) and the names under a domain (`*.corp.internal`); `*`
+    /// for any, on a development instance.
+    #[serde(default)]
+    pub private: Vec<String>,
 }
 
 /// How a delivery stands.

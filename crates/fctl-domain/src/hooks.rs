@@ -25,7 +25,7 @@ use fctl_proto::hooks::{
     HookChecks, HookEnvelope, HookPerson, HookPlace, HookPullRequest, HookQuestion, HookReview,
     HookRun, HookSchedule, HookScheduleData, HookSession, HookSessionData, HookTicket,
     WebhookAttempt, WebhookDeliveryState, WebhookEventGroup, WebhookEventInfo, WebhookEvents,
-    WebhookOrigin,
+    WebhookOrigin, WebhookReach,
 };
 use fctl_proto::session::{PullRequestRef, Session, SessionStatus, Tracker};
 use fctl_proto::{ApiError, ScheduleId, SessionId, WebhookEventId};
@@ -339,7 +339,8 @@ fn capitalized(s: &str) -> String {
     }
 }
 
-/// Every event webhooks get, in their groups (`GET /api/v1/webhook-events`).
+/// Every event webhooks get, in their groups (`GET /api/v1/webhook-events`,
+/// which adds where the instance lets them post, [`Reach::shown`]).
 pub fn catalog() -> WebhookEvents {
     WebhookEvents {
         groups: Group::ALL
@@ -359,6 +360,7 @@ pub fn catalog() -> WebhookEvents {
                 sessions: k.of_sessions(),
             })
             .collect(),
+        reach: WebhookReach::default(),
     }
 }
 
@@ -482,13 +484,196 @@ pub fn check_started_by(origins: &[WebhookOrigin]) -> Result<Vec<WebhookOrigin>>
         .collect())
 }
 
+// ───────────────────────────── where webhooks post ─────────────────────────────
+
+/// Where an instance lets webhooks post besides public `https://`
+/// addresses, for receivers on its own network: plain `http://`
+/// (`FCTL_WEBHOOK_HTTP`), and the private networks and local names its
+/// settings list (`FCTL_WEBHOOK_PRIVATE_HOSTS`). Self-hosted instances set
+/// them; app.fctl.sh sets neither, so its webhooks post only to public
+/// `https://` addresses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// `http://` as well as `https://`.
+    pub http: bool,
+    /// The private addresses and local names it takes.
+    pub private: Vec<Private>,
+}
+
+/// A private network or local name webhooks may post to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Private {
+    /// An IP range, `10.0.0.0/8`, or one address, `192.168.1.20`.
+    Range(IpAddr, u8),
+    /// A host name, `hooks.lan`.
+    Name(String),
+    /// The names under a domain, `*.corp.internal`.
+    Under(String),
+    /// Any address: a development instance's, to try receivers on the same
+    /// machine.
+    Any,
+}
+
+impl Reach {
+    /// A development instance's: `http://`, and any address.
+    pub fn anything() -> Self {
+        Self {
+            http: true,
+            private: vec![Private::Any],
+        }
+    }
+
+    /// From the settings: `http` is `FCTL_WEBHOOK_HTTP` (`1` or `true`), and
+    /// `private` `FCTL_WEBHOOK_PRIVATE_HOSTS`, IP ranges and host names
+    /// separated by commas or spaces ([`Private::parse`]). Answers the
+    /// entries it can't read too, which it leaves out.
+    pub fn parse(http: Option<&str>, private: Option<&str>) -> (Self, Vec<String>) {
+        let mut unread = Vec::new();
+        let private = private
+            .unwrap_or_default()
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|e| !e.is_empty())
+            .filter_map(|e| {
+                let p = Private::parse(e);
+                if p.is_none() {
+                    unread.push(e.to_owned());
+                }
+                p
+            })
+            .collect();
+        let http = http.is_some_and(|v| matches!(v.trim(), "1" | "true"));
+        (Self { http, private }, unread)
+    }
+
+    /// Whether it takes `ip`, an address that isn't public.
+    pub fn takes_ip(&self, ip: IpAddr) -> bool {
+        self.private.iter().any(|p| p.takes_ip(ip))
+    }
+
+    /// Whether it takes `name`, a name only a local network resolves.
+    pub fn takes_name(&self, name: &str) -> bool {
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        self.private.iter().any(|p| p.takes_name(&name))
+    }
+
+    /// The private addresses it takes, as its settings list them.
+    pub fn listed(&self) -> Vec<String> {
+        self.private.iter().map(ToString::to_string).collect()
+    }
+
+    /// As the API shows it to those who add webhooks (`GET
+    /// /api/v1/webhook-events`).
+    pub fn shown(&self) -> WebhookReach {
+        WebhookReach {
+            http: self.http,
+            private: self.listed(),
+        }
+    }
+}
+
+impl Private {
+    /// One entry of `FCTL_WEBHOOK_PRIVATE_HOSTS`: an IP range
+    /// (`10.0.0.0/8`, `fd00::/8`), one address (`192.168.1.20`), a host name
+    /// (`hooks.lan`, `jenkins`) or the names under a domain
+    /// (`*.corp.internal`). None for anything else.
+    pub fn parse(entry: &str) -> Option<Self> {
+        let entry = entry.trim();
+        let bare = |s: &str| s.trim_start_matches('[').trim_end_matches(']').to_owned();
+        if let Some((ip, bits)) = entry.split_once('/') {
+            let ip: IpAddr = bare(ip).parse().ok()?;
+            let bits: u8 = bits.parse().ok()?;
+            return (bits <= max_bits(ip)).then_some(Self::Range(ip, bits));
+        }
+        if let Ok(ip) = bare(entry).parse::<IpAddr>() {
+            return Some(Self::Range(ip, max_bits(ip)));
+        }
+        let name = entry.trim_end_matches('.').to_ascii_lowercase();
+        let (under, name) = match name.strip_prefix("*.") {
+            Some(domain) => (true, domain.to_owned()),
+            None => (false, name),
+        };
+        let label = |l: &str| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        };
+        if name.len() > 253 || !name.split('.').all(label) {
+            return None;
+        }
+        Some(if under {
+            Self::Under(name)
+        } else {
+            Self::Name(name)
+        })
+    }
+
+    fn takes_ip(&self, ip: IpAddr) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Range(net, bits) => in_range(ip, *net, *bits),
+            Self::Name(_) | Self::Under(_) => false,
+        }
+    }
+
+    fn takes_name(&self, name: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Name(n) => name == n,
+            Self::Under(domain) => name
+                .strip_suffix(domain.as_str())
+                .is_some_and(|rest| rest.len() > 1 && rest.ends_with('.')),
+            Self::Range(..) => false,
+        }
+    }
+}
+
+impl std::fmt::Display for Private {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Range(ip, bits) if *bits == max_bits(*ip) => write!(f, "{ip}"),
+            Self::Range(ip, bits) => write!(f, "{ip}/{bits}"),
+            Self::Name(name) => f.write_str(name),
+            Self::Under(domain) => write!(f, "*.{domain}"),
+            Self::Any => f.write_str("*"),
+        }
+    }
+}
+
+fn max_bits(ip: IpAddr) -> u8 {
+    if ip.is_ipv4() { 32 } else { 128 }
+}
+
+/// Whether `ip` is in the range `net`/`bits`; an IPv4 address mapped into
+/// IPv6 is in IPv4's ranges.
+fn in_range(ip: IpAddr, net: IpAddr, bits: u8) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    };
+    match (ip, net) {
+        (IpAddr::V4(a), IpAddr::V4(n)) => {
+            let mask = u32::MAX.checked_shl(32 - u32::from(bits)).unwrap_or(0);
+            u32::from(a) & mask == u32::from(n) & mask
+        }
+        (IpAddr::V6(a), IpAddr::V6(n)) => {
+            let mask = u128::MAX.checked_shl(128 - u32::from(bits)).unwrap_or(0);
+            u128::from(a) & mask == u128::from(n) & mask
+        }
+        _ => false,
+    }
+}
+
 /// An address fctl posts a webhook's events to, checked and normalized:
 /// `https://`, without a user name or password, to a host on the public
 /// internet: not an IP address of a private network, loopback, link-local
 /// or otherwise not routed, nor `localhost` or a name that only a local
-/// network resolves. Development instances (`dev`) also take `http://`
-/// and local addresses, to try receivers on the same machine.
-pub fn check_url(input: &str, dev: bool) -> Result<String> {
+/// network resolves; besides those, what the instance's `reach` takes
+/// (`http://`, the private networks and local names its settings list).
+/// Checked as a webhook is added or changed, and again before each post,
+/// as an instance's settings may take less since.
+pub fn check_url(input: &str, reach: &Reach) -> Result<String> {
     let field = |m: &str| ApiError::validation("url", m);
     let input = input.trim();
     if input.is_empty() {
@@ -501,12 +686,13 @@ pub fn check_url(input: &str, dev: bool) -> Result<String> {
         .map_err(|_| field("That isn't an address: it starts with https:// and a host"))?;
     match url.scheme() {
         "https" => {}
-        "http" if dev => {}
+        "http" if reach.http => {}
         "http" => {
             return Err(field(
                 "Use https://: fctl posts only over HTTPS, so that nobody on the way reads or changes what it sends",
             ));
         }
+        _ if reach.http => return Err(field("Use an https:// or http:// address")),
         _ => return Err(field("Use an https:// address")),
     }
     if !url.username().is_empty() || url.password().is_some() {
@@ -515,24 +701,31 @@ pub fn check_url(input: &str, dev: bool) -> Result<String> {
         ));
     }
     let local = || {
-        field(
-            "Use a public address: fctl doesn't post to private networks, loopback or local names",
-        )
+        let listed = reach.listed();
+        field(&if listed.is_empty() {
+            "Use a public address: fctl doesn't post to private networks, loopback or local names"
+                .to_owned()
+        } else {
+            format!(
+                "Use a public address, or one on the network this instance lets webhooks reach ({}): fctl doesn't post to other private networks, loopback or local names",
+                listed.join(", ")
+            )
+        })
     };
     match url.host() {
         None => return Err(field("Give the address a host")),
         Some(url::Host::Ipv4(ip)) => {
-            if !dev && !public_v4(ip) {
+            if !public_v4(ip) && !reach.takes_ip(IpAddr::V4(ip)) {
                 return Err(local());
             }
         }
         Some(url::Host::Ipv6(ip)) => {
-            if !dev && !public_v6(ip) {
+            if !public_v6(ip) && !reach.takes_ip(IpAddr::V6(ip)) {
                 return Err(local());
             }
         }
         Some(url::Host::Domain(name)) => {
-            if !dev && local_name(name) {
+            if local_name(name) && !reach.takes_name(name) {
                 return Err(local());
             }
         }
@@ -2084,8 +2277,9 @@ mod tests {
 
     #[test]
     fn webhooks_post_to_public_https_addresses_only() {
-        let ok = |u: &str| check_url(u, false).ok();
-        let refused = |u: &str| check_url(u, false).err().map(|e| e.message);
+        let public = Reach::default();
+        let ok = |u: &str| check_url(u, &public).ok();
+        let refused = |u: &str| check_url(u, &public).err().map(|e| e.message);
         assert_eq!(
             ok("https://hooks.slack.com/services/T0/B0/x"),
             Some("https://hooks.slack.com/services/T0/B0/x".into())
@@ -2139,18 +2333,103 @@ mod tests {
             );
         }
         // A development instance tries receivers on the same machine.
+        let dev = Reach::anything();
         assert_eq!(
-            check_url("http://127.0.0.1:9099/hook", true).ok(),
+            check_url("http://127.0.0.1:9099/hook", &dev).ok(),
             Some("http://127.0.0.1:9099/hook".into())
         );
-        assert!(check_url("http://localhost:9099/", true).is_ok());
-        assert!(check_url("https://user:pw@localhost/", true).is_err());
+        assert!(check_url("http://localhost:9099/", &dev).is_ok());
+        assert!(check_url("https://user:pw@localhost/", &dev).is_err());
         assert!(
             check_url(
                 &format!("https://example.com/{}", "a".repeat(URL_MAX)),
-                false
+                &public
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_self_hosted_instance_lets_webhooks_reach_the_network_its_settings_list() {
+        let (reach, unread) = Reach::parse(
+            Some("1"),
+            Some(
+                "10.20.0.0/16, 192.168.1.20 [fd00::]/8,hooks.lan  *.corp.internal JENKINS. 10.0.0.0/33 not_a_host *.-x",
+            ),
+        );
+        assert_eq!(unread, ["10.0.0.0/33", "not_a_host", "*.-x"]);
+        assert!(reach.http);
+        assert_eq!(
+            reach.listed(),
+            [
+                "10.20.0.0/16",
+                "192.168.1.20",
+                "fd00::/8",
+                "hooks.lan",
+                "*.corp.internal",
+                "jenkins"
+            ]
+        );
+        let ok = |u: &str| check_url(u, &reach).is_ok();
+        for allowed in [
+            "http://10.20.3.4:8080/hook",
+            "https://192.168.1.20/hook",
+            "http://[fd00::1]/hook",
+            "http://[::ffff:10.20.0.9]/hook",
+            "http://hooks.lan/fctl",
+            "https://ci.corp.internal/hook",
+            "http://a.b.corp.internal./hook",
+            "http://jenkins:8080/fctl",
+            "http://example.com/hook",
+        ] {
+            assert!(ok(allowed), "{allowed}");
+        }
+        for refused in [
+            "http://10.21.0.1/hook",
+            "https://192.168.1.21/hook",
+            "http://127.0.0.1/hook",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://corp.internal/hook",
+            "http://evilcorp.internal/hook",
+            "http://printer.local/hook",
+            "http://[fe80::1]/hook",
+        ] {
+            let said = check_url(refused, &reach).err().map(|e| e.message);
+            assert!(
+                said.as_deref()
+                    .is_some_and(|m| m.contains("10.20.0.0/16, 192.168.1.20")),
+                "{refused}: {said:?}"
+            );
+        }
+        // Without http, private addresses still go over https only.
+        let (https_only, _) = Reach::parse(None, Some("10.0.0.0/8"));
+        assert!(check_url("https://10.1.2.3/hook", &https_only).is_ok());
+        assert!(
+            check_url("http://10.1.2.3/hook", &https_only)
+                .err()
+                .is_some_and(|e| e.message.contains("https://"))
+        );
+        // Settings that list nothing take nothing more, whatever FCTL_WEBHOOK_HTTP says
+        // besides 1 or true.
+        assert_eq!(
+            Reach::parse(Some("yes"), Some(" , ")),
+            (Reach::default(), vec![])
+        );
+        // A /0 range takes every address of its family; one address, itself.
+        let (all_v4, _) = Reach::parse(None, Some("0.0.0.0/0"));
+        assert!(
+            all_v4.takes_ip(
+                "127.0.0.1"
+                    .parse()
+                    .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            )
+        );
+        assert!(!all_v4.takes_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert_eq!(
+            Private::parse("192.168.1.20/32")
+                .map(|p| p.to_string())
+                .as_deref(),
+            Some("192.168.1.20")
         );
     }
 

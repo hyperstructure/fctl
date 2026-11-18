@@ -873,7 +873,9 @@ fctl webhooks verify --any-age --secret whsec_… --id evt_01KC… --timestamp 1
 default); `--projects`, a workspace's projects by slug or id, or `all`;
 `--started-by`, whose sessions' events (`people`, `schedules`,
 `autopilot`, `tickets`), or `all`. Addresses are `https://` on the public
-internet. Adding a webhook, pointing one elsewhere, and reading or
+internet, unless a self-hosted instance lets webhooks reach its own network
+or post over `http://`, which `fctl webhooks events` says
+([Self-hosting](self-hosting.md#webhooks-to-your-own-network)). Adding a webhook, pointing one elsewhere, and reading or
 rotating its secret are sensitive actions, which take confirming it's you where the instance
 asks for that. `fctl webhooks verify` checks a request as a receiver
 does, with the secret in `--secret` or `FCTL_WEBHOOK_SECRET`: whether the

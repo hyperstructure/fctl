@@ -49,6 +49,7 @@ function render(node: ReactNode) {
 const settle = () => act(() => new Promise((r) => setTimeout(r, 10)));
 
 const CATALOG: G.WebhookEvents = {
+  reach: { http: false, private: [] },
   groups: [
     { id: "sessions", label: "Sessions" },
     { id: "reviews", label: "Reviews" },

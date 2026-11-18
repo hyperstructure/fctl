@@ -42,10 +42,4 @@ linear?: boolean,
  * It takes Linear's webhook (`LINEAR_WEBHOOK_SECRET`): what people
  * delegate to fctl in Linear starts sessions.
  */
-linear_webhook?: boolean, 
-/**
- * Webhooks may post to `http://` and local addresses too, as a
- * development instance's do (`FCTL_DEV`): elsewhere only to public
- * `https://` ones. Absent from control planes before webhooks.
- */
-local_webhooks?: boolean, };
+linear_webhook?: boolean, };

@@ -77,8 +77,14 @@ address outside fctl.
 - **Only public addresses**: `https://`, no credentials in the address,
   and no host that is an IP address of a private network, loopback or
   link-local, nor `localhost` or `.local`/`.internal` names, so that a
-  webhook can't reach the control plane's own network. Development
-  instances (`FCTL_DEV`) also take `http://` and local addresses.
+  webhook can't reach the control plane's own network. A self-hosted
+  instance, whose receivers may live on its own network, lets webhooks
+  reach the IP ranges and host names its operator lists
+  (`FCTL_WEBHOOK_PRIVATE_HOSTS`) and post over `http://`
+  (`FCTL_WEBHOOK_HTTP`): settings of the deployment, not of the app, so
+  that its admins can't widen them from a browser. app.fctl.sh sets
+  neither. Each address is checked again before each post. Development
+  instances (`FCTL_DEV`) take `http://` and local addresses.
 
 ## Consequences
 
@@ -95,6 +101,8 @@ address outside fctl.
   delivery logs grow the Durable Object's storage, not D1.
 - A self-hosted control plane can't check where a host name resolves to:
   one that resolves to a private address of its network is reached. Such
-  instances keep webhooks' hosts to ones they trust.
+  instances keep webhooks' hosts to ones they trust. One that lists
+  private hosts lets whoever manages a webhook reach them, so it lists
+  receivers, not whole networks.
 - A change to a webhook takes effect for the events of sessions within
   half a minute; tests and resends at once.

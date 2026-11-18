@@ -3659,10 +3659,19 @@ what happens to as it happens, signed with each one's secret
    that is an IP address of a private network, loopback, link-local,
    shared or otherwise unrouted range (IPv4 and IPv6, IPv4 inside IPv6
    too), nor `localhost`, a name without a dot or one of local networks'
-   suffixes (`.local`, `.internal`…), unless the instance is a
-   development one (`FCTL_DEV`, `Features::local_webhooks`). A
-   self-hosted control plane can't check where a name resolves, so a name
-   that resolves to its own network reaches it there. Adding one, pointing
+   suffixes (`.local`, `.internal`…), unless the instance's settings let
+   them reach it (`hooks::Reach`, `Config::webhook_reach`): a self-hosted
+   instance lists IP ranges and host names of its own network
+   (`FCTL_WEBHOOK_PRIVATE_HOSTS`, which the standalone server checks as it
+   starts) and lets them post over `http://` (`FCTL_WEBHOOK_HTTP`); a
+   development one (`FCTL_DEV`) takes anything; app.fctl.sh sets neither
+   (a test in `xtask::deploy` holds it to that). `GET
+   /api/v1/webhook-events` says what the instance takes to those signed
+   in, for the form's hint; the public `/api/v1/instance` doesn't. The
+   HooksDO checks each address again before it posts, so that settings
+   narrowed since stop it. A self-hosted control plane can't check where
+   a name resolves, so a name that resolves to its own network reaches it
+   there. Adding one, pointing
    one elsewhere, and reading or rotating its secret are sensitive actions
    (`Sensitive::AddWebhook`); limited access tokens and autopilots reach
    none of it but the list of events. A project's page lists the

@@ -30,10 +30,29 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use worker::{Request, Response};
 
-/// `GET /api/v1/webhook-events`: every event webhooks get, in its groups.
+/// `GET /api/v1/webhook-events`: every event webhooks get, in its groups,
+/// and where the instance lets them post.
 pub async fn events(ctx: &Ctx) -> AppResult<Response> {
     ctx.user()?;
-    http::ok(&rules::catalog())
+    let mut catalog = rules::catalog();
+    catalog.reach = ctx.cfg.webhook_reach.shown();
+    http::ok(&catalog)
+}
+
+/// A webhook's address, checked against where the instance lets webhooks
+/// post; one it refuses names the entries of its settings it couldn't
+/// read, which may be why.
+fn checked_url(ctx: &Ctx, url: &str) -> AppResult<String> {
+    rules::check_url(url, &ctx.cfg.webhook_reach).map_err(|mut e| {
+        if !ctx.cfg.webhook_reach_unread.is_empty() {
+            e.message = format!(
+                "{}. FCTL_WEBHOOK_PRIVATE_HOSTS lists what fctl can't read, which it leaves out: {}",
+                e.message.trim_end_matches('.'),
+                ctx.cfg.webhook_reach_unread.join(", ")
+            );
+        }
+        AppError(e)
+    })
 }
 
 /// How some of a workspace's webhooks' deliveries went lately; nothing for
@@ -175,7 +194,7 @@ async fn create(
 ) -> AppResult<Response> {
     let body: CreateWebhookRequest = http::body(req).await?;
     let c = Checked {
-        url: rules::check_url(&body.url, ctx.cfg.dev).map_err(AppError)?,
+        url: checked_url(ctx, &body.url)?,
         name: rules::check_name(body.name.as_deref()).map_err(AppError)?,
         events: rules::check_events(&body.events).map_err(AppError)?,
         projects: match project_id {
@@ -314,7 +333,7 @@ pub async fn update(ctx: &Ctx, req: &mut Request, id: &str) -> AppResult<Respons
     let row = managed(ctx, id).await?;
     let body: UpdateWebhookRequest = http::body(req).await?;
     let url = match &body.url {
-        Some(u) => Some(rules::check_url(u, ctx.cfg.dev).map_err(AppError)?),
+        Some(u) => Some(checked_url(ctx, u)?),
         None => None,
     };
     let moved = url.as_ref().is_some_and(|u| *u != row.url);

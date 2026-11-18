@@ -129,6 +129,7 @@ export function WebhookPage({
             webhook={w}
             catalog={events}
             groups={catalog.data.groups}
+            reach={catalog.data.reach}
             projects={projects}
             onDone={(r) => {
               setEditing(false);

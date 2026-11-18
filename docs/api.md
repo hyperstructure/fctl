@@ -302,7 +302,7 @@ what events start.
 
 | Request | What it does |
 |---|---|
-| `GET /api/v1/webhook-events` | `{"groups": […], "events": [{"type", "group", "label", "description", "sessions"}]}`: every event webhooks get (`sessions`: it's about a session, which `started_by` narrows down) |
+| `GET /api/v1/webhook-events` | `{"groups": […], "events": [{"type", "group", "label", "description", "sessions"}], "reach": {"http", "private": […]}}`: every event webhooks get (`sessions`: it's about a session, which `started_by` narrows down), and where the instance lets webhooks post besides public `https://` addresses (`http`: over `http://` too; `private`: the IP ranges and host names of its network it lists, [Self-hosting](self-hosting.md#webhooks-to-your-own-network)) |
 | `GET /api/v1/workspaces/{workspace}/webhooks` | `{"webhooks": […], "count", "limit"}`: the workspace's webhooks and its projects' (its admins) |
 | `POST /api/v1/workspaces/{workspace}/webhooks` | `{"url", "name", "events": […], "projects": […], "started_by": […], "enabled": false}`: one of the workspace's, for every project or those in `projects` (its admins); answers `{"webhook", "secret"}`, the secret once |
 | `GET /api/v1/projects/{project}/webhooks` | the project's own webhooks, and the workspace's that send its events (`can_manage`: false for those the caller doesn't manage, whose `url` is its scheme and host alone, since a path can hold a credential) |

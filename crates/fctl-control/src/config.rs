@@ -8,6 +8,8 @@
 //! | `FCTL_EARLY_ACCESS` | var | `1` where people without an account ask for early access (app.fctl.sh) |
 //! | `FCTL_SEARCH_ENGINES` | var | `1` where search engines may index the public pages (app.fctl.sh) |
 //! | `FCTL_HTTPS_ONLY` | var | `1` where plain HTTP redirects to HTTPS (app.fctl.sh; `fctl_domain::https`) |
+//! | `FCTL_WEBHOOK_HTTP` | var | `1` where webhooks may post over plain `http://` too (self-hosted; never app.fctl.sh) |
+//! | `FCTL_WEBHOOK_PRIVATE_HOSTS` | var | IP ranges and host names on a private network webhooks may post to (self-hosted; never app.fctl.sh; `fctl_domain::hooks::Reach`) |
 //! | `FCTL_MASTER_KEY` | secret | 32 random bytes, base64; encrypts credentials and signs state |
 //! | `FCTL_SETUP_TOKEN` | secret | One-time token for creating the owner account |
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
@@ -100,6 +102,13 @@ pub struct Config {
     pub search_engines: bool,
     pub master_key: Option<[u8; 32]>,
     pub setup_token: Option<String>,
+    /// Where webhooks may post besides public `https://` addresses
+    /// (`FCTL_WEBHOOK_HTTP`, `FCTL_WEBHOOK_PRIVATE_HOSTS`; anything on a
+    /// development instance).
+    pub webhook_reach: fctl_domain::hooks::Reach,
+    /// The entries of `FCTL_WEBHOOK_PRIVATE_HOSTS` it couldn't read and
+    /// left out, which an address it refuses names.
+    pub webhook_reach_unread: Vec<String>,
     pub github: Option<GithubConfig>,
     /// The GitHub App review agents post their reviews as, where it's
     /// installed on the reviewed repository (`fctl-review`), so that people
@@ -209,15 +218,26 @@ impl Config {
             from: var(env, "FCTL_EMAIL_FROM")
                 .unwrap_or_else(|| "fctl <noreply@fctl.sh>".to_owned()),
         });
+        let dev = var(env, "FCTL_DEV").is_some_and(|v| v == "1" || v == "true");
+        let (webhook_reach, webhook_reach_unread) = if dev {
+            (fctl_domain::hooks::Reach::anything(), Vec::new())
+        } else {
+            fctl_domain::hooks::Reach::parse(
+                var(env, "FCTL_WEBHOOK_HTTP").as_deref(),
+                var(env, "FCTL_WEBHOOK_PRIVATE_HOSTS").as_deref(),
+            )
+        };
         Self {
             instance_name: var(env, "FCTL_INSTANCE_NAME").unwrap_or_else(|| "fctl".to_owned()),
             public_url,
-            dev: var(env, "FCTL_DEV").is_some_and(|v| v == "1" || v == "true"),
+            dev,
             early_access: var(env, "FCTL_EARLY_ACCESS").is_some_and(|v| v == "1" || v == "true"),
             search_engines: var(env, "FCTL_SEARCH_ENGINES")
                 .is_some_and(|v| v == "1" || v == "true"),
             master_key,
             setup_token: var(env, "FCTL_SETUP_TOKEN"),
+            webhook_reach,
+            webhook_reach_unread,
             github,
             github_review,
             linear,

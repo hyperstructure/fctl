@@ -181,10 +181,11 @@ export const ORIGINS: { value: G.WebhookOrigin; label: string; line: string }[] 
 ];
 
 /**
- * Where an address would be refused, before the server says so: what to change, or nothing. The
- * server checks more (private networks, local names) and says why itself.
+ * Where an address would be refused, before the server says so: what to change, or nothing.
+ * `reach` is where the instance lets webhooks post besides public https:// addresses; the server
+ * checks the private networks and local names itself, and says why.
  */
-export function urlProblem(url: string, dev = false): string | undefined {
+export function urlProblem(url: string, reach?: G.WebhookReach): string | undefined {
   const u = url.trim();
   if (!u) return undefined;
   let parsed: URL;
@@ -193,12 +194,37 @@ export function urlProblem(url: string, dev = false): string | undefined {
   } catch {
     return "That isn't an address yet: it starts with https:// and a host.";
   }
-  if (parsed.protocol === "http:" && !dev)
+  if (parsed.protocol === "http:" && !reach?.http)
     return "Use https://: fctl posts only over HTTPS, so that nobody on the way reads or changes what it sends.";
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "Use an https:// address.";
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
+    return reach?.http ? "Use an https:// or http:// address." : "Use an https:// address.";
   if (parsed.username || parsed.password)
     return "Leave the user name and password out: check fctl's signature instead, or put a token in its query.";
   return undefined;
+}
+
+/** How many of an instance's private networks the address field's hint names before "and N more". */
+const LISTED = 4;
+
+/**
+ * What the address field says it takes: an https:// address on the public internet, and what else
+ * the instance lets webhooks reach (`reach`, from its settings); for an http:// one, that what fctl
+ * posts there travels unencrypted.
+ */
+export function addressHint(url: string, reach?: G.WebhookReach): string {
+  const lead = "fctl posts each event there as JSON, signed with its secret";
+  const http = !!reach?.http;
+  const nets = reach?.private ?? [];
+  if (nets.includes("*")) return `${lead}. This development instance also takes http:// and local addresses.`;
+  if (http && url.trim().toLowerCase().startsWith("http://"))
+    return "Over http://, anyone on the way can read and change what fctl posts: keep it to your own network.";
+  const scheme = http ? "an https:// or http:// address" : "an https:// address";
+  if (nets.length === 0) return `${lead}: ${scheme} on the public internet.`;
+  const named =
+    nets.length <= LISTED
+      ? nets.join(", ")
+      : `${nets.slice(0, LISTED).join(", ")} and ${nets.length - LISTED} more`;
+  return `${lead}: ${scheme} on the public internet, or on this instance's network (${named}).`;
 }
 
 /** The languages the secret's examples come in. */

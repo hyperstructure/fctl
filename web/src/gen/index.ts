@@ -432,6 +432,7 @@ export type { WebhookHealth } from "./WebhookHealth";
 export type { WebhookId } from "./WebhookId";
 export type { WebhookList } from "./WebhookList";
 export type { WebhookOrigin } from "./WebhookOrigin";
+export type { WebhookReach } from "./WebhookReach";
 export type { WebhookRequest } from "./WebhookRequest";
 export type { WebhookResponse } from "./WebhookResponse";
 export type { WebhookSecret } from "./WebhookSecret";

@@ -778,9 +778,29 @@ impl HooksObject {
         let body = self.body(&d.event_id)?;
         let number = count(d.attempts) + 1;
         let test = d.test > 0.0;
-        let keys = crate::crypto::keys(&Config::from_env(&self.env))
-            .and_then(|k| hook.signing_keys(&k, now));
+        let cfg = Config::from_env(&self.env);
+        let keys = crate::crypto::keys(&cfg).and_then(|k| hook.signing_keys(&k, now));
+        // The instance's settings may let webhooks reach less than when this
+        // one was added: an address they no longer take gets nothing.
+        let refused = rules::check_url(&hook.url, &cfg.webhook_reach).err();
+        let failed = |error: String| Posted {
+            status: None,
+            error: Some(error),
+            response: None,
+            ms: 0,
+            retry_after: None,
+        };
         let (posted, headers) = match keys {
+            _ if refused.is_some() => (
+                failed(format!(
+                    "fctl didn't post: this instance's settings no longer let webhooks reach this address. {}.",
+                    refused
+                        .as_ref()
+                        .map(|e| e.message.trim_end_matches('.'))
+                        .unwrap_or_default()
+                )),
+                Vec::new(),
+            ),
             Ok(keys) if !keys.is_empty() => {
                 let timestamp = now / 1000;
                 let signature = rules::signatures(&keys, &d.event_id, timestamp, body.as_bytes());
@@ -801,13 +821,7 @@ impl HooksObject {
                 (post(&hook.url, &headers, &body).await, headers)
             }
             _ => (
-                Posted {
-                    status: None,
-                    error: Some("fctl couldn't open the webhook's secret to sign it.".into()),
-                    response: None,
-                    ms: 0,
-                    retry_after: None,
-                },
+                failed("fctl couldn't open the webhook's secret to sign it.".into()),
                 Vec::new(),
             ),
         };
