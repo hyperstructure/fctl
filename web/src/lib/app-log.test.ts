@@ -319,6 +319,39 @@ describe("startAppLog", () => {
     next();
   });
 
+  it("keeps when the run was last on screen through a page load of its own in the background", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 18, 9, 56, 50));
+    installed(true);
+    const stop = startAppLog();
+    vi.advanceTimersByTime(7_000);
+    setVisibility("hidden");
+    stop();
+    // iOS ends the page in the background and loads it again there, in the same run.
+    vi.advanceTimersByTime(60_000);
+    const again = startAppLog();
+    expect(said().at(-1)).toMatch(/^Started \(a page load in the same run, .*, in the background, /);
+    vi.advanceTimersByTime(10_000);
+    again();
+    sessionStorage.clear();
+    const next = startAppLog();
+    expect(said()).toContain(
+      "The run before ended in the background: last on screen at 2026-11-18 09:56:57, last heard from at 2026-11-18 09:58:07.",
+    );
+    next();
+  });
+
+  it("takes when a run went to the background from a heartbeat kept before it said so", () => {
+    installed(true);
+    const left = new Date(2026, 10, 18, 9, 56, 57).getTime();
+    localStorage.setItem("fctl:app-beat", JSON.stringify({ at: left, shown: false }));
+    sessionStorage.setItem("fctl:log-running", "run-1");
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    const stop = startAppLog();
+    expect(JSON.parse(localStorage.getItem("fctl:app-beat") ?? "{}")).toMatchObject({ seen: left });
+    stop();
+  });
+
   it("says a run started in the background, and how long its page took to load", () => {
     installed(true);
     Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });

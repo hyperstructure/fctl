@@ -406,8 +406,10 @@ export function startAppLog(): () => void {
 
   // When the run was last on screen, or null while it hasn't been. With the heartbeat, which goes on
   // in the background until the browser suspends the page, the next run can tell how long this one
-  // still ran there.
+  // still ran there. A page load of the run's own, as iOS loads the page again in the background,
+  // goes on from the run's heartbeat: one from before it kept `seen` said it in `at`.
   let seen: number | null = null;
+  if (!fresh && before) seen = before.seen === undefined ? before.at : before.seen;
   const beat = (on = shown()) => {
     if (!own) return;
     const now = Date.now();
