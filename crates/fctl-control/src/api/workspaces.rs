@@ -82,8 +82,8 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
             .iter()
             .map(|i| i.to_invitation(ws::blocked_for(ctx, user, i.require_two_factor)))
             .collect(),
-        limit: policy::MAX_WORKSPACES as u32,
-        unlimited: policy::workspace_limit(user.role()).is_none(),
+        limit: settings.max_workspaces,
+        unlimited: policy::workspace_limit(user.role(), &settings).is_none(),
     })
 }
 
@@ -113,7 +113,7 @@ async fn own_address(ctx: &Ctx, user: &UserRow, requested: Option<&str>) -> AppR
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateWorkspaceRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
-    let limit = policy::workspace_limit(user.role());
+    let limit = policy::workspace_limit(user.role(), &ctx.settings());
     policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?, limit)?;
     let name = policy::name(&body.name)?;
     let slug = match body.slug.as_deref().filter(|s| !s.trim().is_empty()) {

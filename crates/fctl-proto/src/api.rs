@@ -1623,7 +1623,17 @@ pub struct InstanceSettings {
     /// that runs its own instance may want. On by default; turning it off
     /// takes confirming it's you.
     pub service_account_consent: bool,
+    /// The most workspaces one person can be a member of, created or
+    /// joined: [`DEFAULT_MAX_WORKSPACES`] (five) by default; 0 for any
+    /// number. The primary instance owner can be in any number whatever it
+    /// says. Lowering it takes nobody out of a workspace: those in more
+    /// join and create no more until they are in fewer.
+    pub max_workspaces: u32,
 }
+
+/// How many workspaces one person can be a member of until an instance's
+/// admins choose another number ([`InstanceSettings::max_workspaces`]).
+pub const DEFAULT_MAX_WORKSPACES: u32 = 5;
 
 impl Default for InstanceSettings {
     fn default() -> Self {
@@ -1635,6 +1645,7 @@ impl Default for InstanceSettings {
             gravatar: true,
             export_interval_hours: 168,
             service_account_consent: true,
+            max_workspaces: DEFAULT_MAX_WORKSPACES,
         }
     }
 }
@@ -1653,6 +1664,8 @@ pub struct UpdateInstanceSettingsRequest {
     /// 0 to 8760.
     pub export_interval_hours: Option<u32>,
     pub service_account_consent: Option<bool>,
+    /// 0: any number.
+    pub max_workspaces: Option<u32>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -1815,10 +1828,12 @@ pub struct WorkspaceList {
     pub workspaces: Vec<Workspace>,
     pub invitations: Vec<WorkspaceInvitation>,
     /// The most workspaces one person can be a member of, but the primary
-    /// instance owner.
+    /// instance owner: the instance's [`InstanceSettings::max_workspaces`],
+    /// 0 when it lets everyone be in any number (`unlimited` is then true).
     pub limit: u32,
-    /// You can be in any number of workspaces, more than `limit`: you are
-    /// the primary instance owner.
+    /// You can be in any number of workspaces: you are the primary instance
+    /// owner (with a `limit` above 0, which holds everyone else), or the
+    /// instance holds nobody to a number (`limit` 0).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub unlimited: bool,

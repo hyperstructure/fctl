@@ -1,6 +1,6 @@
 # 0058: The primary instance owner can be in any number of workspaces
 
-2026-10-24 · accepted
+2026-10-24 · accepted · instance admins choose how many workspaces everyone else can be in since [0087](0087-instance-admins-choose-how-many-workspaces-each-person-can-be-in.md)
 
 ## Context
 

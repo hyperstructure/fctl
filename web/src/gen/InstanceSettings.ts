@@ -63,4 +63,12 @@ export_interval_hours: number,
  * that runs its own instance may want. On by default; turning it off
  * takes confirming it's you.
  */
-service_account_consent: boolean, };
+service_account_consent: boolean, 
+/**
+ * The most workspaces one person can be a member of, created or
+ * joined: [`DEFAULT_MAX_WORKSPACES`] (five) by default; 0 for any
+ * number. The primary instance owner can be in any number whatever it
+ * says. Lowering it takes nobody out of a workspace: those in more
+ * join and create no more until they are in fewer.
+ */
+max_workspaces: number, };

@@ -9,9 +9,6 @@ use fctl_proto::ApiError;
 use fctl_proto::api::{BaseRole, InstanceSettings};
 use fctl_proto::session::{InstanceRole, ProjectRole, WorkspaceColor, WorkspaceRole};
 
-/// The most workspaces one person can be a member of, but the primary
-/// instance owner ([`workspace_limit`]).
-pub const MAX_WORKSPACES: usize = 5;
 /// How long an invitation to a workspace waits for an answer.
 pub const INVITATION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
@@ -150,18 +147,50 @@ pub fn check_two_factor(settings: &InstanceSettings, require: bool) -> Result<()
 }
 
 /// The most workspaces someone whose instance role is `role` can be a
-/// member of: [`MAX_WORKSPACES`], or any number (`None`) for the primary
-/// instance owner, whose instance it is. Admins are held to it as members
-/// are, and so is an owner who hands the role over: they stay in every
-/// workspace they are in, and join no more until they are in fewer.
-pub fn workspace_limit(role: InstanceRole) -> Option<usize> {
-    (role != InstanceRole::Owner).then_some(MAX_WORKSPACES)
+/// member of: the instance's `max_workspaces` (five unless its admins chose
+/// another number), or any number (`None`) for the primary instance owner,
+/// whose instance it is, and for everyone where the admins chose any
+/// number (0). Admins are held to it as members are, and so is an owner
+/// who hands the role over: they stay in every workspace they are in, and
+/// join no more until they are in fewer, as do those in more once the
+/// admins lower it.
+pub fn workspace_limit(role: InstanceRole, settings: &InstanceSettings) -> Option<usize> {
+    let max = settings.max_workspaces;
+    (role != InstanceRole::Owner && max > 0).then(|| usize::try_from(max).unwrap_or(usize::MAX))
+}
+
+/// A number of workspaces each person can be in, as `fctl admin set
+/// --max-workspaces` takes it: 1 or more, or `any` (0) for any number.
+pub fn parse_max_workspaces(input: &str) -> std::result::Result<u32, String> {
+    let s = input.trim().to_ascii_lowercase();
+    if matches!(s.as_str(), "any" | "unlimited" | "off" | "none") {
+        return Ok(0);
+    }
+    match s.parse::<u32>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err(format!(
+            "{input:?} isn't a number of workspaces: use 1 or more, or any to let people be in any number"
+        )),
+    }
+}
+
+/// How many workspaces each person can be in, for an instance's settings:
+/// `5 workspaces`, `1 workspace`, `any number of workspaces` (0).
+pub fn max_workspaces_words(max: u32) -> String {
+    match max {
+        0 => "any number of workspaces".into(),
+        1 => "1 workspace".into(),
+        n => format!("{n} workspaces"),
+    }
 }
 
 /// Whether someone who is a member of `count` workspaces, of at most
 /// `limit` ([`workspace_limit`]), may join, or create, another one.
 pub fn check_limit(count: usize, limit: Option<usize>) -> Result<()> {
     match limit {
+        Some(1) if count == 1 => Err(ApiError::conflict(
+            "You are a member of 1 workspace, the most you can be. Leave it first.",
+        )),
         Some(max) if count >= max => Err(ApiError::conflict(if count == max {
             format!("You are a member of {max} workspaces, the most you can be. Leave one first.")
         } else {
@@ -180,7 +209,8 @@ pub fn check_limit(count: usize, limit: Option<usize>) -> Result<()> {
 pub fn check_their_limit(count: usize, limit: Option<usize>) -> Result<()> {
     match limit {
         Some(max) if count >= max => Err(ApiError::conflict(format!(
-            "They are a member of {count} workspaces, and nobody but the primary instance owner can be in more than {max}. Take them out of one first."
+            "They are a member of {}, and nobody but the primary instance owner can be in more than {max}. Take them out of one first.",
+            max_workspaces_words(u32::try_from(count).unwrap_or(u32::MAX).max(1))
         ))),
         _ => Ok(()),
     }
@@ -495,28 +525,107 @@ mod tests {
 
     #[test]
     fn five_workspaces_at_most_but_for_the_primary_instance_owner() {
+        let settings = InstanceSettings::default();
         for role in [InstanceRole::Admin, InstanceRole::Member] {
-            let limit = workspace_limit(role);
-            assert_eq!(limit, Some(MAX_WORKSPACES));
+            let limit = workspace_limit(role, &settings);
+            assert_eq!(limit, Some(5));
             assert!(check_limit(0, limit).is_ok());
-            assert!(check_limit(MAX_WORKSPACES - 1, limit).is_ok());
-            let full = check_limit(MAX_WORKSPACES, limit).err().map(|e| e.message);
+            assert!(check_limit(4, limit).is_ok());
+            let full = check_limit(5, limit).err().map(|e| e.message);
             assert_eq!(
                 full.as_deref(),
                 Some("You are a member of 5 workspaces, the most you can be. Leave one first.")
             );
         }
-        let owner = workspace_limit(InstanceRole::Owner);
+        let owner = workspace_limit(InstanceRole::Owner, &settings);
         assert_eq!(owner, None);
-        for count in [0, MAX_WORKSPACES, 100] {
+        for count in [0, 5, 100] {
             assert!(check_limit(count, owner).is_ok());
         }
         // An owner who handed the role over, in more than the limit.
-        let over = check_limit(7, workspace_limit(InstanceRole::Admin));
+        let over = check_limit(7, workspace_limit(InstanceRole::Admin, &settings));
         assert_eq!(
             over.err().map(|e| e.message).as_deref(),
             Some("You are a member of 7 workspaces, and you can be in 5 at most. Leave 3 first.")
         );
+    }
+
+    #[test]
+    fn the_instance_admins_choose_how_many_workspaces() {
+        let more = InstanceSettings {
+            max_workspaces: 50,
+            ..Default::default()
+        };
+        for role in [InstanceRole::Admin, InstanceRole::Member] {
+            let limit = workspace_limit(role, &more);
+            assert_eq!(limit, Some(50));
+            assert!(check_limit(49, limit).is_ok());
+            assert!(check_limit(50, limit).is_err());
+        }
+        assert_eq!(workspace_limit(InstanceRole::Owner, &more), None);
+        // Any number, for everyone.
+        let any = InstanceSettings {
+            max_workspaces: 0,
+            ..Default::default()
+        };
+        for role in [
+            InstanceRole::Owner,
+            InstanceRole::Admin,
+            InstanceRole::Member,
+        ] {
+            let limit = workspace_limit(role, &any);
+            assert_eq!(limit, None);
+            assert!(check_limit(10_000, limit).is_ok());
+            assert!(check_their_limit(10_000, limit).is_ok());
+        }
+        // Lowered under what someone is in: they stay, and join no more.
+        let one = InstanceSettings {
+            max_workspaces: 1,
+            ..Default::default()
+        };
+        let limit = workspace_limit(InstanceRole::Member, &one);
+        assert!(check_limit(0, limit).is_ok());
+        assert_eq!(
+            check_limit(1, limit).err().map(|e| e.message).as_deref(),
+            Some("You are a member of 1 workspace, the most you can be. Leave it first.")
+        );
+        assert_eq!(
+            check_limit(3, limit).err().map(|e| e.message).as_deref(),
+            Some("You are a member of 3 workspaces, and you can be in 1 at most. Leave 3 first.")
+        );
+        assert_eq!(
+            check_their_limit(1, limit)
+                .err()
+                .map(|e| e.message)
+                .as_deref(),
+            Some(
+                "They are a member of 1 workspace, and nobody but the primary instance owner can be in more than 1. Take them out of one first."
+            )
+        );
+        assert_eq!(
+            check_their_limit(5, workspace_limit(InstanceRole::Admin, &Default::default()))
+                .err()
+                .map(|e| e.message)
+                .as_deref(),
+            Some(
+                "They are a member of 5 workspaces, and nobody but the primary instance owner can be in more than 5. Take them out of one first."
+            )
+        );
+    }
+
+    #[test]
+    fn max_workspaces_reads_a_number_or_any() {
+        assert_eq!(parse_max_workspaces("20"), Ok(20));
+        assert_eq!(parse_max_workspaces(" 1 "), Ok(1));
+        assert_eq!(parse_max_workspaces("any"), Ok(0));
+        assert_eq!(parse_max_workspaces("Unlimited"), Ok(0));
+        assert_eq!(parse_max_workspaces("off"), Ok(0));
+        for bad in ["0", "-1", "five", "", "1.5", "99999999999"] {
+            assert!(parse_max_workspaces(bad).is_err(), "{bad}");
+        }
+        assert_eq!(max_workspaces_words(0), "any number of workspaces");
+        assert_eq!(max_workspaces_words(1), "1 workspace");
+        assert_eq!(max_workspaces_words(5), "5 workspaces");
     }
 
     #[test]

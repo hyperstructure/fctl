@@ -78,6 +78,7 @@ import {
 import { buildsImages, runsImages } from "@/lib/images";
 import { installCommand } from "@/lib/install";
 import { keys, queryClient, useInstance, useMe, useRunners, useWorkspaces } from "@/lib/queries";
+import { maxWorkspacesWords } from "@/lib/workspaces";
 
 type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "early-access" | "settings" | "audit";
 
@@ -1755,6 +1756,28 @@ function InstanceSettings() {
           />
         </div>
       </Section>
+      <Section
+        title="Workspaces"
+        description="How many workspaces each person can be a member of: those they create and those they join."
+      >
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Each person can be in
+            <span className="block text-[12.5px] text-ink-4">
+              The primary instance owner can be in any number. Lowering it takes nobody out of a workspace:
+              those in more create and join no more until they have left some.
+            </span>
+          </span>
+          <Select
+            size="sm"
+            aria-label="How many workspaces each person can be in"
+            className="shrink-0"
+            value={s && String(s.max_workspaces)}
+            options={workspaceLimits(s?.max_workspaces)}
+            onChange={(v) => save.mutate({ max_workspaces: Number(v) })}
+          />
+        </div>
+      </Section>
       <ReservedSlugs />
       <AdminTokens />
     </>
@@ -1888,10 +1911,25 @@ function exportIntervals(current: number | undefined): SelectOption[] {
     });
 }
 
+/** The numbers of workspaces each person may be in that admins choose from, with the current one; 0 is any number. */
+function workspaceLimits(current: number | undefined): SelectOption[] {
+  const counts = [1, 2, 3, 5, 10, 20, 50, 100];
+  if (current !== undefined && current > 0 && !counts.includes(current)) counts.push(current);
+  return [...counts.sort((a, b) => a - b), 0].map((n) => ({
+    value: String(n),
+    label: n === 0 ? "Any number" : maxWorkspacesWords(n),
+    description: n === 5 ? "The default" : undefined,
+  }));
+}
+
 /** What changed, for the toast. */
 function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest): string {
   if (b.export_interval_hours !== undefined)
     return `People can export their data ${exportEvery(s.export_interval_hours)}`;
+  if (b.max_workspaces !== undefined)
+    return s.max_workspaces === 0
+      ? "Each person can be in any number of workspaces"
+      : `Each person can be in ${maxWorkspacesWords(s.max_workspaces)} at most`;
   if (b.verify_sensitive_actions !== undefined)
     return s.verify_sensitive_actions
       ? "Sensitive actions now ask people to confirm it's them"
@@ -2009,6 +2047,7 @@ function SignInSettings({
     gravatar: true,
     export_interval_hours: 168,
     service_account_consent: true,
+    max_workspaces: 5,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

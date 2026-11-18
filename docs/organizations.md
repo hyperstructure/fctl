@@ -61,6 +61,7 @@ fctl admin set --require-two-factor on         # everyone who signs in with a pa
 fctl admin set --verify-sensitive-actions on   # making tokens, deleting projects… take a passkey or a code (the primary instance owner sets it)
 fctl admin set --gravatar off                  # nobody's picture comes from gravatar.com
 fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (below)
+fctl admin set --max-workspaces any            # each person can be in any number of workspaces (five by default)
 fctl workspaces set --base-role editor -w acme # every member of acme starts sessions in every one of its projects
 ```
 
@@ -123,8 +124,9 @@ them.
   them, and never changes the primary instance owner's account; only the
   primary owner's tokens change other admins'. It stops when it expires,
   someone revokes it, or its admin stops being an active admin.
-- **Limits.** A person is in at most five workspaces, the primary instance
-  owner in any number. A workspace that requires two-factor sign-in stays
+- **Limits.** A person is in at most five workspaces, or as many as the
+  instance's admins choose (`fctl admin set --max-workspaces`), the primary
+  instance owner in any number. A workspace that requires two-factor sign-in stays
   closed to someone until they set it up.
 
 ## Agents from your own portal or bot

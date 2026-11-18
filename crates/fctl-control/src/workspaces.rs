@@ -582,7 +582,7 @@ pub async fn join(
         .await?;
         return Err(not_found("Invitation"));
     }
-    let limit = policy::workspace_limit(user.role());
+    let limit = policy::workspace_limit(user.role(), settings);
     policy::check_limit(membership_count(db, &user.id).await?, limit)?;
     if user.blocked_by(settings, invitation.require_two_factor) {
         return Err(AppError(ApiError::new(

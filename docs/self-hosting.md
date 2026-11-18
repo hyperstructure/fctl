@@ -395,6 +395,13 @@ choose under **Admin → Settings → Data exports** (or `fctl admin set
 --export-interval 1d`; `off` lets them export at any time, and a year is
 the longest wait).
 
+Each person can be a member of five workspaces, those they create and
+those they join, and you, as the primary instance owner, of any number. To
+let people be in more, or fewer, choose under **Admin → Settings →
+Workspaces** (or `fctl admin set --max-workspaces 50`; `any` lets everyone
+be in any number). Lowering it takes nobody out of a workspace: those in
+more create and join no more until they have left some.
+
 An organization that runs fctl for its own people may want a portal or a
 bot of its own to start agents for them, with a workspace's [service
 accounts](automation.md#service-accounts). By default a service account
@@ -453,8 +460,9 @@ create`, `show`, `set`, `add` and `remove`
   who is in them, and makes no other token. No token changes the primary
   instance owner's account, and only the primary instance owner's tokens
   change admins'. A workspace's primary admin stays its primary admin.
-- **Limits.** Someone is in at most five workspaces (the primary instance
-  owner in any number). A workspace that requires two-factor sign-in stays
+- **Limits.** Someone is in at most five workspaces, or as many as the
+  instance's admins chose (the primary instance owner in any number). A
+  workspace that requires two-factor sign-in stays
   closed to someone until they set it up, and an instance that requires it
   holds the admin's tokens to it too.
 - **Confirming.** Where sensitive actions ask people to confirm it's them
