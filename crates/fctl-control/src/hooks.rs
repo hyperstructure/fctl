@@ -433,7 +433,10 @@ mod tests {
         assert!(web.events.is_empty() && !web.can_manage);
         let off = rows[2].to_webhook(None, true);
         assert!(!off.enabled);
-        assert_eq!(off.disabled_reason.as_deref(), Some("Every delivery failed."));
+        assert_eq!(
+            off.disabled_reason.as_deref(),
+            Some("Every delivery failed.")
+        );
         Ok(())
     }
 
@@ -472,7 +475,10 @@ mod tests {
     async fn a_project_s_webhooks_go_with_it_and_its_workspace_is_found() -> AppResult<()> {
         let db = testing::database();
         world(&db).await?;
-        assert_eq!(workspace_of(&db, "prj_api").await?.as_deref(), Some("wsp_1"));
+        assert_eq!(
+            workspace_of(&db, "prj_api").await?.as_deref(),
+            Some("wsp_1")
+        );
         assert_eq!(workspace_of(&db, "prj_gone").await?, None);
         run_sql(&db, "DELETE FROM projects WHERE id = 'prj_web'").await?;
         assert!(row(&db, "whk_web").await?.is_none());
