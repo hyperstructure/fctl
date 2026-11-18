@@ -577,6 +577,128 @@ pub struct Indexed {
     pub done: bool,
 }
 
+// ───────────────────────────── HooksObject ─────────────────────────────
+
+/// Something that happened in a workspace, for its webhooks that want it
+/// (`/emit`): `fctl_domain::hooks::Event` with its id, where it happened.
+#[derive(Serialize, Deserialize)]
+pub struct HookEmit {
+    pub workspace_id: String,
+    pub event_id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub origin: Option<fctl_proto::hooks::WebhookOrigin>,
+    pub gist: String,
+    pub data: serde_json::Value,
+    pub at: Millis,
+}
+
+/// A workspace's webhooks changed in D1 (`/changed`), one of them went
+/// (`/forget`, with `webhook_id`), or a project did, with its webhooks
+/// (`/forget-project`): its HooksObject reads them again.
+#[derive(Serialize, Deserialize)]
+pub struct HooksChanged {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub webhook_id: Option<String>,
+    /// `/forget-project`: a deleted project, whose events go from the log.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// `/forget-project`: the project's own webhooks, which went with it
+    /// and are forgotten whole, as `/forget` forgets one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub webhooks: Vec<String>,
+    /// A webhook that was turned on again: since when it fails starts
+    /// afresh, so that the three days it gets before fctl turns it off
+    /// again start now.
+    #[serde(default)]
+    pub fresh: Option<String>,
+}
+
+/// How some of a workspace's webhooks' deliveries went lately (`/health`).
+#[derive(Serialize, Deserialize)]
+pub struct HooksHealth {
+    pub workspace_id: String,
+    pub webhooks: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct HooksHealthAnswer {
+    pub health: std::collections::BTreeMap<String, fctl_proto::hooks::WebhookHealth>,
+}
+
+/// A webhook's deliveries, newest first (`/deliveries`): those in
+/// `state`, of event `kind`, before the cursor `before`.
+#[derive(Serialize, Deserialize)]
+pub struct HookDeliveries {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub before: Option<String>,
+    pub limit: u32,
+}
+
+/// One delivery of a webhook (`/delivery`), or resending it now
+/// (`/resend`, by `by`).
+#[derive(Serialize, Deserialize)]
+pub struct HookDelivery {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    pub delivery_id: String,
+    #[serde(default)]
+    pub by: Option<UserRef>,
+}
+
+/// Checks an address a webhook is being added at or pointed to: posts it a
+/// challenge, signed with the webhook's secret, and says whether the
+/// answer gave it back (`/challenge`).
+#[derive(Serialize, Deserialize)]
+pub struct HookChallenge {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub webhook_id: String,
+    pub url: String,
+    /// A new webhook's secret, sealed as its row will keep it; a webhook
+    /// that exists signs with its own.
+    #[serde(default)]
+    pub sealed: Option<String>,
+}
+
+/// What `/challenge` found: why the answer doesn't let the webhook post
+/// there, or nothing when it gave the challenge back.
+#[derive(Serialize, Deserialize)]
+pub struct HookChallenged {
+    #[serde(default)]
+    pub refused: Option<String>,
+}
+
+/// A sample of event `kind` to a webhook, now (`/test`).
+#[derive(Serialize, Deserialize)]
+pub struct HookTest {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    pub kind: String,
+    pub by: UserRef,
+}
+
+/// A webhook's deliveries that failed since `since` wait for an attempt
+/// again (`/resend-failed`).
+#[derive(Serialize, Deserialize)]
+pub struct HookResendFailed {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    pub since: Millis,
+}
+
 // ───────────────────────────── calling ─────────────────────────────
 
 pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
@@ -590,6 +712,14 @@ pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
 pub fn search_stub(env: &Env, workspace_id: &str) -> AppResult<Stub> {
     Ok(env
         .durable_object("SEARCH")?
+        .id_from_name(workspace_id)?
+        .get_stub()?)
+}
+
+/// The HooksObject of a workspace: its webhooks' deliveries.
+pub fn hooks_stub(env: &Env, workspace_id: &str) -> AppResult<Stub> {
+    Ok(env
+        .durable_object("HOOKS")?
         .id_from_name(workspace_id)?
         .get_stub()?)
 }

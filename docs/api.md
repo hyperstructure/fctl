@@ -307,6 +307,40 @@ last hour and 10 in the last 24 hours unless given, up to 100 and
 shows a tool's request, and [Run on events](automation.md#run-on-events)
 what events start.
 
+## Webhooks
+
+| Request | What it does |
+|---|---|
+| `GET /api/v1/webhook-events` | `{"groups": […], "events": [{"type", "group", "label", "description", "sessions"}], "reach": {"http", "private": […]}}`: every event webhooks get (`sessions`: it's about a session, which `started_by` narrows down), and where the instance lets webhooks post besides public `https://` addresses (`http`: over `http://` too; `private`: the IP ranges and host names of its network it lists, [Self-hosting](self-hosting.md#webhooks-to-your-own-network)) |
+| `GET /api/v1/workspaces/{workspace}/webhooks` | `{"webhooks": […], "count", "limit"}`: the workspace's webhooks and its projects' (its admins) |
+| `POST /api/v1/workspaces/{workspace}/webhooks` | `{"url", "name", "events": […], "projects": […], "started_by": […], "enabled": false}`: one of the workspace's, for every project or those in `projects` (its admins), once its address answers fctl's challenge ([checking the address](automation.md#checking-the-address): otherwise a `validation_failed` error on `url` says why, and `rate_limited` after a workspace's 20 challenges an hour); answers `{"webhook", "secret"}`, the secret once |
+| `GET /api/v1/projects/{project}/webhooks` | the project's own webhooks, and the workspace's that send its events (`can_manage`: false for those the caller doesn't manage, whose `url` is its scheme and host alone, since a path can hold a credential) |
+| `POST /api/v1/projects/{project}/webhooks` | the same, for one of the project's own (its owners and maintainers) |
+| `GET`, `PATCH`, `DELETE /api/v1/webhooks/{id}` | read (with `health`: the last attempt, how many delivered and failed in the last day, how many wait, `failing_since`, `dropped`), change (absent fields stay; `"name": ""` for none; a new `url` once it answers fctl's challenge, as adding one does; `"enabled": true` turns it on again, after fctl turned it off too), delete with what went out to it |
+| `GET /api/v1/webhooks/{id}/secret` | `{"secret", "previous_until"}`: its signing secret |
+| `POST /api/v1/webhooks/{id}/secret` | a new secret, which the answer has; the one before signs too until `previous_until`, a day on |
+| `POST /api/v1/webhooks/{id}/test` | `{"event": "session.ready_for_review"}`: posts a made-up event of that type now, marked `test`, and answers the delivery with how it went |
+| `GET /api/v1/webhooks/{id}/deliveries` | `{"deliveries": […], "next"}`, newest first, `?state=pending` / `delivered` / `failed`, `?event=`, `?limit=` (at most 100), `?before=` (`next`) |
+| `GET /api/v1/webhooks/{id}/deliveries/{delivery}` | one, with `request` (`url`, `headers`, `body`: as fctl posted it last) and `history`, every attempt newest first |
+| `POST /api/v1/webhooks/{id}/deliveries/{delivery}/resend` | posts it again now, as it was (five times at most), and answers it with how it went |
+| `POST /api/v1/webhooks/{id}/deliveries/resend-failed` | `{"since": …}` (milliseconds; the last day by default): those that failed since then wait for an attempt again, in their turn; `{"queued": n}` |
+
+A webhook is `{"id": "whk_…", "workspace_id", "project": {"id", "slug",
+"name"}, "name", "url", "events", "projects", "started_by", "enabled",
+"disabled_reason", "disabled_at", "previous_secret_until", "created_by",
+"created_at", "updated_at", "health", "can_manage"}`, with `project` only
+for a project's own. `events` empty is every event, also those a later
+version adds; `projects` empty is every project; `started_by` (`person`,
+`schedule`, `autopilot`, `ticket`) empty is sessions however they
+started. A delivery is `{"id": "whd_…", "webhook_id", "event_id", "type",
+"gist", "project_id", "session_id", "created_at", "state": "pending" |
+"delivered" | "failed", "attempts", "next_at", "last": {"at", "ms",
+"status", "error", "by", "response": {"headers", "body", "truncated"}},
+"test", "resends"}`. Adding a webhook, pointing one elsewhere, and reading
+or rotating its secret are sensitive actions; access tokens with limits reach none of
+it, but the list of events. [Webhooks](automation.md#webhooks) says what
+each request carries and how to check it.
+
 ## Autopilots
 
 An autopilot (experimental) runs a project, or its whole workspace, on its

@@ -202,6 +202,22 @@ Examples:
   fctl schedules runs sch_01JC…"
     )]
     Schedules(cmd::schedules::SchedulesArgs),
+    /// Webhooks: addresses fctl posts a workspace's or a project's events
+    /// to as they happen (a session starts, finishes a turn, asks something,
+    /// has pull requests ready for review; reviews; schedules), signed with
+    /// each one's secret.
+    #[command(
+        visible_alias = "webhook",
+        after_help = "Examples:
+  fctl webhooks                        # the workspace's webhooks (its admins)
+  fctl webhooks -p web                 # a project's
+  fctl webhooks add https://hooks.example.com/fctl --events session.question,session.ready_for_review
+  fctl webhooks test \"Deploy bot\" --event session.ready_for_review
+  fctl webhooks deliveries \"Deploy bot\" --failed
+  fctl webhooks resend \"Deploy bot\" --failed --since 6h
+  fctl webhooks events                 # what webhooks get"
+    )]
+    Webhooks(cmd::webhooks::WebhooksArgs),
     /// A project's autopilot (experimental): an agent that runs the
     /// project, or its whole workspace, on its own. People put it on, steer
     /// it and answer what it asks; in its own session's sandbox, the
@@ -532,6 +548,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Retro(args) => cmd::retro::run(server, args, json).await,
         Command::Review(args) => cmd::review::run(server, args, json).await,
         Command::Schedules(args) => cmd::schedules::run(server, args, json).await,
+        Command::Webhooks(args) => cmd::webhooks::run(server, args, json).await,
         Command::Autopilot(args) => cmd::autopilot::run(server, args, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await

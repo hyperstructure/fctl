@@ -138,14 +138,26 @@ const workspace = createRoute({
     account?: string;
     reason?: GithubRefusal;
     linear?: LinearOutcome;
+    webhook?: string;
   } => ({
-    tab: oneOf(s.tab, ["projects", "people", "runners", "github", "linear", "settings", "audit"] as const),
+    tab: oneOf(s.tab, [
+      "projects",
+      "people",
+      "runners",
+      "github",
+      "linear",
+      "webhooks",
+      "settings",
+      "audit",
+    ] as const),
     // Back from GitHub: installing the app, or the sign-in that connects an account (api::github).
     github: oneOf(s.github, GITHUB_OUTCOMES),
     account: str(s.account),
     reason: oneOf(s.reason, GITHUB_REFUSALS),
     // Back from Linear: installing fctl's app there (api::linear).
     linear: oneOf(s.linear, LINEAR_OUTCOMES),
+    // The webhook the Webhooks tab opens.
+    webhook: str(s.webhook),
   }),
 });
 const project = createRoute({
@@ -154,13 +166,15 @@ const project = createRoute({
   component: ProjectPage,
   validateSearch: (
     s: Record<string, unknown>,
-  ): { tab?: ProjectView; schedule?: string; linear?: LinearOutcome } => ({
+  ): { tab?: ProjectView; schedule?: string; linear?: LinearOutcome; webhook?: string } => ({
     // A tab, or a page of Memory or Settings (lib/project-page.ts); an unknown one opens Sessions.
     tab: oneOf(s.tab, PROJECT_VIEWS),
     // The schedule the Schedules tab opens, from a session it started.
     schedule: str(s.schedule),
     // Back from Linear: installing fctl's app, or linking someone's account (api::linear).
     linear: oneOf(s.linear, LINEAR_OUTCOMES),
+    // The webhook Settings → Webhooks opens.
+    webhook: str(s.webhook),
   }),
 });
 const session = createRoute({

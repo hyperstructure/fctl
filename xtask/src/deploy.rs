@@ -206,6 +206,7 @@ bindings = [
   {{ name = "NOTIFY", class_name = "NotifyObject" }},
   {{ name = "SCHEDULES", class_name = "ScheduleObject" }},
   {{ name = "SEARCH", class_name = "SearchObject" }},
+  {{ name = "HOOKS", class_name = "HooksObject" }},
 ]
 
 [[migrations]]
@@ -227,6 +228,10 @@ new_sqlite_classes = ["ScheduleObject"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["SearchObject"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["HooksObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"
@@ -518,6 +523,14 @@ client_id = "lin_client"
             doc["migrations"][4]["new_sqlite_classes"][0].as_str(),
             Some("SearchObject")
         );
+        assert_eq!(
+            doc["durable_objects"]["bindings"][6]["class_name"].as_str(),
+            Some("HooksObject")
+        );
+        assert_eq!(
+            doc["migrations"][5]["new_sqlite_classes"][0].as_str(),
+            Some("HooksObject")
+        );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
         assert!(doc["vars"].get("GITHUB_REVIEW_APP_ID").is_none());
         assert!(doc["vars"].get("FCTL_EARLY_ACCESS").is_none());
@@ -595,6 +608,26 @@ client_id = "lin_client"
                 robots.lines().any(|line| line == format!("Allow: {icon}")),
                 "/robots.txt keeps search engines from {icon}, which web/index.html links"
             );
+        }
+    }
+
+    /// app.fctl.sh's webhooks post only to public https:// addresses: its
+    /// Worker never gets the settings that let a self-hosted instance's reach
+    /// its own network or post over http://, nor development's, which lets
+    /// them post anywhere (`fctl_domain::hooks::Reach`).
+    #[test]
+    fn app_fctl_sh_webhooks_post_only_to_public_https_addresses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for instance in ["fctl-sh", "example"] {
+            let doc: toml::Table =
+                toml::from_str(&load(&root, instance).unwrap().wrangler_toml()).unwrap();
+            for var in [
+                "FCTL_WEBHOOK_HTTP",
+                "FCTL_WEBHOOK_PRIVATE_HOSTS",
+                "FCTL_DEV",
+            ] {
+                assert!(doc["vars"].get(var).is_none(), "{instance} sets {var}");
+            }
         }
     }
 

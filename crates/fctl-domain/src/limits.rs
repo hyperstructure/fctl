@@ -225,6 +225,8 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
         ) => Read,
         // Searching what its sessions said.
         ("GET", ["search"]) => Read,
+        // What webhooks get: the same for everyone.
+        ("GET", ["webhook-events"]) => Read,
         // Starting and steering sessions (a review's too), and keeping the memory.
         (
             "POST",

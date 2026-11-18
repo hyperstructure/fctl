@@ -11,6 +11,7 @@ pub mod emails;
 pub mod enrollment;
 pub mod github;
 pub mod google;
+pub mod hooks;
 pub mod kept_images;
 pub mod linear;
 pub mod memories;

@@ -752,6 +752,28 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   or says in its log that it couldn't, for one another user owns.
   One server at a time uses it (`server.lock`): two would each run the
   same sessions.
+- **Webhooks** post only to an address that answered fctl's challenge
+  as the webhook was added there or pointed there
+  ([checking the address](automation.md#checking-the-address)), so that
+  fctl doesn't post a workspace's events where nobody set up a receiver
+  for them, or to someone else's server. They go out from the server's
+  own network. fctl refuses
+  addresses that name a private, loopback or link-local IP address or a
+  local name, but can't see where a public-looking name resolves: one
+  that resolves to an address in the server's network reaches it there.
+  Where the control plane's network holds services that trust whatever
+  comes from it, keep who may add webhooks (a workspace's admins, a
+  project's owners and maintainers) to people you trust with that, or
+  keep the server's egress to the internet. `FCTL_WEBHOOK_PRIVATE_HOSTS`
+  lets webhooks reach the IP ranges and host names it lists, and
+  `FCTL_WEBHOOK_HTTP` lets them post over plain `http://`
+  ([Self-hosting](self-hosting.md#webhooks-to-your-own-network)): anyone
+  who manages a webhook can then have the server post to any of those,
+  so list only receivers' ranges, never the server's own address, cloud
+  metadata (`169.254.169.254`) or networks with admin interfaces. The
+  server checks a webhook's address against them again before each post,
+  so narrowing them stops webhooks that pointed past them. app.fctl.sh
+  sets neither.
 - Errors the Worker throws come back as plain 500s, without the stack
   traces Miniflare shows in development.
 - Request bodies are read as they come and refused once they pass their
@@ -781,6 +803,16 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
 - Deleting a workspace deletes its projects, as deleting each would, its
   audit log, its enrollment tokens and the runners that enrolled with them;
   the instance's audit log records who deleted it.
+- Webhooks' delivery logs (what was posted to each webhook: the event's
+  payload, with session titles, the start of agents' replies and their
+  questions, each attempt with who resent it or sent a test, and the start
+  of the newest answer) are kept for 30 days, and at most each webhook's
+  newest 1,000. A webhook itself keeps how its newest attempt went, with
+  neither the answer nor who made it. Deleting a webhook deletes its log;
+  deleting a project deletes what its events said in every log, and its
+  own webhooks with theirs; deleting a workspace deletes them all. Webhooks' secrets are sealed with the
+  master key, and reading one takes confirming it's you where the
+  instance asks for that.
 - A runner that enrolled keeps the address it enrolled from, and what its
   host said of the machine, until it is removed: by an admin or its owner,
   as its host uninstalls, once it stays offline longer than its enrollment

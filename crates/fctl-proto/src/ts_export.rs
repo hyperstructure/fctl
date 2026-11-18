@@ -11,7 +11,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
             $( <$t as TS>::export_all(&cfg)?; )*
         };
     }
-    use crate::{agent, api, autopilot, event, runner, session, tickets, uplink, viewer};
+    use crate::{agent, api, autopilot, event, hooks, runner, session, tickets, uplink, viewer};
     export!(
         crate::ApiError,
         autopilot::Autopilot,
@@ -308,6 +308,42 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         tickets::ConnectLinearRequest,
         tickets::ProjectTickets,
         tickets::TicketRun,
+        hooks::WebhookOrigin,
+        hooks::Webhook,
+        hooks::WebhookHealth,
+        hooks::WebhookList,
+        hooks::CreateWebhookRequest,
+        hooks::UpdateWebhookRequest,
+        hooks::CreatedWebhook,
+        hooks::WebhookSecret,
+        hooks::TestWebhookRequest,
+        hooks::WebhookEventInfo,
+        hooks::WebhookEventGroup,
+        hooks::WebhookEvents,
+        hooks::WebhookDeliveryState,
+        hooks::WebhookHeader,
+        hooks::WebhookResponse,
+        hooks::WebhookAttempt,
+        hooks::WebhookRequest,
+        hooks::WebhookDelivery,
+        hooks::WebhookDeliveryList,
+        hooks::ResendFailedRequest,
+        hooks::ResentFailed,
+        hooks::HookEnvelope,
+        hooks::HookPlace,
+        hooks::HookPerson,
+        hooks::HookSchedule,
+        hooks::HookTicket,
+        hooks::HookQuestion,
+        hooks::HookChecks,
+        hooks::HookPullRequest,
+        hooks::HookSession,
+        hooks::HookSessionData,
+        hooks::HookPullRequestData,
+        hooks::HookReview,
+        hooks::HookReviewData,
+        hooks::HookRun,
+        hooks::HookScheduleData,
     );
     // Values the web app shows as they are here, beside the types.
     let instructions = serde_json::to_string(session::DEFAULT_PULL_REQUEST_INSTRUCTIONS)

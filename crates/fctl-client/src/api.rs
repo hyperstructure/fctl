@@ -4,6 +4,7 @@ use crate::http::{Error, HttpClient, Result};
 use fctl_proto::api::*;
 use fctl_proto::autopilot::*;
 use fctl_proto::event::{Attachment, PublishedFile};
+use fctl_proto::hooks::*;
 use fctl_proto::session::{Memory, Project, Session};
 use fctl_proto::tickets::{
     ConnectLinearRequest, LinearLink, LinearTeamList, MyLinear, ProjectTickets, WorkspaceLinear,
@@ -1346,6 +1347,140 @@ impl Api {
     pub async fn run_schedule(&self, id: &str, req: &RunScheduleRequest) -> Result<ScheduleRun> {
         self.post(&format!("/schedules/{}/runs", enc(id)), req)
             .await
+    }
+
+    // ── webhooks ──
+
+    /// Every event webhooks get, in their groups.
+    pub async fn webhook_events(&self) -> Result<WebhookEvents> {
+        self.get("/webhook-events").await
+    }
+
+    /// A workspace's webhooks and its projects' (its admins).
+    pub async fn workspace_webhooks(&self, workspace: &str) -> Result<WebhookList> {
+        self.get(&format!("/workspaces/{}/webhooks", enc(workspace)))
+            .await
+    }
+
+    /// A project's own webhooks, and the workspace's that send its events.
+    pub async fn project_webhooks(&self, project: &str) -> Result<WebhookList> {
+        self.get(&format!("/projects/{}/webhooks", enc(project)))
+            .await
+    }
+
+    /// Adds one of a workspace's webhooks: its answer has the secret, once.
+    pub async fn create_workspace_webhook(
+        &self,
+        workspace: &str,
+        req: &CreateWebhookRequest,
+    ) -> Result<CreatedWebhook> {
+        self.post(&format!("/workspaces/{}/webhooks", enc(workspace)), req)
+            .await
+    }
+
+    /// Adds one of a project's own webhooks: its answer has the secret, once.
+    pub async fn create_project_webhook(
+        &self,
+        project: &str,
+        req: &CreateWebhookRequest,
+    ) -> Result<CreatedWebhook> {
+        self.post(&format!("/projects/{}/webhooks", enc(project)), req)
+            .await
+    }
+
+    /// A webhook, by id, with how its deliveries went lately.
+    pub async fn get_webhook(&self, id: &str) -> Result<Webhook> {
+        self.get(&format!("/webhooks/{}", enc(id))).await
+    }
+
+    /// Changes a webhook, or turns it on or off.
+    pub async fn update_webhook(&self, id: &str, req: &UpdateWebhookRequest) -> Result<Webhook> {
+        self.patch(&format!("/webhooks/{}", enc(id)), req).await
+    }
+
+    /// Deletes a webhook and what went out to it.
+    pub async fn delete_webhook(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/webhooks/{}", enc(id))).await
+    }
+
+    /// A webhook's signing secret.
+    pub async fn webhook_secret(&self, id: &str) -> Result<WebhookSecret> {
+        self.get(&format!("/webhooks/{}/secret", enc(id))).await
+    }
+
+    /// Rotates a webhook's secret: the old one signs too for a day.
+    pub async fn rotate_webhook_secret(&self, id: &str) -> Result<WebhookSecret> {
+        self.post(&format!("/webhooks/{}/secret", enc(id)), &Empty {})
+            .await
+    }
+
+    /// Posts a sample of an event to a webhook now, and how it went.
+    pub async fn test_webhook(
+        &self,
+        id: &str,
+        req: &TestWebhookRequest,
+    ) -> Result<WebhookDelivery> {
+        self.post(&format!("/webhooks/{}/test", enc(id)), req).await
+    }
+
+    /// A webhook's deliveries, newest first: those in `state`, of `event`,
+    /// before the cursor `before`.
+    pub async fn webhook_deliveries(
+        &self,
+        id: &str,
+        state: Option<&str>,
+        event: Option<&str>,
+        before: Option<&str>,
+        limit: u32,
+    ) -> Result<WebhookDeliveryList> {
+        let mut q = format!("/webhooks/{}/deliveries?limit={limit}", enc(id));
+        if let Some(s) = state {
+            q.push_str(&format!("&state={}", enc(s)));
+        }
+        if let Some(e) = event {
+            q.push_str(&format!("&event={}", enc(e)));
+        }
+        if let Some(b) = before {
+            q.push_str(&format!("&before={}", enc(b)));
+        }
+        self.get(&q).await
+    }
+
+    /// One delivery: the request as it was posted, its attempts and the
+    /// start of the last answer.
+    pub async fn webhook_delivery(&self, id: &str, delivery: &str) -> Result<WebhookDelivery> {
+        self.get(&format!(
+            "/webhooks/{}/deliveries/{}",
+            enc(id),
+            enc(delivery)
+        ))
+        .await
+    }
+
+    /// Posts a delivery again now, and how it went.
+    pub async fn resend_webhook_delivery(
+        &self,
+        id: &str,
+        delivery: &str,
+    ) -> Result<WebhookDelivery> {
+        self.post(
+            &format!("/webhooks/{}/deliveries/{}/resend", enc(id), enc(delivery)),
+            &Empty {},
+        )
+        .await
+    }
+
+    /// The deliveries that failed since a time wait for an attempt again.
+    pub async fn resend_failed_webhook_deliveries(
+        &self,
+        id: &str,
+        req: &ResendFailedRequest,
+    ) -> Result<ResentFailed> {
+        self.post(
+            &format!("/webhooks/{}/deliveries/resend-failed", enc(id)),
+            req,
+        )
+        .await
     }
 
     /// What an agent asks about its session's project (with the runner

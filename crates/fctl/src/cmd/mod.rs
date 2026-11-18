@@ -28,4 +28,5 @@ pub mod sessions;
 pub mod ticket;
 pub mod tokens;
 pub mod two_factor;
+pub mod webhooks;
 pub mod workspaces;

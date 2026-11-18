@@ -16,6 +16,7 @@ import {
   type LucideIcon,
   SlidersHorizontal,
   Ticket,
+  Webhook,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
@@ -41,6 +42,7 @@ import {
   Textarea,
   toast,
 } from "@/components/ui";
+import { WebhooksPanel, webhooksLead } from "@/components/webhooks/panel";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -92,6 +94,7 @@ const ICONS: Record<ProjectSettingsPage, LucideIcon> = {
   tickets: Ticket,
   sandbox: Box,
   secrets: KeyRound,
+  webhooks: Webhook,
 };
 
 /** Settings' pages in their groups, as the lists show them: those someone in the project sees. */
@@ -114,12 +117,15 @@ export function ProjectSettings({
   project,
   view,
   linear,
+  webhook,
 }: {
   project: G.Project;
   /** What the address asks for: Settings itself, or one of its pages. */
   view: ProjectView;
   /** Back from Linear, to Tickets. */
   linear?: LinearOutcome;
+  /** The webhook Webhooks opens. */
+  webhook?: string;
 }) {
   const pages = settingsPagesFor(project.role);
   // The page the address names; Settings itself shows the first beside the list where both fit.
@@ -134,7 +140,13 @@ export function ProjectSettings({
   if (pages.length === 1)
     return (
       <SectionLayout value="subpage">
-        <SettingsBody key={`${project.id}:${open}`} page={open} project={project} linear={linear} />
+        <SettingsBody
+          key={`${project.id}:${open}`}
+          page={open}
+          project={project}
+          linear={linear}
+          webhook={webhook}
+        />
       </SectionLayout>
     );
   return (
@@ -165,7 +177,13 @@ export function ProjectSettings({
         <div className={cn("min-w-0", !asked && "@max-2xl:hidden")}>
           <SectionLayout value="subpage">
             {/* Another page, or another project's, starts afresh. */}
-            <SettingsBody key={`${project.id}:${open}`} page={open} project={project} linear={linear} />
+            <SettingsBody
+              key={`${project.id}:${open}`}
+              page={open}
+              project={project}
+              linear={linear}
+              webhook={webhook}
+            />
           </SectionLayout>
         </div>
       </div>
@@ -190,7 +208,15 @@ function PageList({
     queryFn: () => api.secrets(project.id),
     enabled: manages(project.role),
   });
-  const said = settingsGists(project, { secrets: secrets.data?.secrets.length });
+  const webhooks = useQuery({
+    queryKey: keys.webhooks("project", project.id),
+    queryFn: () => api.projectWebhooks(project.id),
+    enabled: manages(project.role),
+  });
+  const said = settingsGists(project, {
+    secrets: secrets.data?.secrets.length,
+    webhooks: webhooks.data?.webhooks.filter((w) => w.project?.id === project.id).length,
+  });
   const gists: Partial<Record<ProjectSettingsPage, Gist>> = Object.fromEntries(
     Object.entries(said).flatMap(([page, text]) => (text ? [[page, { text }]] : [])),
   );
@@ -209,10 +235,12 @@ function SettingsBody({
   page,
   project,
   linear,
+  webhook,
 }: {
   page: ProjectSettingsPage;
   project: G.Project;
   linear?: LinearOutcome;
+  webhook?: string;
 }) {
   switch (page) {
     case "general":
@@ -227,7 +255,36 @@ function SettingsBody({
       return <Sandbox project={project} />;
     case "secrets":
       return <Secrets project={project} />;
+    case "webhooks":
+      return <Webhooks project={project} open={webhook} />;
   }
+}
+
+/** Its own webhooks, and the workspace's that send its events too (components/webhooks). */
+function Webhooks({ project, open }: { project: G.Project; open?: string }) {
+  const navigate = useNavigate();
+  const scope = { kind: "project" as const, project };
+  const panel = (
+    <WebhooksPanel
+      scope={scope}
+      open={open}
+      titled={!open}
+      onOpen={(id) =>
+        void navigate({
+          to: "/p/$slug",
+          params: { slug: project.slug },
+          search: { tab: "webhooks", webhook: id },
+        })
+      }
+    />
+  );
+  // One webhook's page has its own heading, and the way back.
+  if (open) return panel;
+  return (
+    <Section title="Webhooks" description={webhooksLead(scope)}>
+      {panel}
+    </Section>
+  );
 }
 
 /**

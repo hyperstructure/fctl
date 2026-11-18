@@ -23,6 +23,7 @@ pub mod files;
 pub mod follow_ups;
 pub mod github;
 pub mod google;
+pub mod hooks;
 pub mod https;
 pub mod ids;
 pub mod image;

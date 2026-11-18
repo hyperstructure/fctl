@@ -98,6 +98,11 @@ pub enum Sensitive {
     /// Keeping one's autopilot on one's subscription when others change or
     /// resume it: those who steer it then spend one's plan, as one.
     KeepAutopilot,
+    /// Adding a webhook, pointing one at another address, or reading or
+    /// rotating its secret: it posts what happens in a workspace's sessions
+    /// there, so a stolen session or token could otherwise have it sent
+    /// where it waits, for good, or sign posts of its own.
+    AddWebhook,
 }
 
 impl Sensitive {
@@ -132,6 +137,7 @@ impl Sensitive {
             DeleteAccount => "delete your account",
             PutOnAutopilot => "put a project on autopilot",
             KeepAutopilot => "keep an autopilot on your subscription when others change it",
+            AddWebhook => "add a webhook, point one elsewhere, or read or rotate its secret",
         }
     }
 }

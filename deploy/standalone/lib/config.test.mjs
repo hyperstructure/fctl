@@ -4,7 +4,16 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ConfigError, githubKey, masterKey, publicUrl, readConfig, secureContext, value } from "./config.mjs";
+import {
+  ConfigError,
+  githubKey,
+  masterKey,
+  privateHost,
+  publicUrl,
+  readConfig,
+  secureContext,
+  value,
+} from "./config.mjs";
 
 const dir = () => mkdtempSync(join(tmpdir(), "fctl-config-"));
 
@@ -52,6 +61,24 @@ test("the Worker gets the variables that are set, and a setup token", () => {
   assert.equal(readConfig({ FCTL_SETUP_TOKEN: "given" }).setupToken, "given");
   assert.throws(() => readConfig({ FCTL_PORT: "http" }), ConfigError);
   assert.throws(() => readConfig({ FCTL_TRUST_PROXY: "-1" }), ConfigError);
+});
+
+test("webhooks reach the private hosts the settings list, which the server reads before it starts", () => {
+  const cfg = readConfig({
+    FCTL_WEBHOOK_HTTP: "1",
+    FCTL_WEBHOOK_PRIVATE_HOSTS: "10.20.0.0/16, 192.168.1.20 [fd00::]/8,hooks.lan *.corp.internal jenkins.",
+  });
+  assert.equal(cfg.vars.FCTL_WEBHOOK_HTTP, "1");
+  assert.equal(
+    cfg.vars.FCTL_WEBHOOK_PRIVATE_HOSTS,
+    "10.20.0.0/16, 192.168.1.20 [fd00::]/8,hooks.lan *.corp.internal jenkins.",
+  );
+  for (const bad of ["10.0.0.0/33", "not_a_host", "*.-x", "0x7f.0.0.1/8", "fd00::/129"]) {
+    assert.ok(!privateHost(bad), bad);
+    assert.throws(() => readConfig({ FCTL_WEBHOOK_PRIVATE_HOSTS: `10.0.0.0/8 ${bad}` }), ConfigError, bad);
+  }
+  assert.throws(() => readConfig({ FCTL_WEBHOOK_HTTP: "yes" }), ConfigError);
+  assert.equal(readConfig({}).vars.FCTL_WEBHOOK_PRIVATE_HOSTS, undefined);
 });
 
 test("GitHub's PKCS#1 keys become PKCS#8", () => {
