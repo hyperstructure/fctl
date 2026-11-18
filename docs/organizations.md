@@ -61,6 +61,7 @@ fctl admin set --require-two-factor on         # everyone who signs in with a pa
 fctl admin set --verify-sensitive-actions on   # making tokens, deleting projects… take a passkey or a code (the primary instance owner sets it)
 fctl admin set --gravatar off                  # nobody's picture comes from gravatar.com
 fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (below)
+fctl admin set --members-create-workspaces off # only instance admins create workspaces: people work in the ones you put them in
 fctl workspaces set --base-role editor -w acme # every member of acme starts sessions in every one of its projects
 ```
 
@@ -126,6 +127,11 @@ them.
 - **Limits.** A person is in at most five workspaces, the primary instance
   owner in any number. A workspace that requires two-factor sign-in stays
   closed to someone until they set it up.
+- **Workspaces of their own.** People create workspaces of their own
+  unless you keep that to your admins (`fctl admin set
+  --members-create-workspaces off`, or **Admin → Settings → Workspaces**):
+  then they work only in the workspaces your sync puts them in, and those
+  they're invited to.
 
 ## Agents from your own portal or bot
 
