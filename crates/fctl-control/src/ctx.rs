@@ -293,18 +293,21 @@ impl Ctx {
         let target = target.map(str::to_owned);
         // What an admin token or a service account does says so, with
         // which one.
-        let by = match (self.admin_token(), self.service_account()) {
-            (Some(token), _) => Some(("admin_token", token.to_owned())),
-            (None, Some(sa)) => Some(("service_account", sa.id.clone())),
-            (None, None) => None,
-        };
-        let data = match (by, data) {
-            (Some((key, id)), Some(serde_json::Value::Object(mut d))) => {
-                d.insert(key.to_owned(), id.into());
+        let mut by = serde_json::Map::new();
+        if let Some(token) = self.admin_token() {
+            by.insert("admin_token".to_owned(), token.into());
+        } else if let Some(sa) = self.service_account() {
+            by.insert("service_account".to_owned(), sa.id.clone().into());
+            by.insert("service_account_name".to_owned(), sa.name.clone().into());
+        }
+        let data = match data {
+            _ if by.is_empty() => data,
+            Some(serde_json::Value::Object(mut d)) => {
+                d.extend(by);
                 Some(serde_json::Value::Object(d))
             }
-            (Some((key, id)), None) => Some(serde_json::json!({ key: id })),
-            (_, data) => data,
+            None => Some(serde_json::Value::Object(by)),
+            Some(other) => Some(other),
         };
         let data = data.map(|d| d.to_string());
         self.defer(async move {

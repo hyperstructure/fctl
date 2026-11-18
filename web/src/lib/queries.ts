@@ -80,6 +80,12 @@ export const keys = {
   autopilotFile: (project: string, name: string) => ["autopilot", project, "files", name] as const,
   /** What autopilots ask you, across your workspaces. */
   autopilotAsks: ["autopilot-asks"] as const,
+  /** A workspace's service accounts, by its id. */
+  serviceAccounts: (workspace: string) => ["service-accounts", workspace] as const,
+  /** One service account, its people and the sessions it started, under its id. */
+  serviceAccount: (id: string) => ["service-account", id] as const,
+  serviceAccountPeople: (id: string) => ["service-account", id, "people"] as const,
+  serviceAccountSessions: (id: string) => ["service-account", id, "sessions"] as const,
   /** Every event webhooks get. */
   webhookEvents: ["webhook-events"] as const,
   /** A workspace's or a project's webhooks, by its id. */

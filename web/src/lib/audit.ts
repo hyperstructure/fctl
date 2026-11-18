@@ -78,10 +78,21 @@ const REFUSALS: Record<string, string> = {
   unreachable: ": the app doesn't reach some of the repositories they named",
 };
 
-/** What an entry's actor did, in words and the things it names: with an admin token, it says so. */
+/**
+ * What an entry's actor did, in words and the things it names: with an admin token, or through a
+ * service account, which acts for them, it says so.
+ */
 export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPart[] {
   const parts = sentence(e, names);
-  return str((e.data as Data | undefined)?.admin_token) ? [...parts, " with an admin token"] : parts;
+  const d = e.data as Data | undefined;
+  if (str(d?.admin_token)) return [...parts, " with an admin token"];
+  if (str(d?.service_account))
+    return [
+      ...parts,
+      " through the service account ",
+      { text: str(d?.service_account_name) ?? "since deleted" },
+    ];
+  return parts;
 }
 
 function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
@@ -319,6 +330,24 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
       if (d.enabled === false) return ["disabled the runner ", runner];
       if (d.enabled === true) return ["enabled the runner ", runner];
       return ["changed the runner ", runner];
+    case "workspace.service_account_created":
+      return ["made the service account ", named(d.name, "")];
+    case "workspace.service_account_updated":
+      return str(d.renamed_from)
+        ? ["renamed the service account ", named(d.renamed_from, ""), " to ", named(d.name, "")]
+        : ["changed what the service account ", named(d.name, ""), " says it is"];
+    case "workspace.service_account_deleted":
+      return ["deleted the service account ", named(d.name, "")];
+    case "workspace.service_account_secret_changed":
+      return [
+        "made the service account ",
+        named(d.name, ""),
+        d.was_stopped ? " a new secret, which started it again" : " a new secret",
+      ];
+    case "workspace.service_account_allowed":
+      return ["let the service account ", named(d.name, ""), " start sessions for them"];
+    case "workspace.service_account_declined":
+      return ["chose not to let the service account ", named(d.name, ""), " start sessions for them"];
     case "workspace.enrollment_token_created":
       return ["created the enrollment token ", named(d.name, "")];
     case "workspace.enrollment_token_revoked":

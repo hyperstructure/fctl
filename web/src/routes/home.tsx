@@ -9,6 +9,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import { PlanUsageStrip } from "@/components/plan-usage";
 import { RunnerApprovals } from "@/components/runner-approvals";
 import { RunnerUpdate } from "@/components/runner-update";
+import { InvitationServiceAccounts, ServiceAccountAsks } from "@/components/service-accounts/ask";
 import { SessionRow } from "@/components/session/row";
 import { TaskBox } from "@/components/session/task-box";
 import { Button, calledName, GLCanvas, Skeleton, toast } from "@/components/ui";
@@ -18,7 +19,17 @@ import { workspaces as wsApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
-import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
+import {
+  keys,
+  queryClient,
+  useInstance,
+  useMe,
+  useProjects,
+  useRunners,
+  useSessions,
+  useWorkspaces,
+} from "@/lib/queries";
+import { asksOf } from "@/lib/service-accounts";
 import { ACTIVE } from "@/lib/sessions";
 import { waitsForYou } from "@/lib/status";
 import { isUltra } from "@/lib/usage";
@@ -233,17 +244,26 @@ function GettingStarted({
   );
 }
 
-/** Invitations to workspaces that wait for you: join or decline them here. */
+/**
+ * Invitations to workspaces that wait for you: join or decline them here. One whose workspace has
+ * service accounts says what joining means for you, before you join.
+ */
 function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) {
+  const consent = useInstance().data?.features.service_account_consent ?? true;
   const done = () => {
     for (const k of [keys.workspaces, keys.projects, ["sessions"], keys.runners, keys.me])
       void queryClient.invalidateQueries({ queryKey: k });
   };
   const accept = useMutation({
     mutationFn: (i: G.WorkspaceInvitation) => wsApi.accept(i.id),
-    onSuccess: (w) => {
+    onSuccess: (w, i) => {
       done();
-      toast(`You joined ${w.name}`);
+      const asking = i.service_accounts ?? [];
+      toast(
+        consent && asking.length
+          ? `You joined ${w.name}. ${asking.length === 1 ? `${asking[0]?.name} asks` : "Its service accounts ask"} to start agents for you: answer here.`
+          : `You joined ${w.name}`,
+      );
     },
     onError: (e) => toast(e.message, "error"),
   });
@@ -288,6 +308,7 @@ function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) 
                     </span>
                   )}
                 </div>
+                <InvitationServiceAccounts invitation={i} consent={consent} />
               </div>
             </div>
             {/* Under the text, Join takes the room Decline leaves; beside it, a long name gives
@@ -527,6 +548,7 @@ export function Home() {
         </div>
         <div className="mt-12 flex flex-col gap-12 pb-24">
           {workspaces.data && <Invitations invitations={workspaces.data.invitations} />}
+          {workspaces.data && <ServiceAccountAsks asks={asksOf(workspaces.data.workspaces)} />}
           {blocked.map((w) => (
             <div
               key={w.id}

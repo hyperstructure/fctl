@@ -57,7 +57,7 @@ import {
 } from "@/components/session/pull-request";
 import { QuestionCard, useQuestionFloats } from "@/components/session/question";
 import { RailSection } from "@/components/session/rail";
-import { ScheduleLink, TicketLink } from "@/components/session/row";
+import { ScheduleLink, ServiceAccountStarter, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
 import { TakeOverDialog } from "@/components/session/take-over";
 import {
@@ -1066,6 +1066,8 @@ function Cover({
               {session.review ? "On " : "Started by "}
               <span className="text-ink-2">{session.created_by.name}</span>
               {session.review && "'s Claude subscription"}
+              {/* A program of the workspace's started it for them: which, and that it's theirs. */}
+              {!session.review && session.service_account && <ServiceAccountStarter session={session} />}
             </span>
           </span>
         )}

@@ -3215,6 +3215,15 @@ mod tests {
             ),
             "Posts every event to hooks.slack.com, in Web, for sessions started by tickets or people."
         );
+        assert_eq!(
+            describe(
+                url,
+                &strings(&[Kind::SessionFinished]),
+                &[],
+                &[WebhookOrigin::ServiceAccount]
+            ),
+            "Posts to hooks.slack.com when an agent finishes a turn, for sessions started by service accounts."
+        );
     }
 
     #[test]

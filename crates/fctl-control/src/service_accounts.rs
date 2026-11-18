@@ -474,6 +474,7 @@ pub async fn people(
                 answer,
                 answered_at: r.answered_at.filter(|_| answer.is_some()),
                 acts_for: why.is_none(),
+                blocked: matches!(why, Some(WhyNot::Disabled | WhyNot::TwoFactor)),
                 why_not: why.map(|w| w.reason(&r.user.name, &sa.name, &sa.workspace_name)),
             }
         })

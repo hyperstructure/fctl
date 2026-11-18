@@ -21,6 +21,7 @@ import {
   Settings,
   ShieldCheck,
   Trash2,
+  UserRoundCog,
   Users,
   Webhook,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import { PageTabs, TabCount } from "@/components/page-tabs";
 import { ExperimentalPill, TokenHungry } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
 import { DriverLine } from "@/components/runner-driver";
+import { ServiceAccountsPanel } from "@/components/service-accounts/panel";
 import { SessionRow } from "@/components/session/row";
 import {
   AutopilotIcon,
@@ -93,24 +95,33 @@ export type WorkspaceTab =
   | "github"
   | "linear"
   | "webhooks"
+  | "service-accounts"
   | "settings"
   | "audit";
 
-const TABS: { tab: WorkspaceTab; label: string; admin?: boolean; linear?: boolean }[] = [
+const TABS: {
+  tab: WorkspaceTab;
+  label: string;
+  admin?: boolean;
+  linear?: boolean;
+  /** Its admins', and its members' once it has a service account to answer. */
+  serviceAccounts?: boolean;
+}[] = [
   { tab: "projects", label: "Projects" },
   { tab: "people", label: "People" },
   { tab: "runners", label: "Runners" },
   { tab: "github", label: "GitHub" },
   { tab: "linear", label: "Linear", linear: true },
   { tab: "webhooks", label: "Webhooks", admin: true },
+  { tab: "service-accounts", label: "Service accounts", serviceAccounts: true },
   { tab: "settings", label: "Settings" },
   { tab: "audit", label: "Audit log", admin: true },
 ];
 
 /**
  * Each tab's icon, as the rest of the app draws what it holds: folders of projects (a new one is a
- * folder with a plus), people, the chip runners are, GitHub's and Linear's marks, the sidebar's gear,
- * and a clock turning back for what happened.
+ * folder with a plus), people, the chip runners are, GitHub's and Linear's marks, an account that works
+ * on its own for service accounts, the sidebar's gear, and a clock turning back for what happened.
  */
 const ICONS: Record<WorkspaceTab, (className: string) => ReactNode> = {
   projects: (className) => <Folders className={className} aria-hidden="true" />,
@@ -120,6 +131,7 @@ const ICONS: Record<WorkspaceTab, (className: string) => ReactNode> = {
   // Linear's mark is filled: a little smaller, it weighs as much as the outlined icons.
   linear: (className) => <LinearIcon className={cn(className, "scale-[0.85]")} />,
   webhooks: (className) => <Webhook className={className} aria-hidden="true" />,
+  "service-accounts": (className) => <UserRoundCog className={className} aria-hidden="true" />,
   settings: (className) => <Settings className={className} aria-hidden="true" />,
   audit: (className) => <History className={className} aria-hidden="true" />,
 };
@@ -139,6 +151,7 @@ export function WorkspacePage() {
     reason,
     linear,
     webhook,
+    serviceAccount,
   } = useSearch({ from: "/app/w/$slug" });
   const navigate = useNavigate();
   const ws = useWorkspace(slug);
@@ -149,8 +162,14 @@ export function WorkspacePage() {
   const waiting = (useRunners().data?.runners ?? []).filter(
     (r) => r.pending_until && w && r.workspace?.id === w.id && approvedBy(r, w),
   ).length;
-  // Tabs this workspace has: admins' ones for admins, Linear's where the instance has a Linear app.
-  const has = (t: (typeof TABS)[number]) => (!t.admin || admin) && (!t.linear || !!instance?.features.linear);
+  // Tabs this workspace has: admins' ones for admins, Linear's where the instance has a Linear app,
+  // and its service accounts for its admins, and for everyone once it has one.
+  const has = (t: (typeof TABS)[number]) =>
+    (!t.admin || admin) &&
+    (!t.linear || !!instance?.features.linear) &&
+    (!t.serviceAccounts || admin || (w?.service_accounts?.length ?? 0) > 0);
+  // The service accounts that wait for your answer.
+  const asking = (w?.service_accounts ?? []).filter((a) => a.consent && !a.answer).length;
   // Admins' tabs show members the workspace's projects instead.
   const tab = !w || TABS.some((t) => t.tab === asked && has(t)) ? asked : "projects";
   if (ws.isError)
@@ -253,9 +272,13 @@ export function WorkspacePage() {
               id: t.tab,
               label: t.label,
               icon: ICONS[t.tab],
-              badge: t.tab === "runners" && waiting > 0 && (
-                <TabCount n={waiting} label={`${waiting} waiting for approval`} />
-              ),
+              badge:
+                (t.tab === "runners" && waiting > 0 && (
+                  <TabCount n={waiting} label={`${waiting} waiting for approval`} />
+                )) ||
+                (t.tab === "service-accounts" && asking > 0 && (
+                  <TabCount n={asking} tone="blue" label={`${asking} ${asking === 1 ? "asks" : "ask"} you`} />
+                )),
             }))}
           />
           <div className="mt-8">
@@ -273,6 +296,19 @@ export function WorkspacePage() {
                     to: "/w/$slug",
                     params: { slug },
                     search: { tab: "webhooks", webhook: id },
+                  })
+                }
+              />
+            )}
+            {w && tab === "service-accounts" && (
+              <ServiceAccountsPanel
+                workspace={w}
+                open={serviceAccount}
+                onOpen={(id) =>
+                  void navigate({
+                    to: "/w/$slug",
+                    params: { slug },
+                    search: { tab: "service-accounts", serviceAccount: id },
                   })
                 }
               />
@@ -1981,11 +2017,45 @@ function You({ w }: { w: G.Workspace }) {
             label="Only on my runners"
           />
         </div>
+        <YourServiceAccounts w={w} />
         <div>
           <Leave w={w} />
         </div>
       </div>
     </Section>
+  );
+}
+
+/**
+ * Which of its service accounts start sessions for you, in a line, with the answers a click away on
+ * its Service accounts tab. Nothing while it has none.
+ */
+function YourServiceAccounts({ w }: { w: G.Workspace }) {
+  const list = w.service_accounts ?? [];
+  if (!list.length) return null;
+  const acting = list.filter((a) => a.acts_for_you).map((a) => a.name);
+  const asking = list.filter((a) => a.consent && !a.answer).length;
+  const consent = list.some((a) => a.consent);
+  const said = !consent
+    ? `${list.length === 1 ? "Its service account starts" : "Its service accounts start"} sessions for you: this instance doesn't ask people.`
+    : acting.length === 0
+      ? "None of its service accounts starts sessions for you."
+      : `${acting.join(", ")} ${acting.length === 1 ? "starts" : "start"} sessions for you, on your Claude subscription.`;
+  return (
+    <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+      <span>
+        Service accounts
+        <span className="block text-[12.5px] leading-relaxed text-ink-4">
+          {said}
+          {asking > 0 && (
+            <span className="text-blue"> {asking === 1 ? "One asks you." : `${asking} ask you.`}</span>
+          )}
+        </span>
+      </span>
+      <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "service-accounts" }} className="shrink-0">
+        <Button size="sm">{consent ? "Choose" : "See them"}</Button>
+      </Link>
+    </div>
   );
 }
 

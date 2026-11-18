@@ -182,6 +182,10 @@ pub struct ServiceAccountPerson {
     pub answered_at: Option<Millis>,
     /// Whether it may act for them now.
     pub acts_for: bool,
+    /// It can't act for them whatever they answer: their account is
+    /// disabled, or they have to set up two-factor sign-in first.
+    #[serde(default)]
+    pub blocked: bool,
     /// Why it may not, when it may not.
     pub why_not: Option<String>,
 }

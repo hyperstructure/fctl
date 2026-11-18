@@ -17,6 +17,11 @@ email: string, role: WorkspaceRole, answer?: ServiceAccountAnswer, answered_at?:
  */
 acts_for: boolean, 
 /**
+ * It can't act for them whatever they answer: their account is
+ * disabled, or they have to set up two-factor sign-in first.
+ */
+blocked: boolean, 
+/**
  * Why it may not, when it may not.
  */
 why_not?: string, };

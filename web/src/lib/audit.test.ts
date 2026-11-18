@@ -254,3 +254,50 @@ describe("what admin tokens do, in words", () => {
     expect(said(describeAudit(revoked))).toBe("revoked the admin token Okta provisioning");
   });
 });
+
+describe("what service accounts do, and what's done to them, in words", () => {
+  it("says a service account acted for someone, by its name", () => {
+    const started = entry(
+      "session.created",
+      "ses_1",
+      { project: "web", number: 12, service_account: "sva_1", service_account_name: "Acme portal" },
+      "Asha Patel",
+    );
+    expect(said(describeAudit(started, names))).toMatch(
+      /^started .* through the service account Acme portal$/,
+    );
+    const gone = entry(
+      "session.created",
+      "ses_1",
+      { project: "web", number: 12, service_account: "sva_1" },
+      "Asha",
+    );
+    expect(said(describeAudit(gone, names))).toMatch(/through the service account since deleted$/);
+  });
+
+  it("names the service accounts admins make, change and delete, and people's answers", () => {
+    const say = (action: string, data: Record<string, unknown>) =>
+      said(describeAudit(entry(action, "sva_1", data, "Kofi Mensah")));
+    expect(say("workspace.service_account_created", { name: "Acme portal" })).toBe(
+      "made the service account Acme portal",
+    );
+    expect(say("workspace.service_account_updated", { name: "Portal", renamed_from: "Acme portal" })).toBe(
+      "renamed the service account Acme portal to Portal",
+    );
+    expect(say("workspace.service_account_updated", { name: "Portal", description: true })).toBe(
+      "changed what the service account Portal says it is",
+    );
+    expect(say("workspace.service_account_secret_changed", { name: "Portal", was_stopped: true })).toBe(
+      "made the service account Portal a new secret, which started it again",
+    );
+    expect(say("workspace.service_account_deleted", { name: "Portal" })).toBe(
+      "deleted the service account Portal",
+    );
+    expect(say("workspace.service_account_allowed", { name: "Portal" })).toBe(
+      "let the service account Portal start sessions for them",
+    );
+    expect(say("workspace.service_account_declined", { name: "Portal" })).toBe(
+      "chose not to let the service account Portal start sessions for them",
+    );
+  });
+});
