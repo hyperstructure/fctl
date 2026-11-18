@@ -1085,11 +1085,15 @@ impl HooksObject {
             && now - at < RESEND_FAILED_EVERY_MS
         {
             let wait_s = (at + RESEND_FAILED_EVERY_MS - now) / 1000;
+            let ago = match (now - at) / 60_000 {
+                0 => "just now".to_owned(),
+                1 => "a minute ago".to_owned(),
+                m => format!("{m} minutes ago"),
+            };
             return Err(err(
                 ErrorCode::RateLimited,
                 format!(
-                    "Its failed deliveries were resent {} minutes ago: try again in {} minutes.",
-                    (now - at) / 60_000,
+                    "Its failed deliveries were resent {ago}: try again in {} minutes.",
                     (wait_s + 59) / 60
                 ),
             )
@@ -1102,24 +1106,33 @@ impl HooksObject {
                 "The webhook is off: turn it on first, so that they go somewhere.",
             ));
         }
-        let cursor = self.sql.exec(
-            "UPDATE deliveries SET state = 'pending', next_at = ?, done_at = NULL, reason = NULL WHERE id IN \
-             (SELECT id FROM deliveries WHERE webhook_id = ? AND state = 'failed' AND test = 0 AND created_at >= ? \
-              ORDER BY id LIMIT ?)",
-            Some(vec![
-                iv(now),
+        // Counted before they change: SQLite's rows written count each
+        // index's writes too.
+        let which = "SELECT id FROM deliveries WHERE webhook_id = ?1 AND state = 'failed' AND test = 0 \
+                     AND created_at >= ?2 ORDER BY id LIMIT ?3";
+        let params = || {
+            vec![
                 sv(&b.webhook_id),
                 iv(b.since),
                 iv(i64::from(rules::RESEND_FAILED_MAX)),
-            ]),
+            ]
+        };
+        let queued = self.number(&format!("SELECT COUNT(*) AS n FROM ({which})"), params());
+        let mut update = params();
+        update.push(iv(now));
+        self.exec(
+            &format!(
+                "UPDATE deliveries SET state = 'pending', next_at = ?4, done_at = NULL, reason = NULL \
+                 WHERE id IN ({which})"
+            ),
+            update,
         );
-        let queued = cursor.map(|c| c.rows_written()).unwrap_or(0);
         self.set_meta(&key, &now.to_string());
         if queued > 0 {
             self.arm(now).await;
         }
         Ok(ResentFailed {
-            queued: u32::try_from(queued).unwrap_or(u32::MAX),
+            queued: u32::try_from(queued.max(0)).unwrap_or(u32::MAX),
         })
     }
 
