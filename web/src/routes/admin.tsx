@@ -1689,6 +1689,9 @@ function InstanceSettings() {
       void queryClient.invalidateQueries({ queryKey: keys.instance });
       void queryClient.invalidateQueries({ queryKey: keys.me });
       void queryClient.invalidateQueries({ queryKey: keys.users });
+      // The workspace list says how many you can be in and whether you create them.
+      if (b.max_workspaces !== undefined || b.members_create_workspaces !== undefined)
+        void queryClient.invalidateQueries({ queryKey: keys.workspaces });
       toast(settingsSaved(s, b));
     },
     onError: (e) => toast(e.message, "error"),
