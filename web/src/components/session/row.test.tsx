@@ -114,6 +114,26 @@ describe("SessionRow", () => {
     );
   });
 
+  it("says a service account started it for its person, by its name", () => {
+    const s = session({ service_account: { id: "sva_1", name: "Acme portal" } as G.SessionServiceAccount });
+    const c = render(<SessionRow s={s} />);
+    expect(c.querySelector("[title='Started by Ada Lovelace, through Acme portal']")).not.toBeNull();
+    expect(c.querySelector("[title='Started through Acme portal']")).not.toBeNull();
+    expect(c.querySelector(".sr-only")?.textContent).toBe(
+      "Working. Started by Ada Lovelace, through Acme portal, last active 4 minutes ago.",
+    );
+    // A schedule's run says so itself, whoever ran it.
+    const run = render(
+      <SessionRow
+        s={session({
+          service_account: { id: "sva_1", name: "Acme portal" } as G.SessionServiceAccount,
+          schedule: { id: "sch_1", name: "Nightly" } as G.SessionSchedule,
+        })}
+      />,
+    );
+    expect(run.querySelector("[title='Started through Acme portal']")).toBeNull();
+  });
+
   it("has no arrow: the row itself opens the session", () => {
     const c = render(<SessionRow s={session()} />);
     expect(c.querySelector("svg.lucide-arrow-right")).toBeNull();

@@ -2,7 +2,7 @@
 // workspace and reference, its pull requests, who started it and when it last moved.
 
 import { Link } from "@tanstack/react-router";
-import { MessageCircleQuestion, Repeat } from "lucide-react";
+import { MessageCircleQuestion, Repeat, UserRoundCog } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
 import { AutopilotIcon, Avatar, GithubIcon, LinearIcon, StatusDot, statusLabel } from "@/components/ui";
 import { ROW, ROW_ABOVE, ROW_COVER } from "@/components/ui/list-row";
@@ -11,6 +11,7 @@ import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
 import { prLabel, prRef, prTitle, pullRequests } from "@/lib/pulls";
+import { startedThrough } from "@/lib/service-accounts";
 import { lastMoved } from "@/lib/sessions";
 import { statusReason } from "@/lib/status";
 import { ticketLabel } from "@/lib/tickets";
@@ -61,6 +62,7 @@ export function SessionRow({
           </span>
           <ScheduledMark s={s} />
           <TicketMark s={s} />
+          <ServiceAccountMark s={s} />
           {inProject && s.branch && (
             <>
               <Dot />
@@ -141,7 +143,15 @@ function Moved({ s }: { s: G.Session }) {
           <AutopilotIcon className="size-3" />
         </span>
       ) : (
-        <Avatar user={s.created_by} size={18} title={`Started by ${s.created_by.name}`} />
+        <Avatar
+          user={s.created_by}
+          size={18}
+          title={
+            s.service_account
+              ? `Started by ${s.created_by.name}, through ${startedThrough(s)}`
+              : `Started by ${s.created_by.name}`
+          }
+        />
       )}
     </span>
   );
@@ -152,8 +162,25 @@ function MovedText({ s }: { s: G.Session }) {
   return (
     <span className="sr-only">
       {statusLabel(s.status)}. Started by{" "}
-      {s.autopilot ? `${s.autopilot.project_slug}'s autopilot, for ${s.created_by.name}` : s.created_by.name},
-      last active {ago(lastMoved(s))}.
+      {s.autopilot
+        ? `${s.autopilot.project_slug}'s autopilot, for ${s.created_by.name}`
+        : s.service_account
+          ? `${s.created_by.name}, through ${startedThrough(s)}`
+          : s.created_by.name}
+      , last active {ago(lastMoved(s))}.
+    </span>
+  );
+}
+
+/** That a service account started the session for its person: its symbol, with its name on hover. */
+function ServiceAccountMark({ s }: { s: Pick<G.Session, "service_account" | "schedule"> }) {
+  // A schedule's run says so itself, whoever ran it.
+  if (!s.service_account || s.schedule) return null;
+  const name = startedThrough(s);
+  return (
+    <span title={`Started through ${name}`} className="inline-flex shrink-0 items-center text-ink-4">
+      <UserRoundCog className="size-3" aria-hidden="true" />
+      <span className="sr-only">Through {name}</span>
     </span>
   );
 }
@@ -170,6 +197,52 @@ function ScheduledMark({ s }: { s: Pick<G.Session, "schedule"> }) {
       <Repeat className="size-3" aria-hidden="true" />
       <span className="sr-only">{name ? `From the schedule ${name}` : "From a schedule"}</span>
     </span>
+  );
+}
+
+/**
+ * The service account that started a session for its person, as a link to its workspace's Service
+ * accounts tab (which opens its page there for its admins); its words alone once it is deleted.
+ */
+export function ServiceAccountLink({
+  session,
+  className,
+}: {
+  session: Pick<G.Session, "service_account" | "workspace">;
+  className?: string;
+}) {
+  const sa = session.service_account;
+  if (!sa) return null;
+  const w = session.workspace;
+  if (!sa.name || !w) return <span className={cn("text-ink-3", className)}>{startedThrough(session)}</span>;
+  return (
+    <Link
+      to="/w/$slug"
+      params={{ slug: w.slug }}
+      search={{ tab: "service-accounts" }}
+      title="A program of the workspace's, which started it for its person: theirs, on their subscription"
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1 text-ink-2 underline-offset-2 hover:text-ink hover:underline",
+        className,
+      )}
+    >
+      <UserRoundCog className="size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
+      <span className="truncate">{sa.name}</span>
+    </Link>
+  );
+}
+
+/** ", through Acme portal", after the person's name on a session's cover. */
+export function ServiceAccountStarter({
+  session,
+}: {
+  session: Pick<G.Session, "service_account" | "workspace">;
+}) {
+  if (!session.service_account) return null;
+  return (
+    <>
+      , through <ServiceAccountLink session={session} />
+    </>
   );
 }
 

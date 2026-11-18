@@ -555,13 +555,23 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                         session.number,
                         style::bold(&style::terminal_safe(&s.name))
                     );
-                    println!(
-                        "  {}",
-                        style::dim(&format!(
+                    // A service account ran it for someone, and follows nothing
+                    // live: it reads what the agent does.
+                    let service_account = api.token().is_some_and(|t| {
+                        t.starts_with(fctl_domain::tokens::SecretKind::Service.prefix())
+                    });
+                    let said = match (&run.by, service_account) {
+                        (Some(by), true) => format!(
+                            "It runs for {}, on their Claude subscription. Read what its agent does: fctl logs {}",
+                            style::plain(&by.name),
+                            session.id
+                        ),
+                        _ => format!(
                             "It runs on your Claude subscription. Follow it: fctl attach {}",
                             session.id
-                        ))
-                    );
+                        ),
+                    };
+                    println!("  {}", style::dim(&said));
                 }
                 None => println!(
                     "{}",

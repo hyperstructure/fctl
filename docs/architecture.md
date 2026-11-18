@@ -132,7 +132,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   (runner), `fctl_et_` (an enrollment token, the workspace's or one of its
   members', which only enrolls runners: [Enrollment tokens](#enrollment-tokens)),
   `fctl_adm_` (an instance admin's, which provisions people where the
-  deployment allows it: [Admin tokens](#admin-tokens)).
+  deployment allows it: [Admin tokens](#admin-tokens)), `fctl_svc_` (a
+  workspace's service account, which starts sessions for the people who
+  allow it: [Service accounts](#service-accounts)).
 - Cookie requests that change state must come from the app's origin
   (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
   `application/octet-stream`, which browsers cannot send cross-site without
@@ -562,6 +564,90 @@ elsewhere only the tokens left from when it did, to revoke.
   reported of the one before; the first becomes their default. Their own
   connections stay theirs, and they remove the one a token set as they
   remove their own.
+
+### Service accounts
+
+An organization that builds its own place for starting agents (a portal
+where its people pick a project and describe a task, a chat bot, a
+script) has it call fctl with a workspace's service account
+(`fctl_svc_…`, `fctl_domain::service_accounts`, `crate::service_accounts`,
+[ADR 0086](adr/0086-service-accounts-start-sessions-for-the-people-who-allow-them.md)).
+
+- **Whose.** A workspace's admins make them (`POST
+  /api/v1/workspaces/{id}/service-accounts`, the Service accounts tab,
+  `fctl service-accounts create`; confirming it's them first:
+  `Sensitive::NewServiceAccount`), at most ten, each with a name and what it
+  is, which the people it asks read. D1 keeps its secret's SHA-256 and last
+  four characters, to tell secrets apart (`service_accounts`). It belongs to
+  the workspace, not to its maker, but works only while the admin who made
+  its secret, its keeper (`keeper_id`), is an active admin of the
+  workspace: one who leaves, is demoted or disabled can't keep acting for
+  people with a secret they kept, as with enrollment tokens. Another admin
+  makes it a new secret (`POST /api/v1/service-accounts/{id}/secret`), which
+  stops the old one at once and makes them its keeper; until then the
+  tab and its page say why it stopped, and its requests are refused.
+  Renaming it, saying what it is and deleting it are its admins' too;
+  deleting it forgets people's answers, and the sessions it started stay
+  their people's, which name it no more.
+- **For whom.** Each request names the person it acts for, by their id
+  or one of their addresses, in the `Fctl-On-Behalf-Of` header (`fctl
+  --on-behalf-of`, `FCTL_ON_BEHALF_OF`). The router resolves it before a
+  handler runs (`service_accounts::gate`): the request then acts as them
+  (`Authed::user`), held to what an access token that runs sessions does,
+  in the service account's workspace alone (`Limits` with `Run` and the
+  workspace as its place), so that every handler checks their roles as it
+  would theirs. A session it starts is theirs, on their Claude connection
+  for the workspace, within what they may do in the project; they follow
+  it, as one they started (`sessions.service_account_id` says which
+  service account, and `Session::service_account` shows it). It refuses
+  someone who isn't a member, whose account is disabled, or who has to set
+  up two-factor sign-in first, and, where the instance asks people first,
+  someone who hasn't allowed it (`service_accounts::may_act_for`), with an
+  error whose `field` is `on_behalf_of`, so that a program tells it from
+  other refusals. Any other token that sends the header is refused.
+- **For nobody.** Without the header it reads its workspace as its keeper
+  sees it, held to reading there: its projects, sessions with their
+  events, and schedules with their runs (`?mine=1` lists the sessions it
+  started, `?service_account=` anyone's). Running a schedule
+  (`POST /api/v1/schedules/{id}/runs`) runs it for the person it runs for,
+  who must be one it may act for, as at its time; the header runs it for
+  someone else, as their "Run now" would. A run says the service account
+  started it for them (`StartedBy::ServiceAccount`), and what it sends
+  with it is information, not instructions, as another tool's is. It never
+  reaches the account, workspaces' people and settings, secrets, tokens or
+  administration, nor opens live connections, which check their token
+  again while they stay open (`service_accounts::allows`): its sessions'
+  events come from `GET /api/v1/sessions/{id}/events`, and webhooks post
+  what happens. `GET /api/v1/service-account` says what it is, and whom a
+  request acts for; `GET /api/v1/service-accounts/{id}/people` lists the
+  workspace's people with their answers and whether it may act for each,
+  for it and for its workspace's admins.
+- **People choose.** Where the instance asks people first
+  (`InstanceSettings::service_account_consent`, on by default), a service
+  account acts only for those who allowed it (`PUT
+  /api/v1/service-accounts/{id}/answer`, `service_account_answers`; no row
+  is no answer). fctl asks each member as it's made, and each one who
+  joins later: the workspace's invitations name its service accounts
+  before people join (`WorkspaceInvitation::service_accounts`), the Agent
+  Floor shows a card for each that waits for their answer, with what
+  allowing it means, Needs you counts them, and the Service accounts tab,
+  which members see once there is one, takes and changes answers. Allowing
+  one takes confirming it's you (`Sensitive::AllowServiceAccount`), and
+  fctl emails people that they did, where email is set up. Leaving a
+  workspace forgets one's answers there, and deleting the account its
+  rows. Instance admins turn asking off (Admin → Settings, `fctl admin set
+  --service-account-consent off`, which takes confirming it's them), for
+  an organization whose instance is its own people's: service accounts
+  then act for any member, also those who declined, and what each
+  answered counts again once it's on.
+- **What's said of it.** Every entry the audit log records for a request
+  of one names it (`service_account` and its name in its data), with the
+  person it acted for as the actor; the workspace's log records its admins
+  making, changing, renewing and deleting them and people's answers.
+  Session pages and rows say a session started through one, `fctl show`
+  too, and webhooks can narrow sessions' events to those service accounts
+  started (`WebhookOrigin::ServiceAccount`; a schedule's run stays a
+  schedule's).
 
 ## Workspaces
 
@@ -1033,7 +1119,8 @@ it's its person), device codes, workspaces
 (with their avatar images), their members,
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
-and runners, with their enrollment tokens, projects (with their icons),
+and runners, with their enrollment tokens, service accounts (their
+secrets' hashes) and people's answers to them, projects (with their icons),
 their members and repositories, sessions (summary rows with their agents'
 open questions, and whether the search index has all of each), which sessions list which pull
 request, projects' review agents and their reviews, shares, who follows
@@ -2172,7 +2259,12 @@ another tool, runs one
    (`fctl_domain::autopilot::crew_rules`), and what came with it as the
    autopilot's, and its turns' ends, its pull requests and its checks wake
    the autopilot. Its trigger is its owner's token, and the run names the
-   autopilot (`ScheduleRun.autopilot`, from the session).
+   autopilot (`ScheduleRun.autopilot`, from the session). A workspace's
+   service account runs it for the person it runs for, or for the one its
+   request names ([Service accounts](#service-accounts)), who must be one
+   it may act for: fctl's note says the service account started it for
+   them, what came with it is information, as a token's is, its trigger is
+   a token's, and its person follows it.
 6. **A run on an event** (`crate::triggers`, `fctl_domain::triggers`,
    [ADR 0082](adr/0082-schedules-run-on-events-on-github-through-its-webhook.md)).
    A schedule may wait for something to happen on GitHub instead of a
@@ -3733,8 +3825,8 @@ what happens to as it happens, signed with each one's secret
    `api::hooks`): an address, a name, the events it wants (empty: all,
    also those a later version adds), a workspace's webhook's projects
    (empty: all, also later ones), whose sessions' events it wants
-   (`started_by`: people and tools, schedules, an autopilot, tickets;
-   empty: any), whether it's on, and a secret of 32 random bytes
+   (`started_by`: people and tools, schedules, an autopilot, tickets,
+   service accounts; empty: any), whether it's on, and a secret of 32 random bytes
    (`whsec_` and their base64, as Standard Webhooks' libraries take it),
    sealed with the master key (`webhook:<id>`). A workspace has at most
    20 (`fctl_domain::hooks::MAX_WEBHOOKS`). Its address is checked

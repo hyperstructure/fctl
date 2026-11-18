@@ -34,6 +34,7 @@ const WHO: Record<G.WebhookOrigin, string | undefined> = {
   schedule: "schedules",
   autopilot: "an autopilot",
   ticket: "tickets",
+  service_account: "service accounts",
   other: undefined,
 };
 
@@ -178,6 +179,11 @@ export const ORIGINS: { value: G.WebhookOrigin; label: string; line: string }[] 
   { value: "schedule", label: "Schedules", line: "At their times, on events, or run now" },
   { value: "autopilot", label: "Autopilot", line: "Its own session and those it starts" },
   { value: "ticket", label: "Tickets", line: "Delegated to fctl in Linear" },
+  {
+    value: "service_account",
+    label: "Service accounts",
+    line: "Started for people by a program of the workspace's, such as its portal",
+  },
 ];
 
 /**

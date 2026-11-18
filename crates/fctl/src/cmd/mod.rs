@@ -25,6 +25,7 @@ pub mod runners;
 pub mod schedules;
 pub mod search;
 pub mod selfcmd;
+pub mod service_accounts;
 pub mod sessions;
 pub mod ticket;
 pub mod tokens;

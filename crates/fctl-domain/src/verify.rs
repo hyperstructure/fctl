@@ -106,6 +106,17 @@ pub enum Sensitive {
     /// there, so a stolen session or token could otherwise have it sent
     /// where it waits, for good, or sign posts of its own.
     AddWebhook,
+    /// Making a workspace's service account, or a new secret for one:
+    /// whoever holds the secret starts sessions for the people who allow
+    /// it, and for everyone where the instance doesn't ask them.
+    NewServiceAccount,
+    /// Letting a service account start sessions for you: whoever holds its
+    /// secret then runs work as you, on your subscription, so a stolen
+    /// session or token could otherwise hand that to an admin who holds it.
+    AllowServiceAccount,
+    /// No longer asking people before service accounts start sessions for
+    /// them.
+    StopServiceAccountConsent,
 }
 
 impl Sensitive {
@@ -142,6 +153,11 @@ impl Sensitive {
             PutOnAutopilot => "put a project on autopilot",
             KeepAutopilot => "keep an autopilot on your subscription when others change it",
             AddWebhook => "add a webhook, point one elsewhere, or read or rotate its secret",
+            NewServiceAccount => "make a service account or a new secret for one",
+            AllowServiceAccount => "let a service account start sessions for you",
+            StopServiceAccountConsent => {
+                "let service accounts start sessions for people without asking them"
+            }
         }
     }
 }
@@ -218,6 +234,11 @@ pub fn instance_settings_change(
         Some(Sensitive::StopRequiringTwoFactor)
     } else if off(current.two_factor_google, update.two_factor_google) {
         Some(Sensitive::StopGoogleCodes)
+    } else if off(
+        current.service_account_consent,
+        update.service_account_consent,
+    ) {
+        Some(Sensitive::StopServiceAccountConsent)
     } else {
         None
     }
@@ -427,6 +448,31 @@ mod tests {
             ..all_on
         };
         assert_eq!(instance_settings_change(&publishing, &screenshots), None);
+    }
+
+    #[test]
+    fn letting_service_accounts_act_without_asking_is_sensitive() {
+        let asking = InstanceSettings::default();
+        assert!(asking.service_account_consent);
+        let stop = UpdateInstanceSettingsRequest {
+            service_account_consent: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            instance_settings_change(&asking, &stop),
+            Some(Sensitive::StopServiceAccountConsent)
+        );
+        // Asking people again is never one.
+        let unasked = InstanceSettings {
+            service_account_consent: false,
+            ..asking
+        };
+        let ask = UpdateInstanceSettingsRequest {
+            service_account_consent: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(instance_settings_change(&unasked, &ask), None);
+        assert_eq!(instance_settings_change(&unasked, &stop), None);
     }
 
     #[test]

@@ -424,6 +424,8 @@ pub fn origin(s: &Session) -> Option<WebhookOrigin> {
         WebhookOrigin::Schedule
     } else if s.ticket.is_some() {
         WebhookOrigin::Ticket
+    } else if s.service_account.is_some() {
+        WebhookOrigin::ServiceAccount
     } else {
         WebhookOrigin::Person
     })
@@ -475,7 +477,7 @@ pub fn check_started_by(origins: &[WebhookOrigin]) -> Result<Vec<WebhookOrigin>>
     if origins.contains(&WebhookOrigin::Other) {
         return Err(ApiError::validation(
             "started_by",
-            "Sessions start from a person, a schedule, an autopilot or a ticket",
+            "Sessions start from a person, a schedule, an autopilot, a ticket or a service account",
         ));
     }
     Ok(WebhookOrigin::ALL
@@ -1444,6 +1446,7 @@ pub fn session(s: &Session, base: &str) -> HookSession {
             }
             .to_owned()
         }),
+        service_account: s.service_account.clone(),
         ticket: s.ticket.as_ref().map(|t| HookTicket {
             tracker: match t.tracker {
                 Tracker::Linear => "linear",
@@ -1837,6 +1840,7 @@ pub fn describe(
                 WebhookOrigin::Schedule => Some("schedules"),
                 WebhookOrigin::Autopilot => Some("an autopilot"),
                 WebhookOrigin::Ticket => Some("tickets"),
+                WebhookOrigin::ServiceAccount => Some("service accounts"),
                 WebhookOrigin::Other => None,
             })
             .collect();
@@ -2142,6 +2146,7 @@ fn sample_session(kind: Kind, project: &HookPlace, repo: &str, now: i64) -> Sess
         autopilot: None,
         claude: None,
         claude_connection: None,
+        service_account: None,
     })
 }
 
@@ -3013,6 +3018,40 @@ mod tests {
     }
 
     #[test]
+    fn a_service_accounts_session_says_which_and_webhooks_narrow_to_them() {
+        let mut s = sess(Kind::SessionStarted);
+        s.service_account =
+            serde_json::from_value(json!({ "id": "sva_1", "name": "Acme portal" })).ok();
+        assert_eq!(origin(&s), Some(WebhookOrigin::ServiceAccount));
+        let h = session(&s, BASE);
+        assert_eq!(h.started_by, WebhookOrigin::ServiceAccount);
+        assert_eq!(
+            h.service_account.and_then(|sa| sa.name),
+            Some("Acme portal".into())
+        );
+        let narrowed = Hook {
+            started_by: vec![WebhookOrigin::ServiceAccount],
+            enabled: true,
+            ..Hook::default()
+        };
+        assert!(wants(
+            &narrowed,
+            Kind::SessionStarted,
+            Some("prj_1"),
+            origin(&s)
+        ));
+        assert!(!wants(
+            &narrowed,
+            Kind::SessionStarted,
+            Some("prj_1"),
+            Some(WebhookOrigin::Person)
+        ));
+        // A schedule's run stays a schedule's, whoever ran it.
+        s.schedule = serde_json::from_value(json!({ "id": "sch_1", "name": "Nightly" })).ok();
+        assert_eq!(origin(&s), Some(WebhookOrigin::Schedule));
+    }
+
+    #[test]
     fn a_session_posts_as_the_api_shows_it_with_its_links() {
         let mut s = sess(Kind::SessionFinished);
         s.schedule = serde_json::from_value(json!({ "id": "sch_1", "name": "Nightly" })).ok();
@@ -3210,6 +3249,15 @@ mod tests {
                 &[WebhookOrigin::Ticket, WebhookOrigin::Person]
             ),
             "Posts every event to hooks.slack.com, in Web, for sessions started by tickets or people."
+        );
+        assert_eq!(
+            describe(
+                url,
+                &strings(&[Kind::SessionFinished]),
+                &[],
+                &[WebhookOrigin::ServiceAccount]
+            ),
+            "Posts to hooks.slack.com when an agent finishes a turn, for sessions started by service accounts."
         );
     }
 

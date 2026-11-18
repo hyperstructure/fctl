@@ -44,6 +44,17 @@ struct Cli {
     /// Print machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
+    /// Act for this person, by their id (usr_…) or one of their addresses:
+    /// with a service account's token (fctl_svc_…), whose sessions are
+    /// then theirs, on their Claude subscription.
+    #[arg(
+        long,
+        global = true,
+        env = "FCTL_ON_BEHALF_OF",
+        value_name = "PERSON",
+        hide_env_values = true
+    )]
+    on_behalf_of: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -218,6 +229,22 @@ Examples:
   fctl webhooks events                 # what webhooks get"
     )]
     Webhooks(cmd::webhooks::WebhooksArgs),
+    /// Service accounts: a workspace's credentials for programs of its own
+    /// (a portal where people start agents, a chat bot, a script), which
+    /// start sessions for the people who allow them, run its schedules and
+    /// read its sessions. Its admins make them; everyone says whether each
+    /// may start sessions for them.
+    #[command(
+        name = "service-accounts",
+        visible_alias = "service-account",
+        after_help = "Examples:
+  fctl service-accounts                # the workspace's, with your answer to each
+  fctl service-accounts create \"Acme portal\" --description \"Our agent portal at portal.acme.dev\"
+  fctl service-accounts allow \"Acme portal\"
+  fctl service-accounts people \"Acme portal\"
+  FCTL_TOKEN=fctl_svc_… fctl run -p web --on-behalf-of ada@acme.dev \"Fix the login redirect\""
+    )]
+    ServiceAccounts(cmd::service_accounts::ServiceAccountsArgs),
     /// A project's autopilot (experimental): an agent that runs the
     /// project, or its whole workspace, on its own. People put it on, steer
     /// it and answer what it asks; in its own session's sandbox, the
@@ -524,6 +551,7 @@ fn log_colors(terminal: bool, no_color: Option<&OsStr>, format: Option<&OsStr>) 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let server = cli.server.as_deref();
     let json = cli.json;
+    config::act_for(cli.on_behalf_of.as_deref());
     match cli.command {
         Command::Login { url, no_browser } => {
             cmd::auth::login(url.as_deref().or(server), no_browser, json).await
@@ -549,6 +577,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Review(args) => cmd::review::run(server, args, json).await,
         Command::Schedules(args) => cmd::schedules::run(server, args, json).await,
         Command::Webhooks(args) => cmd::webhooks::run(server, args, json).await,
+        Command::ServiceAccounts(args) => cmd::service_accounts::run(server, args, json).await,
         Command::Autopilot(args) => cmd::autopilot::run(server, args, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await

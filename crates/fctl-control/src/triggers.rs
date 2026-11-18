@@ -601,6 +601,7 @@ async fn decide(
             follow: true,
             autopilot: None,
             about: Some(tg::short(h)),
+            service_account: None,
             now,
         },
     )

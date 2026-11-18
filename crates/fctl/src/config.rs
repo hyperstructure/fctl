@@ -98,10 +98,27 @@ pub fn token(server: &str) -> Option<String> {
         .or_else(|| Credentials::load().tokens.get(server).cloned())
 }
 
+/// The person a service account's requests act for (`--on-behalf-of`).
+static ON_BEHALF_OF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Makes the API clients act for `person`, as a service account does
+/// (`--on-behalf-of`, `FCTL_ON_BEHALF_OF`).
+pub fn act_for(person: Option<&str>) {
+    if let Some(p) = person.map(str::trim).filter(|p| !p.is_empty()) {
+        let _ = ON_BEHALF_OF.set(p.to_owned());
+    }
+}
+
+/// The person `--on-behalf-of` names, if any.
+pub fn acting_for() -> Option<&'static str> {
+    ON_BEHALF_OF.get().map(String::as_str)
+}
+
 /// An API client, signed in. Where a sensitive action needs you to
 /// confirm it's you first, it asks in a terminal (`crate::verify`). In an
 /// autopilot's own session's sandbox, where nobody signed in, its requests
-/// go through fctl-agent, as the autopilot.
+/// go through fctl-agent, as the autopilot. With `--on-behalf-of`, its
+/// requests act for that person, as a service account's do.
 pub fn api(flag: Option<&str>) -> Result<fctl_client::Api> {
     if flag.is_none()
         && std::env::var("FCTL_TOKEN").is_err()
@@ -112,5 +129,7 @@ pub fn api(flag: Option<&str>) -> Result<fctl_client::Api> {
     let server = server(flag)?;
     let token =
         token(&server).with_context(|| format!("Not signed in to {server}. Run `fctl login`."))?;
-    Ok(fctl_client::Api::new(&server, Some(token)).with_verifier(crate::verify::verifier()))
+    Ok(fctl_client::Api::new(&server, Some(token))
+        .with_verifier(crate::verify::verifier())
+        .on_behalf_of(acting_for()))
 }

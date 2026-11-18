@@ -49,4 +49,10 @@ linear_webhook?: boolean,
  * (`FCTL_ADMIN_TOKENS`), as a self-hosted instance's may, never
  * app.fctl.sh's. Absent from control planes before them.
  */
-admin_tokens?: boolean, };
+admin_tokens?: boolean, 
+/**
+ * Workspaces' service accounts start sessions only for the people who
+ * allowed them to ([`InstanceSettings::service_account_consent`]).
+ * True from control planes before service accounts, which have none.
+ */
+service_account_consent?: boolean, };

@@ -11,6 +11,7 @@
 //! | [`autopilot`] | autopilots (experimental), through the REST API |
 //! | [`event`] | the session event model used everywhere |
 //! | [`hooks`] | webhooks: the REST API's, and what fctl posts to them |
+//! | [`service_accounts`] | a workspace's own programs, through the REST API |
 //! | [`viewer`] | SessionDO ⇄ browsers and the CLI |
 //! | [`runner`] | FleetDO ⇄ hosts (control connection) |
 //! | [`uplink`] | SessionDO ⇄ hosts (one connection per session) |
@@ -26,6 +27,7 @@ pub mod event;
 pub mod hooks;
 pub mod ids;
 pub mod runner;
+pub mod service_accounts;
 pub mod session;
 pub mod tickets;
 pub mod uplink;

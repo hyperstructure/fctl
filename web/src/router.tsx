@@ -139,6 +139,7 @@ const workspace = createRoute({
     reason?: GithubRefusal;
     linear?: LinearOutcome;
     webhook?: string;
+    serviceAccount?: string;
   } => ({
     tab: oneOf(s.tab, [
       "projects",
@@ -147,6 +148,7 @@ const workspace = createRoute({
       "github",
       "linear",
       "webhooks",
+      "service-accounts",
       "settings",
       "audit",
     ] as const),
@@ -158,6 +160,8 @@ const workspace = createRoute({
     linear: oneOf(s.linear, LINEAR_OUTCOMES),
     // The webhook the Webhooks tab opens.
     webhook: str(s.webhook),
+    // The service account the Service accounts tab opens.
+    serviceAccount: str(s.serviceAccount),
   }),
 });
 const project = createRoute({

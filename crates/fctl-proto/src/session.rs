@@ -1475,6 +1475,11 @@ pub struct Session {
     /// for others', from live updates, which go to everyone watching, and
     /// from control planes before it.
     pub claude_connection: Option<crate::CredentialId>,
+    /// The service account that started it for its person, from a program
+    /// of its workspace's (`service_accounts::ServiceAccount`): the session
+    /// is theirs, on their subscription. Absent for other sessions, and
+    /// from control planes before service accounts.
+    pub service_account: Option<SessionServiceAccount>,
 }
 
 /// A question a session's agent asks people, when it needs their input to
@@ -1500,6 +1505,16 @@ pub struct SessionQuestion {
 pub struct SessionSchedule {
     pub id: ScheduleId,
     /// Absent once the schedule is deleted.
+    pub name: Option<String>,
+}
+
+/// The service account that started a session for its person.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionServiceAccount {
+    pub id: crate::ServiceAccountId,
+    /// Absent once the service account is deleted.
     pub name: Option<String>,
 }
 
