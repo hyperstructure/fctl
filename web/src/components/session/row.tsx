@@ -201,35 +201,47 @@ function ScheduledMark({ s }: { s: Pick<G.Session, "schedule"> }) {
 }
 
 /**
- * The service account that started a session for its person, after their name on its cover:
- * ", through Acme portal", a link to its workspace's Service accounts (its page, for its admins, who
- * open it there); its words alone once it is deleted.
+ * The service account that started a session for its person, as a link to its workspace's Service
+ * accounts tab (which opens its page there for its admins); its words alone once it is deleted.
  */
+export function ServiceAccountLink({
+  session,
+  className,
+}: {
+  session: Pick<G.Session, "service_account" | "workspace">;
+  className?: string;
+}) {
+  const sa = session.service_account;
+  if (!sa) return null;
+  const w = session.workspace;
+  if (!sa.name || !w) return <span className={cn("text-ink-3", className)}>{startedThrough(session)}</span>;
+  return (
+    <Link
+      to="/w/$slug"
+      params={{ slug: w.slug }}
+      search={{ tab: "service-accounts" }}
+      title="A program of the workspace's, which started it for its person: theirs, on their subscription"
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1 text-ink-2 underline-offset-2 hover:text-ink hover:underline",
+        className,
+      )}
+    >
+      <UserRoundCog className="size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
+      <span className="truncate">{sa.name}</span>
+    </Link>
+  );
+}
+
+/** ", through Acme portal", after the person's name on a session's cover. */
 export function ServiceAccountStarter({
   session,
 }: {
   session: Pick<G.Session, "service_account" | "workspace">;
 }) {
-  const sa = session.service_account;
-  if (!sa) return null;
-  const w = session.workspace;
+  if (!session.service_account) return null;
   return (
     <>
-      , through{" "}
-      {sa.name && w ? (
-        <Link
-          to="/w/$slug"
-          params={{ slug: w.slug }}
-          search={{ tab: "service-accounts" }}
-          title="A program of the workspace's, which started it for them: theirs, on their subscription"
-          className="inline-flex items-center gap-1 text-ink-2 underline-offset-2 hover:text-ink hover:underline"
-        >
-          <UserRoundCog className="size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
-          {sa.name}
-        </Link>
-      ) : (
-        <span className="text-ink-3">{startedThrough(session)}</span>
-      )}
+      , through <ServiceAccountLink session={session} />
     </>
   );
 }
