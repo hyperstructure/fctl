@@ -619,10 +619,12 @@ by themselves, from an agent that installs and runs nothing of them.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
 their threads: those of up to five reviews in a row while nobody messages
-the agent. fctl holds the next ones back, and the session's page says so
-under the pull request, with a button that continues for five more
-rounds: the agent gets the held findings, then those of up to four more
-reviews in a row. A message to the agent ends the pause too. Findings
+the agent, or as many as the project's owners chose, from one to ten
+(`--rounds`). fctl holds the next ones back, and the session's page says
+so under the pull request, with a button that continues for as many
+rounds again: the agent gets the held findings, then those of the reviews
+after them, up to that many in a row with these. A message to the agent
+ends the pause too. Findings
 that went to no session, since none listed the pull request yet when the
 review posted, wait for one: the session that opened it gets them once it
 lists it, and `fctl review` says so meanwhile. Where the
@@ -642,6 +644,7 @@ fctl review settings -p my-app --bots dependabot,renovate      # the apps whose 
 fctl review settings -p my-app --skip-repos acme/shared-lib    # repositories whose pull requests get no review here (or none)
 fctl review settings -p my-app --drafts off                    # drafts wait until they're marked ready for review
 fctl review settings -p my-app --description-summary on        # sum each pull request up in its description first
+fctl review settings -p my-app --rounds 3                      # findings of 3 reviews in a row reach the agent, then fctl pauses (1 to 10, 5 by default)
 fctl review bots -p my-app                     # the apps that opened the newest pull requests, and which start reviews
 fctl review bots -p my-app my-app-bot          # an app as GitHub shows it: its name and who makes it
 fctl review settings -p my-app --mine          # run them on your subscription from now on

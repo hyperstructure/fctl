@@ -497,6 +497,7 @@ fctl review settings -p my-app --instructions-file review.md
 fctl review settings -p my-app --bots dependabot,renovate         # apps whose pull requests start reviews
 fctl review settings -p my-app --drafts off                       # drafts wait until they're marked ready
 fctl review settings -p my-app --description-summary on           # sum each pull request up in its description first
+fctl review settings -p my-app --rounds 3                         # findings of 3 reviews in a row reach the agent, then fctl pauses
 fctl review start -p my-app 12                                    # review a pull request's head now
 fctl review -p my-app --json                                      # reviews and what came of each
 fctl projects set -p my-app --follow-ups all                      # comments, checks, conflicts, closed

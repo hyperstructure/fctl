@@ -481,7 +481,8 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
             let held = review
                 .and_then(|r| match r.held_after {
                     Some(n) => Some(format!(
-                        "held back from the agent after {n} reviews in a row: {pass_on} passes them on"
+                        "held back from the agent after {}: {pass_on} passes them on",
+                        fctl_domain::reviews::reviews_in_a_row(n)
                     )),
                     None if r.unsent && !pulls::done(pr) => Some(format!(
                         "its findings went to no session: {pass_on} passes them on to this one"
@@ -2113,6 +2114,18 @@ mod tests {
                 "          held back from the agent after 5 reviews in a row: fctl review pass-on app#1 passes them on",
                 "          lib#3 https://github.com/acme/lib/pull/3"
             ]
+        );
+        // After one review, where the project passes on one at a time.
+        if let Some(r) = s.pull_requests[0]
+            .checks
+            .as_mut()
+            .and_then(|c| c.review.as_mut())
+        {
+            r.held_after = Some(1);
+        }
+        assert_eq!(
+            pull_request_lines(&s, 0)[1],
+            "          held back from the agent after 1 review: fctl review pass-on app#1 passes them on"
         );
         // Findings that went to no session.
         if let Some(r) = s.pull_requests[0]

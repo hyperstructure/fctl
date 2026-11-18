@@ -73,6 +73,17 @@ export const commitUrl = (r: Pick<G.Review, "url" | "head_sha">) => `${r.url}/co
 /** Whether `role` turns a project's review agents on or off and says how they review: its owners. */
 export const canManageReviews = (role?: G.ProjectRole) => role === "owner";
 
+/**
+ * How many reviews in a row reach the agent that opened the pull request while nobody messages it, where
+ * the project's owners didn't choose (`fctl_domain::reviews::DEFAULT_ROUNDS`), and how many they may choose.
+ */
+export const DEFAULT_ROUNDS = 5;
+export const MAX_ROUNDS = 10;
+
+/** "5 review rounds", "1 more round". */
+export const rounds = (n: number, more = false) =>
+  `${n} ${more ? "more " : "review "}${n === 1 ? "round" : "rounds"}`;
+
 /** Whether someone may ask for a review of a pull request: those who start sessions in the project. */
 export const canAskForReview = (role?: G.ProjectRole) =>
   role === "owner" || role === "maintainer" || role === "editor";
