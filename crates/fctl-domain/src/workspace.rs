@@ -149,6 +149,25 @@ pub fn check_two_factor(settings: &InstanceSettings, require: bool) -> Result<()
     Ok(())
 }
 
+/// Whether someone whose instance role is `role` may create workspaces:
+/// everyone, unless the instance's settings let only its admins and the
+/// primary instance owner ([`InstanceSettings::members_create_workspaces`]).
+pub fn creates_workspaces(role: InstanceRole, settings: &InstanceSettings) -> bool {
+    settings.members_create_workspaces || role.is_admin()
+}
+
+/// Whether someone whose instance role is `role` may create a workspace
+/// now ([`creates_workspaces`]); the workspace limit holds them too
+/// ([`check_limit`]).
+pub fn check_create(role: InstanceRole, settings: &InstanceSettings) -> Result<()> {
+    if creates_workspaces(role, settings) {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(
+        "On this instance, only its admins create workspaces. Ask one to create the workspace you need, or to add you to one.",
+    ))
+}
+
 /// The most workspaces someone whose instance role is `role` can be a
 /// member of: [`MAX_WORKSPACES`], or any number (`None`) for the primary
 /// instance owner, whose instance it is. Admins are held to it as members
@@ -491,6 +510,40 @@ mod tests {
         assert!(check_transfer(Some(Owner), Some(Member)).is_err());
         assert!(check_transfer(Some(Owner), None).is_err());
         assert!(check_transfer(Some(Owner), Some(Owner)).is_err());
+    }
+
+    #[test]
+    fn instance_admins_alone_create_workspaces_where_the_instance_says_so() {
+        let open = InstanceSettings::default();
+        assert!(open.members_create_workspaces);
+        let closed = InstanceSettings {
+            members_create_workspaces: false,
+            ..InstanceSettings::default()
+        };
+        for role in [
+            InstanceRole::Owner,
+            InstanceRole::Admin,
+            InstanceRole::Member,
+        ] {
+            assert!(creates_workspaces(role, &open), "{role:?}");
+            assert!(check_create(role, &open).is_ok(), "{role:?}");
+        }
+        for role in [InstanceRole::Owner, InstanceRole::Admin] {
+            assert!(creates_workspaces(role, &closed), "{role:?}");
+            assert!(check_create(role, &closed).is_ok(), "{role:?}");
+        }
+        assert!(!creates_workspaces(InstanceRole::Member, &closed));
+        let refused = check_create(InstanceRole::Member, &closed).err();
+        assert_eq!(
+            refused.as_ref().map(|e| e.code),
+            Some(fctl_proto::ErrorCode::Forbidden)
+        );
+        assert_eq!(
+            refused.map(|e| e.message).as_deref(),
+            Some(
+                "On this instance, only its admins create workspaces. Ask one to create the workspace you need, or to add you to one."
+            )
+        );
     }
 
     #[test]
