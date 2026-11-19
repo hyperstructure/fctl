@@ -157,7 +157,10 @@ export function MilestoneButton({
 /**
  * A line that opens: its icon, what it says (which truncates, with the chevron after it) and, at the
  * right, what it says about itself. A line that has to be read whole (`wrap`) wraps instead, its
- * chevron after its last word. Its hover fill reaches a little past the column on each side.
+ * chevron after its last word. What it says about itself goes under its text when, beside it, it
+ * would leave the text less than 12rem (or the text's own width, when that is less), as long facts
+ * do on a phone: a summary squeezed beside them would break after every word or two. Its hover fill
+ * reaches a little past the column on each side.
  */
 export function OpenLine({
   icon,
@@ -204,27 +207,35 @@ export function OpenLine({
         )}
       >
         <span className={cn("flex shrink-0 items-center", tall)}>{icon}</span>
-        {wrap ? (
-          <span className={cn("min-w-0 flex-1 text-pretty", !nested && "py-0.5")}>
-            <span className={wrap.className}>
-              {words.length > 0 && `${words.join(" ")} `}
-              <span className="whitespace-nowrap">
-                {last}
-                <Chevron open={open} className="ml-1.5 inline-block align-[-3px]" />
+        {/* The text takes at least 12rem, or its own width, and the facts wrap under it otherwise. */}
+        <span className="flex min-w-0 flex-1 flex-wrap justify-between gap-x-2">
+          {wrap ? (
+            <span className={cn("min-w-0 max-w-max grow basis-48 text-pretty", !nested && "py-0.5")}>
+              <span className={wrap.className}>
+                {words.length > 0 && `${words.join(" ")} `}
+                <span className="whitespace-nowrap">
+                  {last}
+                  <Chevron open={open} className="ml-1.5 inline-block align-[-3px]" />
+                </span>
               </span>
             </span>
-          </span>
-        ) : (
-          <span className={cn("flex min-w-0 flex-1 items-center gap-1.5", tall)}>
-            <span className="flex min-w-0 items-baseline gap-1.5">{children}</span>
-            <Chevron open={open} />
-          </span>
-        )}
-        {meta && (
-          <span className={cn("flex shrink-0 items-center pl-2 text-[11.5px] text-ink-4 tabular-nums", tall)}>
-            {meta}
-          </span>
-        )}
+          ) : (
+            <span className={cn("flex min-w-0 max-w-max grow basis-48 items-center gap-1.5", tall)}>
+              <span className="flex min-w-0 items-baseline gap-1.5">{children}</span>
+              <Chevron open={open} />
+            </span>
+          )}
+          {meta && (
+            <span
+              className={cn(
+                "flex shrink-0 items-center text-[11.5px] text-ink-4 tabular-nums empty:hidden",
+                tall,
+              )}
+            >
+              {meta}
+            </span>
+          )}
+        </span>
       </button>
     </div>
   );
