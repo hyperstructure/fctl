@@ -4364,6 +4364,29 @@ again when stopping it fails while it is still listed as running. Before a
 session starts in a sandbox listed as running, the host runs `true` in it,
 and stops and starts one that refuses.
 
+A VM that stops answering, as one whose memory runs out may, holds up
+all of Apple's `container`
+([ADR 0089](adr/0089-hosts-stop-apple-sandboxes-whose-vms-stop-answering.md)).
+Each sandbox's VM runs from a helper process of its own
+(`container-runtime-linux`), which takes one command at a time, and the
+API server starts every container and every `exec` one at a time, and
+neither gives up on a VM: an `exec` in it waits for ever, and every
+`run`, `start`, `exec`, `stop` and `delete` on the Mac waits behind it,
+while `list`, `inspect` and `system status` answer. So when a command
+that waits on VMs runs out of time, or `run` takes longer than three
+minutes, the host looks for stuck VMs (`crates/fctl-host/src/driver/stuck.rs`):
+it asks each running container for its stats, which wait on its helper
+and its VM but not on the API server, and kills the helper of each of
+its own sandboxes that doesn't answer within two minutes. The API
+server's calls to the helper fail, which frees the rest, and it takes the
+sandbox for stopped. Commands that ran out of time meanwhile wait for the
+look, and one held up by another sandbox's VM is tried once more. A
+session whose sandbox the host stopped so fails, and starts it again as it
+resumes. A stuck container that isn't fctl's, or a sandbox whose helper
+the host can't find, makes the apple driver not ready, saying why and
+what stops it, until a look finds it answering or gone; `fctl host
+doctor` names stuck VMs too.
+
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
 Restarting or upgrading the host does not stop agents. The host pings the

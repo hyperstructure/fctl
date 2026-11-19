@@ -1027,7 +1027,7 @@ fctl host install --auto-update off   # update fctl yourself (new hosts update t
 fctl host install --agent-as-root off # run fctl-agent as the sandbox's user, not root
 fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's id and sessions, whether it drains, and the autopilots that wake here
-fctl host doctor                 # check the configuration, tokens, connection, driver, images, disk and service
+fctl host doctor                 # check the configuration, tokens, connection, driver, sandboxes, images, disk and service
 fctl host logs -n 200            # the last 200 lines of its log (on Linux, from the journal)
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
 fctl host image build            # build it here instead (with Lima: the base VM)
@@ -1157,6 +1157,34 @@ driver is apple starts it again (`container system start`, never
 installing a kernel): when the host starts, and within about a minute
 and a half of the service stopping. With `auto`, or
 another driver, the host leaves it, and Docker's daemon, to their owner.
+
+With Apple's `container`, one sandbox whose VM stops answering, as one
+whose memory runs out may, holds up every other: the service starts
+sandboxes, and commands in them, one at a time, and waits for that VM
+for ever, so nothing starts on the runner while `container list` and
+`container system status` answer as ever
+([apple/container#1916](https://github.com/apple/container/issues/1916)).
+When a `container` command runs out of time, or a sandbox takes more
+than three minutes to start, the host asks each running sandbox for its
+stats, and stops each of its own that doesn't answer within two minutes
+by killing the `container-runtime-linux` process that runs its VM. The
+rest go on. A session in that sandbox fails, saying so, and resuming it
+starts the sandbox again with its files; what ran in it is gone. A
+container that isn't fctl's, the host leaves to you: until it answers
+or stops, the apple driver isn't ready, and `fctl host status`, `fctl
+runners` and the Runners tab say which container it is and the command
+that stops it. `fctl host doctor` names every running container whose
+VM doesn't answer within 10 seconds, with that command.
+
+If `container` commands still wait, restart Apple's `container`. This
+stops every sandbox; their sessions fail, and resuming each starts its
+sandbox again:
+
+```sh
+killall -9 container-apiserver   # `container system stop` waits for a VM that doesn't answer otherwise
+container system stop            # stops every sandbox's VM
+container system start           # or leave it to the host, within about a minute and a half
+```
 
 On Linux, `--driver firecracker` runs each session in a
 [Firecracker](https://firecracker-microvm.github.io) microVM with a kernel
