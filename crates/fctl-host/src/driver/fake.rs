@@ -7,6 +7,7 @@ use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 /// The CLI. Each image name on the host is a file in `have`, and each one
 /// it can pull a file in `registry`, holding the build's ID, its revision
@@ -414,4 +415,196 @@ pub fn id(seed: &str) -> String {
 
 fn key(name: &str) -> String {
     name.replace(['/', ':'], "_")
+}
+
+/// A stand-in for Apple's `container` whose sandboxes' VMs run from
+/// helper processes, as Apple's do (`container-runtime-linux start
+/// --root … --uuid NAME`), each a file `vm-NAME` holding its pid: a
+/// sandbox runs while its helper does. The VM of one with a file
+/// `frozen-NAME` doesn't answer: `stats`, `stop`, `delete`, `cp` and
+/// `exec` in it wait for ever (30 seconds), and an `exec` in it holds the
+/// API server's lock (`lock` holds its helper's pid) until that helper
+/// goes, which every `exec`, `cp`, `start`, `run`, `stop` and `delete`
+/// waits for meanwhile. `list`, `inspect` and the others' `stats` answer
+/// as ever. `exec` says `1000` to `id -u`. With `refuse-start` there,
+/// `start` fails.
+const STUCK_APPLE: &str = r##"#!/bin/sh
+d=$(dirname "$0")
+echo "$*" >> "$d/calls"
+for last in "$@"; do :; done
+alive() { s=$(ps -o stat= -p "$1" 2>/dev/null); [ -n "$s" ] && [ "${s#Z}" = "$s" ]; }
+runs() { [ -e "$d/vm-$1" ] && alive "$(cat "$d/vm-$1")"; }
+frozen() { [ -e "$d/frozen-$1" ] && runs "$1"; }
+held() { [ -e "$d/lock" ] && alive "$(cat "$d/lock")"; }
+hang() { exec sleep 30; }
+wait_lock() { while held; do sleep 0.1; done; }
+vm() {
+  rm -f "$d/frozen-$1"
+  "$d/container-runtime-linux" start --root "$d/$1" --uuid "$1" </dev/null >/dev/null 2>&1 &
+  echo $! > "$d/vm-$1"
+}
+state() { if runs "$1"; then echo running; else echo stopped; fi; }
+case "$1" in
+  list)
+    printf '['; sep=
+    for f in "$d"/vm-*; do
+      [ -e "$f" ] || continue
+      n=${f#"$d"/vm-}
+      [ "$(state "$n")" = running ] || continue
+      printf '%s{"configuration": {"id": "%s"}, "status": {"state": "running"}}' "$sep" "$n"
+      sep=,
+    done
+    echo ']' ;;
+  inspect)
+    [ -e "$d/vm-$last" ] || { echo "Error: container $last not found" >&2; exit 1; }
+    printf '[{"configuration": {"id": "%s"}, "status": {"state": "%s"}}]\n' "$last" "$(state "$last")" ;;
+  stats)
+    frozen "$last" && hang
+    printf '[{"id": "%s", "memoryUsageBytes": 1}]\n' "$last" ;;
+  exec)
+    shift
+    while [ "${1#-}" != "$1" ]; do case "$1" in -u) shift 2 ;; *) shift ;; esac; done
+    runs "$1" || { echo "Error: container $1 is not running" >&2; exit 1; }
+    if frozen "$1"; then cp "$d/vm-$1" "$d/lock"; hang; fi
+    wait_lock
+    case "$*" in *"id -u"*) echo 1000 ;; esac ;;
+  cp)
+    n=${last%%:*}
+    runs "$n" || { echo "Error: container $n is not running" >&2; exit 1; }
+    frozen "$n" && hang
+    wait_lock ;;
+  run)
+    n=; prev=
+    for a in "$@"; do [ "$prev" = --name ] && n=$a; prev=$a; done
+    wait_lock
+    vm "$n"
+    echo "$n" ;;
+  start)
+    wait_lock
+    [ ! -e "$d/refuse-start" ] || { echo "Error: failed to bootstrap container" >&2; exit 1; }
+    runs "$last" || vm "$last"
+    echo "$last" ;;
+  stop)
+    frozen "$last" && hang
+    wait_lock
+    [ ! -e "$d/vm-$last" ] || kill -9 "$(cat "$d/vm-$last")" 2>/dev/null
+    echo "$last" ;;
+  delete)
+    frozen "$last" && hang
+    wait_lock
+    [ ! -e "$d/vm-$last" ] || kill -9 "$(cat "$d/vm-$last")" 2>/dev/null
+    rm -f "$d/vm-$last" ;;
+  clean) wait_lock ;;
+  image) echo '[{"name": "image"}]' ;;
+  system) echo '{"version": "1.5.0"}' ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"##;
+
+/// Apple's `container`, played by [`STUCK_APPLE`] in a directory of
+/// its own, with its helpers.
+pub struct StuckApple {
+    dir: tempfile::TempDir,
+}
+
+impl StuckApple {
+    /// The stand-in, with the sandboxes `running` and the frozen VMs of
+    /// `frozen`.
+    pub fn new(running: &[&str], frozen: &[&str]) -> Result<Self> {
+        let dir = tempfile::tempdir()?;
+        write_script(&dir.path().join("cli"), STUCK_APPLE)?;
+        write_script(
+            &dir.path().join("container-runtime-linux"),
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 600 ]; do sleep 0.1; i=$((i + 1)); done\n",
+        )?;
+        let apple = Self { dir };
+        for name in running {
+            apple.cli(&["start", name])?;
+        }
+        for name in frozen {
+            apple.freeze(name)?;
+        }
+        Ok(apple)
+    }
+
+    /// A driver that plays it: its commands take a second at most, and a
+    /// VM that doesn't answer within a second is stuck.
+    pub fn driver(&self) -> ContainerDriver {
+        let bin = self.dir.path().join("cli");
+        ContainerDriver::with_bin(Flavor::Apple, bin.display().to_string())
+            .timed(Duration::from_secs(1), Duration::from_secs(1))
+    }
+
+    /// The VM of the sandbox `name` stops answering.
+    pub fn freeze(&self, name: &str) -> Result<()> {
+        Ok(std::fs::write(
+            self.dir.path().join(format!("frozen-{name}")),
+            "",
+        )?)
+    }
+
+    /// Runs the stand-in, as the host would.
+    pub fn cli(&self, args: &[&str]) -> Result<String> {
+        let out = std::process::Command::new(self.dir.path().join("cli"))
+            .args(args)
+            .output()?;
+        anyhow::ensure!(out.status.success(), "{args:?}: {out:?}");
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Its `start`s fail from now on, as for a reason of their own.
+    pub fn refuse_starts(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("refuse-start"), "")?)
+    }
+
+    /// As if an `exec` had waited on the frozen VM of `name`, and held
+    /// the API server's lock since.
+    pub fn held_by(&self, name: &str) -> Result<()> {
+        Ok(std::fs::write(
+            self.dir.path().join("lock"),
+            self.helper(name)?.to_string(),
+        )?)
+    }
+
+    /// The helper of the sandbox `name`, as it was started last.
+    pub fn helper(&self, name: &str) -> Result<i32> {
+        let pid = std::fs::read_to_string(self.dir.path().join(format!("vm-{name}")))?;
+        Ok(pid.trim().parse()?)
+    }
+
+    /// Whether the sandbox `name` runs.
+    pub fn runs(&self, name: &str) -> Result<bool> {
+        let inspect = self.cli(&["inspect", name])?;
+        Ok(inspect.contains("\"running\""))
+    }
+
+    /// The commands it ran, in order.
+    pub fn calls(&self) -> Result<Vec<String>> {
+        let calls = std::fs::read_to_string(self.dir.path().join("calls"))?;
+        Ok(calls.lines().map(str::to_owned).collect())
+    }
+}
+
+impl Drop for StuckApple {
+    /// Stops the helpers that still run.
+    fn drop(&mut self) {
+        let Ok(files) = std::fs::read_dir(self.dir.path()) else {
+            return;
+        };
+        for f in files.flatten() {
+            let name = f.file_name().to_string_lossy().into_owned();
+            let Some(name) = name.strip_prefix("vm-") else {
+                continue;
+            };
+            if let Ok(pid) = self.helper(name) {
+                let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                if String::from_utf8_lossy(&cmdline).contains("container-runtime-linux") {
+                    let _ = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                }
+            }
+        }
+    }
 }

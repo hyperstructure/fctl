@@ -94,3 +94,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0086](0086-service-accounts-start-sessions-for-the-people-who-allow-them.md) | Service accounts start sessions for the people who allow them |
 | [0087](0087-instance-admins-choose-how-many-workspaces-each-person-can-be-in.md) | Instance admins choose how many workspaces each person can be in |
 | [0088](0088-webhooks-post-only-while-their-keeper-manages-them.md) | Webhooks post only while their keeper manages them, and only where they may |
+| [0089](0089-hosts-stop-apple-sandboxes-whose-vms-stop-answering.md) | Hosts stop Apple sandboxes whose VMs stop answering |

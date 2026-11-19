@@ -119,7 +119,8 @@ pub enum HostCmd {
     Status,
     /// Check that everything this machine needs to run sessions as a
     /// runner is in place: its configuration and tokens, the connection,
-    /// the driver, the images, the disk and the service.
+    /// the driver and whether its sandboxes answer, the images, the disk
+    /// and the service.
     Doctor,
     /// Print the host service's log.
     Logs {
@@ -1634,6 +1635,38 @@ fn memory_arg(s: &str) -> std::result::Result<u32, String> {
     }
 }
 
+/// How long `fctl host doctor` waits for each running sandbox's VM to
+/// answer.
+const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What `fctl host doctor` says of the running container `name`, whose VM
+/// didn't answer within [`ANSWER_WITHIN`], and how to stop it: kill `pids`,
+/// the processes that run its VM.
+fn not_answering(name: &str, pids: &[i32]) -> (String, String) {
+    let what = format!(
+        "{} {name} does not answer within {} seconds, which holds up every sandbox of Apple's `container`",
+        if name.starts_with("fctl-") {
+            "sandbox"
+        } else {
+            "container"
+        },
+        ANSWER_WITHIN.as_secs()
+    );
+    let now = match pids {
+        [] => "`killall -9 container-apiserver; container system stop; container system start` stops every sandbox and starts Apple's `container` again".to_owned(),
+        pids => {
+            let pids: Vec<String> = pids.iter().map(i32::to_string).collect();
+            format!("`kill -9 {}` (its container-runtime-linux) stops it now", pids.join(" "))
+        }
+    };
+    let fix = if name.starts_with("fctl-") {
+        format!("the host service stops it once a command waits on it; {now}")
+    } else {
+        format!("it isn't one of fctl's, so the host service leaves it: {now}")
+    };
+    (what, fix)
+}
+
 async fn doctor() -> Result<()> {
     let mut problems = 0;
     let mut check = |ok: bool, what: &str, fix: &str| {
@@ -1744,6 +1777,19 @@ async fn doctor() -> Result<()> {
             check(d.available, &line, "");
         } else {
             println!("{} {}", style::dim("·"), style::dim(&line));
+        }
+    }
+    // With Apple's `container`, one VM that doesn't answer holds up every
+    // sandbox: the host service stops fctl's once a command waits on one.
+    if let Ok(d) = Driver::select(&cfg.driver, &cfg).await
+        && let Some(Ok(stuck)) = d.not_answering(ANSWER_WITHIN).await
+    {
+        if stuck.is_empty() {
+            check(true, "sandboxes answer", "");
+        }
+        for (name, pids) in stuck {
+            let (what, fix) = not_answering(&name, &pids);
+            check(false, &what, &fix);
         }
     }
     if docker
@@ -1876,6 +1922,23 @@ async fn doctor() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_says_which_vm_holds_up_apples_container_and_how_to_stop_it() {
+        assert_eq!(
+            not_answering("fctl-ses-01m7rm7hkxza3q8xpzzbx1prda", &[72625]),
+            (
+                "sandbox fctl-ses-01m7rm7hkxza3q8xpzzbx1prda does not answer within 10 seconds, which holds up every sandbox of Apple's `container`".to_owned(),
+                "the host service stops it once a command waits on it; `kill -9 72625` (its container-runtime-linux) stops it now".to_owned()
+            )
+        );
+        let (what, fix) = not_answering("dev", &[]);
+        assert!(what.starts_with("container dev does not answer"), "{what}");
+        assert_eq!(
+            fix,
+            "it isn't one of fctl's, so the host service leaves it: `killall -9 container-apiserver; container system stop; container system start` stops every sandbox and starts Apple's `container` again"
+        );
+    }
 
     #[test]
     fn only_a_line_that_says_no_says_no() -> Result<()> {
