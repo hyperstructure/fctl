@@ -22,4 +22,11 @@ updated_at: number,
 /**
  * What it holds: in `GET …/autopilot/files/{name}` alone, not in lists.
  */
-content?: string, };
+content?: string, 
+/**
+ * Whether its plan names it, whole (`fctl_domain::autopilot::plan_names`):
+ * in lists alone. Its plan names the file each part of its work relies
+ * on, so one it doesn't is likely done with, such as a draft it sent.
+ * Absent from control planes before it.
+ */
+in_plan?: boolean, };

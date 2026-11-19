@@ -221,11 +221,12 @@ pub enum AutopilotCmd {
         section: Option<String>,
     },
     /// The files it keeps across its sessions: text, such as the scripts it
-    /// relies on and drafts, which its next session gets back in a new
-    /// sandbox and people read on the Autopilot tab. In its sandbox, the
-    /// autopilot keeps and removes them.
+    /// relies on, templates and drafts, which its next session gets back in
+    /// a new sandbox and people read on the Autopilot tab. In its sandbox,
+    /// the autopilot keeps them, and removes a draft once it sent it, as
+    /// fctl keeps its text with the session, message or ask.
     #[command(after_help = "Examples:
-  fctl autopilot files                        # list them
+  fctl autopilot files                        # list them, marking those its plan doesn't name
   fctl autopilot files put watch-deploy.sh    # keep a file, by its name
   fctl autopilot files put - --name summary.md < draft.md
   fctl autopilot files get watch-deploy.sh    # print one
@@ -298,8 +299,8 @@ pub enum AutopilotCmd {
 /// `fctl autopilot files`.
 #[derive(Subcommand)]
 pub enum FilesCmd {
-    /// List them by name, with their sizes and when it wrote them (the
-    /// default).
+    /// List them by name, with their sizes, when it wrote them and
+    /// whether its plan names them (the default).
     List,
     /// Keep files whole, each by its own name (or --name), in place of one
     /// of that name: the autopilot, in its sandbox. Text alone, at most
@@ -845,21 +846,34 @@ async fn files(api: &fctl_client::Api, p: &str, cmd: FilesCmd, json: bool) -> Re
                 return Ok(());
             }
             let wide = list.files.iter().map(|f| f.name.len()).max().unwrap_or(0);
+            // Its plan names the file each part of its work relies on: one
+            // it doesn't is likely done with.
+            let loose = |f: &AutopilotFile| f.in_plan == Some(false);
             for f in &list.files {
                 println!(
                     "{:wide$}  {:>7}  {}",
                     style::plain(&f.name),
                     fctl_domain::autopilot::file_size(f.size),
-                    style::dim(&format!("written {}", style::ago(f.updated_at)))
+                    style::dim(&format!(
+                        "written {}{}",
+                        style::ago(f.updated_at),
+                        if loose(f) { " · not in its plan" } else { "" }
+                    ))
                 );
             }
+            let unnamed = list.files.iter().filter(|f| loose(f)).count();
             println!(
                 "{}",
                 style::dim(&format!(
-                    "{} of {} in {}",
+                    "{} of {} in {}{}",
                     fctl_domain::autopilot::file_size(list.bytes),
                     fctl_domain::autopilot::file_size(list.max_bytes),
-                    style::count(list.files.len() as u64, "file", "files")
+                    style::count(list.files.len() as u64, "file", "files"),
+                    if unnamed > 0 {
+                        format!(" · {unnamed} not in its plan")
+                    } else {
+                        String::new()
+                    }
                 ))
             );
         }
@@ -894,6 +908,15 @@ async fn files(api: &fctl_client::Api, p: &str, cmd: FilesCmd, json: bool) -> Re
                     style::bold(&f.name),
                     fctl_domain::autopilot::file_size(f.size)
                 );
+            }
+            // A new one may make more than most need: as a full disk would,
+            // that shows as it adds one, not only in its brief. A file it
+            // rewrites (a script may, often) says nothing.
+            if kept.iter().any(|f| f.created_at == f.updated_at)
+                && let Ok(list) = api.autopilot_files(p).await
+                && let Some(tidy) = fctl_domain::autopilot::tidy_files(list.files.len(), 0)
+            {
+                println!("{tidy}");
             }
         }
         FilesCmd::Get {

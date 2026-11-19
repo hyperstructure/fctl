@@ -286,6 +286,12 @@ pub const MAX_FILES_BYTES: u64 = 4_000_000;
 pub const MAX_FILES: u32 = 100;
 /// The longest name of one, in characters.
 pub const MAX_FILE_NAME: usize = 100;
+/// How many files it keeps before its brief, a fresh session of its own
+/// and `fctl autopilot files put` ask it to go through them, whatever its
+/// plan names ([`tidy_files`]). A few scripts and templates are what most
+/// need: one that kept a draft of each task, message and question it sent
+/// had 91 files, of which it needed 10, and the limits above were far off.
+pub const MANY_FILES: u32 = 25;
 
 /// The name of one of its files (`watch-deploy.sh`): letters, digits, dots,
 /// dashes and underscores, starting with a letter or a digit and without
@@ -362,6 +368,67 @@ pub fn file_room(others: u32, others_bytes: u64, size: u64) -> Result<()> {
 /// A file's size, as people read it: "2 KB", "3.9 MB", "4 MB".
 pub fn file_size(bytes: u64) -> String {
     crate::files::human_size(bytes).replace(".0 ", " ")
+}
+
+/// Whether its plan names its file `name`, whole: `watch.sh` in
+/// "`watch.sh`", "./watch.sh" or "watch.sh." at a sentence's end, not in
+/// "watch.sh.bak" or "old-watch.sh". Its plan names the file each part of
+/// the work relies on, so one it doesn't name is likely done with: a draft
+/// it sent, a script for work that ended.
+pub fn plan_names(plan: &str, name: &str) -> bool {
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+    !name.is_empty()
+        && plan.match_indices(name).any(|(at, _)| {
+            let before = plan[..at].chars().next_back();
+            // A full stop after it ends the sentence, not the name.
+            let after = plan[at + name.len()..]
+                .trim_start_matches('.')
+                .chars()
+                .next();
+            !before.is_some_and(part) && !after.is_some_and(part)
+        })
+}
+
+/// Which of its files, by name, its plan doesn't name ([`plan_names`]):
+/// all of them while it has none.
+pub fn unnamed<'a>(plan: Option<&str>, names: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let plan = plan.unwrap_or_default();
+    names
+        .into_iter()
+        .filter(|name| !plan_names(plan, name))
+        .collect()
+}
+
+/// How it goes through its files, in [`tidy_files`] and its brief.
+const REMOVE_FILES: &str = "Remove what you won't use again with `fctl autopilot files rm <name>`, such as a draft you sent (fctl keeps its text with the session, message or ask)";
+
+/// Whether it keeps more files than [`MANY_FILES`].
+fn many_files(files: usize) -> bool {
+    files > MANY_FILES as usize
+}
+
+/// What it hears of its files when they need going through: as a fresh
+/// session of its own takes over, which holds on to none of them yet, and
+/// as `fctl autopilot files put` adds one. That is while its plan doesn't
+/// name `unnamed` of its `files`, or while it keeps more than
+/// [`MANY_FILES`]; `None` while neither.
+pub fn tidy_files(files: usize, unnamed: usize) -> Option<String> {
+    if unnamed > 0 {
+        let (which, them) = match (unnamed, files) {
+            (_, 1) => ("your one file".to_owned(), "it"),
+            (u, f) if u >= f => (format!("any of your {f} files"), "them"),
+            (1, f) => (format!("one of your {f} files"), "it"),
+            (u, f) => (format!("{u} of your {f} files"), "them"),
+        };
+        return Some(format!(
+            "Your plan doesn't name {which} (your brief marks {them}): go through {them} once. {REMOVE_FILES}, and name in your plan what you keep and what it's for."
+        ));
+    }
+    many_files(files).then(|| {
+        format!(
+            "You keep {files} files, more than {MANY_FILES} (your brief lists them): go through them once. {REMOVE_FILES}."
+        )
+    })
 }
 
 /// What helps people answer an ask: Markdown, at most 4,000 characters;
@@ -1292,7 +1359,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
     s.push_str(&format!("- {}\n", others_line(scope, rules.powers)));
     s.push_str("- Keep your plan with `fctl autopilot plan --file plan.md` (or from stdin): Markdown, a checklist works well. Write it as if a stranger takes over at your next wake, starting with what they must act on first: what is in flight, what you wait for and what you promised people. Change the plan as fctl has it (`fctl autopilot plan > plan.md` prints it), not a copy from earlier, and write it whole, or one section of it with `fctl autopilot plan --section \"In flight\" --file part.md`, which fails when the plan has no such section. Write down what you did, decided and why with `fctl autopilot log \"…\"`, a few sentences at a time. People read both on the Autopilot tab, and your next session starts from them, in a new sandbox: what you don't write down, it won't know.\n");
     s.push_str(&format!(
-        "- The files you make here (a script, a draft, notes) won't be in that sandbox. Keep those your next session needs in your files, where it gets them back: `fctl autopilot files put watch-deploy.sh` (text, at most {} each and {} in all, which people see on the Autopilot tab too), `fctl autopilot files` lists them, `fctl autopilot files get --all` writes them all into the current directory and `fctl autopilot files rm <name>` removes one. Keep there the scripts you rely on (watchers, retries) and the drafts of what you'll send, and in your plan the work, naming the file each part relies on, rather than copying files into it: each wake that reads your brief whole reads your plan again.\n",
+        "- The files you make here (a script, a draft, notes) won't be in that sandbox. Keep those your next session needs in your files, where it gets them back: `fctl autopilot files put watch-deploy.sh` (text, at most {} each and {} in all, which people see on the Autopilot tab too), `fctl autopilot files` lists them, `fctl autopilot files get --all` writes them all into the current directory and `fctl autopilot files rm <name>` removes one. Keep there the scripts you rely on (watchers, retries), the templates you use again and a draft until you send it, and in your plan the work, naming each file it relies on, rather than copying files into it: each wake that reads your brief whole reads your plan again. Remove a draft as you send it, as fctl keeps its text with the session, message or ask (`fctl logs <ref>` starts with a session's task), and any file once the work it served is done: your brief marks those your plan doesn't name.\n",
         file_size(MAX_FILE_BYTES),
         file_size(MAX_FILES_BYTES)
     ));
@@ -2202,21 +2269,50 @@ fn brief_plan(s: &mut String, b: &Brief<'_>) {
 fn brief_files(s: &mut String, b: &Brief<'_>) {
     s.push_str("\n## Your files\n\n");
     if b.files.is_empty() {
-        s.push_str("None. Keep what your next session needs besides your plan (the scripts you rely on, drafts) with `fctl autopilot files put <file>`.\n");
+        s.push_str("None. Keep what your next session needs besides your plan (the scripts you rely on, templates you use again, a draft until you send it) with `fctl autopilot files put <file>`.\n");
         return;
     }
     let all: u64 = b.files.iter().map(|f| f.size).sum();
+    let count = match b.files.len() {
+        1 => "1 file".to_owned(),
+        n => format!("{n} files"),
+    };
     s.push_str(&format!(
-        "{} of {} (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one):\n\n",
+        "{count}, {} of {} (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one)",
         file_size(all),
         file_size(MAX_FILES_BYTES)
     ));
+    // Those its plan doesn't name are likely done with: it hears so here,
+    // and each is marked.
+    let loose = unnamed(b.plan, b.files.iter().map(|f| f.name));
+    match (loose.len(), b.files.len()) {
+        (0, n) if many_files(n) => s.push_str(&format!(
+            ". That's more than {MANY_FILES}. {REMOVE_FILES}.\n\n"
+        )),
+        (0, _) => s.push_str(":\n\n"),
+        (u, n) => {
+            let which = match (u, n) {
+                (_, 1) => "it".to_owned(),
+                (u, n) if u >= n => "any of them".to_owned(),
+                (1, _) => "one of them".to_owned(),
+                (u, _) => format!("{u} of them"),
+            };
+            s.push_str(&format!(
+                ". Your plan doesn't name {which}, marked below. {REMOVE_FILES}, and name in your plan what you keep and what it's for.\n\n"
+            ));
+        }
+    }
     for f in b.files {
         s.push_str(&format!(
-            "- {} ({}, written {})\n",
+            "- {} ({}, written {}{})\n",
             f.name,
             file_size(f.size),
-            ago(b.now, f.at)
+            ago(b.now, f.at),
+            if loose.contains(&f.name) {
+                ", not in your plan"
+            } else {
+                ""
+            }
         ));
     }
 }
@@ -2878,6 +2974,74 @@ mod tests {
         assert_eq!(
             file_room(3, 3_900_000, 200_000).err().map(|e| e.message),
             Some("Its files hold at most 4 MB in all, and the others hold 3.9 MB already: remove those it no longer needs first (`fctl autopilot files rm <name>`)".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_plan_names_files_whole() {
+        let plan = "- [ ] Deploy: `watch-deploy.sh` waits for it.\n- [ ] Ask about the logo (draft: ./ask-logo.md)\n- Templates: design-look.md, flows.md.\n- Old: retry.sh.bak, old-retry.sh, notes_v2.md";
+        for named in [
+            "watch-deploy.sh",
+            "ask-logo.md",
+            "design-look.md",
+            // At a sentence's end, its full stop isn't the name's.
+            "flows.md",
+            "retry.sh.bak",
+            "old-retry.sh",
+            "notes_v2.md",
+        ] {
+            assert!(plan_names(plan, named), "{named}");
+        }
+        // Only as part of a longer name.
+        for unnamed in [
+            "retry.sh",
+            "watch-deploy",
+            "deploy.sh",
+            "look.md",
+            "notes",
+            "v2.md",
+            "",
+        ] {
+            assert!(!plan_names(plan, unnamed), "{unnamed:?}");
+        }
+        // A later mention counts where an earlier one is part of another
+        // name; any text at all may come around it.
+        assert!(plan_names("old-a.md, then a.md", "a.md"));
+        assert!(plan_names("«a.md»", "a.md"));
+        assert!(plan_names("a.md", "a.md"));
+        assert!(!plan_names("a.mdx", "a.md"));
+        assert_eq!(
+            unnamed(Some(plan), ["flows.md", "retry.sh", "draft.md"]),
+            ["retry.sh", "draft.md"]
+        );
+        assert_eq!(unnamed(None, ["flows.md"]), ["flows.md"]);
+    }
+
+    #[test]
+    fn files_need_going_through_when_the_plan_leaves_them_out_or_they_are_many() {
+        assert_eq!(tidy_files(0, 0), None);
+        assert_eq!(tidy_files(25, 0), None);
+        assert_eq!(
+            tidy_files(91, 81).as_deref(),
+            Some(
+                "Your plan doesn't name 81 of your 91 files (your brief marks them): go through them once. Remove what you won't use again with `fctl autopilot files rm <name>`, such as a draft you sent (fctl keeps its text with the session, message or ask), and name in your plan what you keep and what it's for."
+            )
+        );
+        assert!(tidy_files(4, 1).is_some_and(|t| t.starts_with(
+            "Your plan doesn't name one of your 4 files (your brief marks it): go through it once."
+        )));
+        assert!(tidy_files(4, 4).is_some_and(|t| t.starts_with(
+            "Your plan doesn't name any of your 4 files (your brief marks them): go through them once."
+        )));
+        assert!(tidy_files(1, 1).is_some_and(|t| t.starts_with(
+            "Your plan doesn't name your one file (your brief marks it): go through it once."
+        )));
+        // Named in its plan, but more than most need.
+        assert_eq!(
+            tidy_files(26, 0).as_deref(),
+            Some(
+                "You keep 26 files, more than 25 (your brief lists them): go through them once. Remove what you won't use again with `fctl autopilot files rm <name>`, such as a draft you sent (fctl keeps its text with the session, message or ask)."
+            )
         );
     }
 
@@ -3771,10 +3935,16 @@ mod tests {
         assert!(b.contains(
             "`fctl autopilot files get --all` writes them all into the current directory"
         ));
-        assert!(
-            b.contains("naming the file each part relies on, rather than copying files into it")
-        );
+        assert!(b.contains("naming each file it relies on, rather than copying files into it"));
         assert!(!b.contains("the scripts you rely on whole"));
+        // A draft goes as it's sent: what it held stays with fctl.
+        assert!(b.contains(
+            "the templates you use again and a draft until you send it, and in your plan the work"
+        ));
+        assert!(b.contains(
+            "Remove a draft as you send it, as fctl keeps its text with the session, message or ask (`fctl logs <ref>` starts with a session's task), and any file once the work it served is done: your brief marks those your plan doesn't name.\n"
+        ));
+        assert!(!b.contains("the drafts of what you'll send"));
         assert!(b.contains("`fctl autopilot brief --only sessions,asks`"));
         assert!(b.contains("send long output to a file and read what you need of it"));
         assert!(b.contains("Ask for the case that matters, not only the default"));
@@ -4044,7 +4214,7 @@ mod tests {
             direction: "Ship the checkout.",
             direction_by: Some("Ada"),
             direction_at: now - 86_400_000,
-            plan: Some("- [ ] Apple Pay"),
+            plan: Some("- [ ] Apple Pay, once watch-deploy.sh sees it live"),
             plan_at: Some(now - HOUR_MS),
             notes: &notes,
             asks: &asks,
@@ -4119,8 +4289,60 @@ mod tests {
             ..alone.clone()
         });
         assert!(no_files.ends_with(
-            "## Your files\n\nNone. Keep what your next session needs besides your plan (the scripts you rely on, drafts) with `fctl autopilot files put <file>`.\n"
+            "## Your files\n\nNone. Keep what your next session needs besides your plan (the scripts you rely on, templates you use again, a draft until you send it) with `fctl autopilot files put <file>`.\n"
         ), "{no_files}");
+        // Each named in its plan: nothing to go through.
+        let one = [FileView {
+            name: "watch.sh",
+            size: 300,
+            at: now - HOUR_MS,
+        }];
+        let named = brief(&Brief {
+            parts: &[BriefPart::Files],
+            plan: Some("Run `watch.sh` again after a handover."),
+            files: &one,
+            ..alone.clone()
+        });
+        assert!(named.ends_with(
+            "## Your files\n\n1 file, 300 B of 4 MB (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one):\n\n- watch.sh (300 B, written 1 hour ago)\n"
+        ), "{named}");
+        // Without a plan, it names none of them.
+        let no_plan = brief(&Brief {
+            parts: &[BriefPart::Files],
+            files: &one,
+            ..alone.clone()
+        });
+        assert!(
+            no_plan.contains(
+                "prints one). Your plan doesn't name it, marked below. Remove what you won't use"
+            ),
+            "{no_plan}"
+        );
+        assert!(
+            no_plan.ends_with("- watch.sh (300 B, written 1 hour ago, not in your plan)\n"),
+            "{no_plan}"
+        );
+        // More than most need, even all named in its plan.
+        let names: Vec<String> = (0..26).map(|i| format!("t-{i:02}.md")).collect();
+        let many: Vec<FileView> = names
+            .iter()
+            .map(|name| FileView {
+                name,
+                size: 1_000,
+                at: now - HOUR_MS,
+            })
+            .collect();
+        let listed = names.join(", ");
+        let crowded = brief(&Brief {
+            parts: &[BriefPart::Files],
+            plan: Some(&listed),
+            files: &many,
+            ..alone.clone()
+        });
+        assert!(crowded.contains(
+            "## Your files\n\n26 files, 26 KB of 4 MB (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one). That's more than 25. Remove what you won't use again with `fctl autopilot files rm <name>`, such as a draft you sent (fctl keeps its text with the session, message or ask).\n\n- t-00.md (1 KB, written 1 hour ago)\n"
+        ), "{crowded}");
+        assert!(!crowded.contains("not in your plan"), "{crowded}");
         assert!(only_heard.ends_with(
             "## Your asks\n\nNone open. One ask was answered, declined or taken back in the last two days, which you heard of earlier in this session: `fctl autopilot asks` lists it.\n"
         ), "{only_heard}");
@@ -4143,10 +4365,13 @@ mod tests {
         assert!(text.contains(
             "- shop#38 “Wishlists”, Bo's: ended its turn 2 days ago; pull request #67 (open, checks pass)\n- shop#44 “Gift cards”, Ada's: working\n"
         ));
-        assert!(text.contains("- [ ] Apple Pay\n\n(Written 1 hour ago)"));
-        // Its files after its plan, by name, with how to get them back.
         assert!(text.contains(
-            "(Written 1 hour ago)\n\n## Your files\n\n51 KB of 4 MB (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one):\n\n- watch-deploy.sh (2 KB, written 3 hours ago)\n- summary-draft.md (49 KB, written 5 minutes ago)\n\n## Your log"
+            "- [ ] Apple Pay, once watch-deploy.sh sees it live\n\n(Written 1 hour ago)"
+        ));
+        // Its files after its plan, by name, with how to get them back, and
+        // those its plan doesn't name marked, to go through.
+        assert!(text.contains(
+            "(Written 1 hour ago)\n\n## Your files\n\n2 files, 51 KB of 4 MB (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one). Your plan doesn't name one of them, marked below. Remove what you won't use again with `fctl autopilot files rm <name>`, such as a draft you sent (fctl keeps its text with the session, message or ask), and name in your plan what you keep and what it's for.\n\n- watch-deploy.sh (2 KB, written 3 hours ago)\n- summary-draft.md (49 KB, written 5 minutes ago, not in your plan)\n\n## Your log"
         ), "{text}");
         assert!(text.contains("Empty. Write down what you do"));
         // Only the parts it asks for, after where it runs: what it heard of

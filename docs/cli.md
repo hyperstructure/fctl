@@ -781,7 +781,7 @@ fctl autopilot answer -p crm apa_01JC… --attach logo.svg "The dark one"   # fi
 fctl autopilot secret -p crm apa_01JC…         # the value it asked for, without showing it (or from stdin)
 fctl autopilot decline -p crm apa_01JC… --reason "Not yet: after launch"
 fctl autopilot log -p crm --limit 100
-fctl autopilot files -p crm                    # the files it keeps for its next sessions; get NAME prints one
+fctl autopilot files -p crm                    # the files it keeps for its next sessions, marking those its plan doesn't name; get NAME prints one
 fctl autopilot set -p crm --check-in 2h --direction-file direction.md   # how it works, or its direction
 fctl autopilot set -p crm --handoff-at 250k    # a fresh session takes over once its own holds 250K tokens of context (never: only after 12 hours)
 fctl autopilot wake -p crm                     # now, with what's new
@@ -832,7 +832,13 @@ but `fctl send` to one that rests doesn't: fctl holds the message
 (`aph_…`) and sends it as soon as one of its sessions ends its turn,
 stops or fails, those held in the order it sent them, while it is on
 (taking it off autopilot drops them). `fctl autopilot held` lists them,
-for people too, and takes one back.
+for people too, and takes one back. Its files are for what its next
+session needs: it removes a draft once it sent it, as fctl keeps the text
+with the session, message or ask. Its brief and `fctl autopilot files`
+mark the files its plan doesn't name, and a fresh session of its own
+hears to go through those as it takes over, as it does while it keeps
+more than 25 files, which `fctl autopilot files put` says too as it adds
+one.
 
 ```sh
 fctl autopilot brief                           # where things stand, as it wakes
@@ -844,7 +850,7 @@ fctl autopilot files put watch-deploy.sh       # a file its next sessions get ba
 fctl autopilot files put - --name reply.md < draft.md
 fctl autopilot files get --all                 # all of them, into the current directory (--dir DIR); scripts executable
 fctl autopilot files get watch-deploy.sh       # one, printed (-o FILE to write it)
-fctl autopilot files rm watch-deploy.sh
+fctl autopilot files rm ask-logo.md            # a draft it sent: the ask keeps its text
 fctl autopilot log "Started crm#12 for the board; imports wait for the CSV format."
 fctl autopilot ask "Which layout should the board use?" --detail-file options.md -o Compact -o Roomy
 fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"
