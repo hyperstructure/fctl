@@ -53,17 +53,10 @@ import { languageOf } from "@/lib/languages";
 import { useMedia } from "@/lib/media";
 import { fileDiffQuery, useFileDiff, useSessionDiffs } from "@/lib/queries";
 import { diffCommand } from "@/lib/shell";
-import {
-  byDirectory,
-  changeOf,
-  type DiffGroup,
-  type DiffTarget,
-  entryKey,
-  FileList,
-  splitPath,
-} from "./diff-files";
+import { byDirectory, changeOf, type DiffGroup, type DiffTarget, entryKey, FileList } from "./diff-files";
 import { DiffFindBar, matchRanges, sectionOf, TOGGLES, useDiffFind } from "./diff-find";
 import { Rolling, UnseenChanges, useChanged, useLive } from "./diff-live";
+import { PathText } from "./path";
 
 export { byDirectory, changeOf, type DiffGroup, type DiffTarget };
 
@@ -1004,7 +997,6 @@ function FileHeader({
   onFold: () => void;
 }) {
   const { file } = entry;
-  const { dir, name } = splitPath(file.path);
   const change = changeOf(file.status);
   const a = file.additions ?? 0;
   const d = file.deletions ?? 0;
@@ -1040,8 +1032,7 @@ function FileHeader({
       <h3 id={headingId} className="flex min-w-0 items-baseline font-mono text-[12.5px]" title={file.path}>
         <span className="sr-only">{change.label}: </span>
         {several && entry.repo && <span className="mr-2 shrink-0 text-ink-4">{entry.repo}</span>}
-        {dir && <span className="min-w-0 shrink-[1000] truncate text-ink-4">{dir}</span>}
-        <span className="min-w-0 truncate font-medium text-ink">{name}</span>
+        <PathText path={file.path} nameClassName="font-medium text-ink" />
       </h3>
       <CopyPath path={file.path} />
       {diff?.old_path && (
