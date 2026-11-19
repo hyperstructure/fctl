@@ -12,6 +12,7 @@ import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { modKey } from "@/lib/hotkeys";
 import { Rolling, useChanged } from "./diff-live";
+import { splitPath } from "./path";
 
 /** A repository's changed files, as the dialog lists them. */
 export interface DiffGroup {
@@ -48,12 +49,6 @@ export function changeOf(status: string): { letter: string; label: string; tone:
       return { letter: "M", label: "Modified", tone: "text-blue" };
   }
 }
-
-/** A path's directory, with its slash, and its name. */
-export const splitPath = (path: string) => {
-  const cut = path.lastIndexOf("/") + 1;
-  return { dir: path.slice(0, cut), name: path.slice(cut) };
-};
 
 /**
  * A repository's files under their directories: those at its root first,

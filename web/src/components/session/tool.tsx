@@ -69,6 +69,7 @@ import {
 } from "@/lib/transcript";
 import { useRevealed, useWanted } from "./find";
 import { Busy, OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
+import { PathText } from "./path";
 import { Thinking } from "./thinking";
 
 const ICONS: Record<string, ReactNode> = {
@@ -544,14 +545,13 @@ function WorkList({ steps, running, up }: { steps: Step[]; running: boolean; up:
  */
 function TargetText({ target, find }: { target: Target; find: string }) {
   if (target.kind === "path") {
-    const cut = target.text.lastIndexOf("/") + 1;
     return (
-      <span data-find={find} className="flex min-w-0 font-mono text-[0.925em]">
-        {cut > 0 && (
-          <span className="min-w-0 shrink-[1000] truncate text-ink-4">{target.text.slice(0, cut)}</span>
-        )}
-        <span className="min-w-0 truncate text-ink-3">{target.text.slice(cut)}</span>
-      </span>
+      <PathText
+        data-find={find}
+        path={target.text}
+        className="font-mono text-[0.925em]"
+        nameClassName="text-ink-3"
+      />
     );
   }
   return (

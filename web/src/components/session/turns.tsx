@@ -60,6 +60,7 @@ import { MessageFiles } from "./attachments";
 import { AutopilotAuthorLine, WakeCard } from "./autopilot";
 import type { DiffGroup, DiffTarget } from "./diff-files";
 import { Chevron, Milestone, RailIcon, Unreadable } from "./lines";
+import { PathText } from "./path";
 import { CallTasks, SessionImages, WorkDir } from "./tool";
 import {
   EarlierActivity,
@@ -696,16 +697,10 @@ function EditedRow({
   onDiff: (at: DiffTarget) => void;
   i: number;
 }) {
-  const cut = file.path.lastIndexOf("/") + 1;
   const body = (
     <>
       <FilePenLine aria-hidden="true" className="size-3.5 shrink-0 text-ink-4" />
-      <span className="flex min-w-0 flex-1 font-mono text-[12px]">
-        {cut > 0 && (
-          <span className="min-w-0 shrink-[1000] truncate text-ink-4">{file.path.slice(0, cut)}</span>
-        )}
-        <span className="min-w-0 truncate text-ink-2">{file.path.slice(cut)}</span>
-      </span>
+      <PathText path={file.path} className="flex-1 font-mono text-[12px]" nameClassName="text-ink-2" />
       <LinesChanged {...file.lines} />
     </>
   );
