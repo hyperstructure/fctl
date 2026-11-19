@@ -390,6 +390,7 @@ impl FileRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             content: self.content,
+            in_plan: None,
         }
     }
 }
@@ -1031,10 +1032,20 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
                 let over = fresh.zip(from.as_deref()).and_then(|(why, from)| {
                     ap::takes_over_from(why, from, row.handoff_at())
                 });
-                let first = match over {
-                    Some(over) => format!("{briefing}\n---\n\n{over}\n\n{text}"),
-                    None => format!("{briefing}\n---\n\n{text}"),
-                };
+                // Holding on to none of its files yet, it goes through
+                // those its plan doesn't name, or too many.
+                let names: Vec<String> = files(db, &row.project_id)
+                    .await?
+                    .into_iter()
+                    .map(|f| f.name)
+                    .collect();
+                let unnamed = ap::unnamed(row.plan.as_deref(), names.iter().map(String::as_str));
+                let tidy = ap::tidy_files(names.len(), unnamed.len());
+                let first = [Some(briefing + "\n---"), over, tidy, Some(text)]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
                 let (id, _) =
                     start_pilot(env, db, row, &project, &owner, first, wake.clone(), now).await?;
                 // The session it leaves stops, rather than keep its sandbox

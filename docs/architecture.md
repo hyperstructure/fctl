@@ -2455,7 +2455,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    `fctl autopilot brief`, and to check what the last one promised people against what is
    live, telling them of what shipped, to start again the background
    scripts its plan names, and to check with `--help` what its plan says
-   fctl can't do), then the wake's news. Where it hands off is its
+   fctl can't do), then, where they need it, to go through its files
+   (`tidy_files`, below), then the wake's news. Where it hands off is its
    **handoff** (`autopilots.handoff_at`, *A fresh session takes over* in
    its settings, `fctl autopilot set --handoff-at 250k`): a context size,
    100K to 1M tokens, that D1 reads from the session's stats
@@ -2529,15 +2530,25 @@ sessions to do it, and sets up what the work needs, as far as they let it
    writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`),
    the project's memory, and its files (`fctl autopilot files`,
    `autopilot_files`): text such as the scripts it relies on (watchers,
-   retries) and drafts of what it will send, at most 100, of 256 KB each
-   and 4 MB in all (`fctl_domain::autopilot::MAX_FILES_BYTES`, checked in
-   the statement that writes one, so that two writes at once can't both
-   take the last room), which its own session writes whole and removes,
-   its next one gets back in its new sandbox (`fctl autopilot files get
-   --all`, which makes those that start with `#!` executable), and people
-   read on its tab. A new file and a removed one get a line in its log; a
+   retries), templates and drafts of what it will send, at most 100, of
+   256 KB each and 4 MB in all (`fctl_domain::autopilot::MAX_FILES_BYTES`,
+   checked in the statement that writes one, so that two writes at once
+   can't both take the last room), which its own session writes whole and
+   removes, its next one gets back in its new sandbox (`fctl autopilot
+   files get --all`, which makes those that start with `#!` executable),
+   and people read on its tab. A new file and a removed one get a line in its log; a
    rewrite, which a script may make often, shows only as when it was
-   written. They stay while it is off, and go with the project.
+   written. A draft goes once it sent it, as fctl keeps the text with the
+   session, message or ask. Its plan names the file each part of the work
+   relies on, so its brief and `fctl autopilot files` mark those it
+   doesn't (`fctl_domain::autopilot::plan_names`, `AutopilotFile.in_plan`),
+   and a fresh session, which holds on to none of them yet, hears to go
+   through them as it takes over, as it does while it keeps more than 25
+   (`MANY_FILES`, `tidy_files`), which `fctl autopilot files put` says too
+   as it adds one. fctl removes none itself: an older sandbox's `fctl`
+   couldn't keep a file from going, and a script its plan forgot to name
+   would go with the drafts. They stay while it is off, and go with the
+   project.
    `fctl autopilot brief` gives it where things
    stand: the direction, people's notes (the new ones marked), its asks
    and their answers (those it heard since its own session started only

@@ -43,7 +43,15 @@ agent that manages a project needs most of the API besides.
   gets back in its new sandbox, kept beside the plan rather than in it,
   as each wake that reads its brief whole reads the plan again (an
   autopilot filled its 20,000 characters with watcher scripts and message
-  drafts). Sessions it starts are its
+  drafts). A draft goes once it sent it, as fctl keeps the text with the
+  session, message or ask (added later: one autopilot kept a draft of
+  each task, message and question it sent, 91 files of which it needed
+  10, and nobody noticed until people looked at its tab). Its brief marks
+  the files its plan doesn't name, and a fresh session, which holds on to
+  none of them yet, goes through them, as it does once it keeps more than
+  25. fctl removes none itself: an older sandbox's `fctl` couldn't keep a
+  file from going, and a script its plan forgot to name would go with the
+  drafts. Sessions it starts are its
   crew: up to as many at once as people allow, at most 20 an hour.
 - **fctl wakes it** on the schedules' alarm, which ScheduleObject already
   rings: at least at its check-in (15 minutes to a day), at the time it

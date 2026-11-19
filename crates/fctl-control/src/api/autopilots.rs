@@ -1566,16 +1566,21 @@ pub async fn plan(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respo
 // ───────────────────────────── its files ─────────────────────────────
 
 /// `GET …/autopilot/files`: the files it keeps across its sessions, by
-/// name, without what they hold. Its own session reads them, as do those
-/// who see what it does; one that is off keeps them too.
+/// name, without what they hold, each with whether its plan names it. Its
+/// own session reads them, as do those who see what it does; one that is
+/// off keeps them too.
 pub async fn files(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
     require_read(&l)?;
     let row = l.row.ok_or_else(|| not_found("Autopilot"))?;
+    let plan = row.plan.as_deref().unwrap_or_default();
     let files: Vec<AutopilotFile> = engine::files(&ctx.db, &row.project_id)
         .await?
         .into_iter()
-        .map(engine::FileRow::file)
+        .map(|f| AutopilotFile {
+            in_plan: Some(ap::plan_names(plan, &f.name)),
+            ..f.file()
+        })
         .collect();
     http::ok(&AutopilotFiles {
         bytes: files.iter().map(|f| f.size).sum(),
