@@ -324,15 +324,7 @@ impl ContainerDriver {
             }
         };
         let _ = writer.await;
-        if !out.status.success() {
-            anyhow::bail!(
-                "{} {} failed: {}",
-                self.bin,
-                args.first().copied().unwrap_or_default(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        self.answer(args, out)
     }
 
     async fn run(&self, args: &[&str]) -> Result<String> {
@@ -342,14 +334,39 @@ impl ContainerDriver {
             ["pull", ..] | ["image", "pull", ..] | ["run", ..] => self.pace.slow,
             _ => self.pace.command,
         };
-        let out = run_cmd_within(&self.bin, args, limit)
-            .await
-            .map_err(|e| self.unreachable(e));
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        cmd.args(args).stdin(Stdio::null());
+        let line = || super::command_line(&self.bin, args);
+        let out = match super::output_within(&mut cmd, &self.bin, line, limit).await {
+            Ok(out) => self.answer(args, out),
+            Err(e) => Err(e),
+        }
+        .map_err(|e| self.unreachable(e));
         // A stuck VM may hold it up: the host stops that one.
         if timed_out(&out) && stuck::waits_on_vms(args) {
             self.unstick().await;
         }
         out
+    }
+
+    /// What the command `args` printed, or why it failed: what it said on
+    /// stderr, where Apple's `container` prints its progress too, a line a
+    /// second while stderr isn't a terminal, of which the error keeps the
+    /// last ([`apple_said`]).
+    fn answer(&self, args: &[&str], out: std::process::Output) -> Result<String> {
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!(
+                "{} {} failed: {}",
+                self.bin,
+                args.first().copied().unwrap_or_default(),
+                match self.flavor {
+                    Flavor::Apple => apple_said(&stderr),
+                    Flavor::Docker => stderr.trim().to_owned(),
+                }
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     /// `e`, or what keeps the docker CLI from the daemon when that is why
@@ -1909,6 +1926,37 @@ pub(crate) fn forward_lines<R: AsyncRead + Unpin + Send + 'static>(
     });
 }
 
+/// What Apple's `container` said on stderr as a command failed, without
+/// the progress it prints there a line a second while stderr isn't a
+/// terminal (`[6/6] Starting container [1m 48s]`), but the last, which
+/// says how far it got: a `run` that fails after minutes says little else.
+fn apple_said(stderr: &str) -> String {
+    let mut progress = None;
+    let mut said = Vec::new();
+    for line in stderr.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if apple_progress(line) {
+            progress = Some(line);
+        } else {
+            said.push(line);
+        }
+    }
+    progress
+        .into_iter()
+        .chain(said)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `line` is one of Apple's `container`'s lines of progress: `[0/6]
+/// [0s]`, `[2/6] Unpacking image [0s]`.
+fn apple_progress(line: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    line.strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .and_then(|(step, _)| step.split_once('/'))
+        .is_some_and(|(n, of)| digits(n) && digits(of))
+}
+
 /// `72625 72700`: process ids, for a command line.
 fn words_of(pids: &[i32]) -> String {
     pids.iter()
@@ -2179,6 +2227,36 @@ mod tests {
         ] {
             assert!(!build_step(noise), "{noise}");
         }
+    }
+
+    #[test]
+    fn errors_keep_the_last_of_apples_progress() {
+        // `container run` as its API server went, after a minute and more.
+        let mut stderr =
+            String::from("[0/6] [0s]\n[1/6] Fetching image [0s]\n[2/6] Unpacking image [0s]\n");
+        for s in 0..108 {
+            stderr.push_str(&format!(
+                "[6/6] Starting container [{}m {}s]\n",
+                s / 60,
+                s % 60
+            ));
+        }
+        stderr.push_str("Error: XPC connection error: Connection interrupted\n");
+        assert_eq!(
+            apple_said(&stderr),
+            "[6/6] Starting container [1m 47s]\nError: XPC connection error: Connection interrupted"
+        );
+        assert_eq!(
+            apple_said("Error: container fctl-ses-1 not found\n"),
+            "Error: container fctl-ses-1 not found"
+        );
+        assert_eq!(apple_said(""), "");
+        assert!(apple_progress(
+            "[1/2] Fetching image 40% (6 of 7 blobs, 400 MB/1 GB) [1s]"
+        ));
+        assert!(!apple_progress("[6/6"));
+        assert!(!apple_progress("[a/b] Starting"));
+        assert!(!apple_progress("Error: [1/2] failed"));
     }
 
     #[test]
