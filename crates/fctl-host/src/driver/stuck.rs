@@ -154,6 +154,20 @@ pub(crate) fn helpers_of(ps: &str, name: &str) -> Vec<i32> {
         .collect()
 }
 
+/// What came of the signals the host sent the processes of a VM that
+/// doesn't answer: those it stopped, or that had gone already, and why it
+/// couldn't stop the others.
+pub(crate) fn stopped_of(sent: Vec<(i32, nix::Result<()>)>) -> (Vec<i32>, Vec<String>) {
+    let (mut stopped, mut failed) = (Vec::new(), Vec::new());
+    for (pid, sent) in sent {
+        match sent {
+            Ok(()) | Err(nix::errno::Errno::ESRCH) => stopped.push(pid),
+            Err(e) => failed.push(format!("pid {pid}: {e}")),
+        }
+    }
+    (stopped, failed)
+}
+
 /// What the host's log says of the sandbox `name`, whose VM didn't answer
 /// within `after` and which it stopped by killing `pids`.
 pub(crate) fn stopped_line(name: &str, after: Duration, pids: &[i32]) -> String {
@@ -246,6 +260,29 @@ mod tests {
         assert!(helpers_of(ps, "fctl-ses-01m7s5pg8bs3eahhs1dq4a6sge").is_empty());
         assert!(helpers_of(ps, "fctl-ses-3").is_empty());
         assert!(helpers_of("", "fctl-ses-2").is_empty());
+    }
+
+    #[test]
+    fn only_processes_that_went_count_as_stopped() {
+        use nix::errno::Errno;
+        assert_eq!(
+            stopped_of(vec![
+                (72625, Ok(())),
+                (72626, Err(Errno::ESRCH)),
+                (72627, Err(Errno::EPERM))
+            ]),
+            (
+                vec![72625, 72626],
+                vec!["pid 72627: EPERM: Operation not permitted".to_owned()]
+            )
+        );
+        assert_eq!(
+            stopped_of(vec![(72627, Err(Errno::EPERM))]),
+            (
+                vec![],
+                vec!["pid 72627: EPERM: Operation not permitted".to_owned()]
+            )
+        );
     }
 
     #[test]

@@ -2318,6 +2318,66 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn a_vm_the_host_leaves_keeps_its_runner_from_taking_sessions() -> Result<()> {
+        use crate::driver::fake::StuckApple;
+        let data = tempfile::tempdir()?;
+        let cfg = HostConfig {
+            name: "studio".into(),
+            driver: "apple".into(),
+            server: "http://127.0.0.1:9".into(),
+            data_dir: Some(data.path().to_owned()),
+            ..HostConfig::default()
+        };
+        let (theirs, ours) = ("stuck-g1-dev", "fctl-ses-stuck-g2");
+        let apple = StuckApple::new(&[theirs, ours], &[theirs])?;
+        apple.held_by(theirs)?;
+        let ctx = HostCtx::new(
+            cfg,
+            Driver::Container(apple.driver()),
+            "fctl_rt_test".into(),
+        );
+        // A command in a sandbox of the host's waits on it, and runs out of
+        // time: the host finds it stuck, and leaves it to its owner.
+        assert!(
+            ctx.driver
+                .exec(&ctx.driver.handle(ours), "true")
+                .await
+                .is_err()
+        );
+        // The driver isn't ready meanwhile, as the runner's next heartbeat
+        // says, whichever way the host probes it: fresh drivers for the
+        // runner's hello, which know nothing of it…
+        ctx.refresh_facts().await;
+        let held = ctx.driver_problem().unwrap_or_default();
+        assert!(
+            held.starts_with(&format!(
+                "{theirs}'s VM does not answer, which holds up every sandbox of Apple's `container`"
+            )),
+            "{held}"
+        );
+        // …or the one it uses.
+        assert_eq!(ctx.recheck_driver().await.as_deref(), Some(held.as_str()));
+        // Its owner stops it: the host looks again, and nothing holds the
+        // driver up.
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(apple.helper(theirs)?),
+            nix::sys::signal::Signal::SIGKILL,
+        )?;
+        let until = Instant::now() + Duration::from_secs(10);
+        while apple.runs(theirs)? && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(ctx.recheck_driver().await, None);
+        ctx.refresh_facts().await;
+        assert!(
+            !ctx.driver_problem()
+                .unwrap_or_default()
+                .contains("does not answer")
+        );
+        Ok(())
+    }
+
     fn delivery(id: &str, kind: DeliveryKind) -> Delivery {
         Delivery {
             id: DeliveryId(id.into()),

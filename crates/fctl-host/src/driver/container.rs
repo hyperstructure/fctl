@@ -350,19 +350,24 @@ impl ContainerDriver {
     }
 
     /// What the command `args` printed, or why it failed: what it said on
-    /// stderr, where Apple's `container` prints its progress too, a line a
-    /// second while stderr isn't a terminal, of which the error keeps the
-    /// last ([`apple_said`]).
+    /// stderr. Where that is Apple's `container`'s own as it starts a
+    /// sandbox or pulls an image, it prints its progress there too, a line
+    /// a second while stderr isn't a terminal, of which the error keeps the
+    /// last ([`apple_said`]); an `exec`'s is the sandbox's, kept whole.
     fn answer(&self, args: &[&str], out: std::process::Output) -> Result<String> {
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
+            let progress = matches!(
+                args,
+                ["run" | "create" | "start", ..] | ["image", "pull", ..]
+            );
             anyhow::bail!(
                 "{} {} failed: {}",
                 self.bin,
                 args.first().copied().unwrap_or_default(),
                 match self.flavor {
-                    Flavor::Apple => apple_said(&stderr),
-                    Flavor::Docker => stderr.trim().to_owned(),
+                    Flavor::Apple if progress => apple_said(&stderr),
+                    _ => stderr.trim().to_owned(),
                 }
             );
         }
@@ -487,16 +492,27 @@ impl ContainerDriver {
                 ));
                 continue;
             }
-            for pid in &pids {
+            let sent = pids.iter().map(|pid| {
                 use nix::sys::signal::{Signal, kill};
-                if let Err(e) = kill(nix::unistd::Pid::from_raw(*pid), Signal::SIGKILL) {
-                    tracing::warn!("stopping {name}'s VM, pid {pid}: {e}");
-                }
+                (
+                    *pid,
+                    kill(nix::unistd::Pid::from_raw(*pid), Signal::SIGKILL),
+                )
+            });
+            // One gone already, as it may be since `ps` listed it, went.
+            let (killed, failed) = stuck::stopped_of(sent.collect());
+            if killed.is_empty() {
+                left.push(format!(
+                    "{name}'s VM does not answer, {holds_up}, and the host couldn't stop it ({}): `kill -9 {}` stops it",
+                    failed.join(", "),
+                    words_of(&pids)
+                ));
+                continue;
             }
             self.stuck.note(&name);
             tracing::warn!(
                 "{}",
-                stuck::stopped_line(&name, self.pace.stuck_after, &pids)
+                stuck::stopped_line(&name, self.pace.stuck_after, &killed)
             );
             stopped.push(name);
         }
@@ -779,7 +795,11 @@ impl ContainerDriver {
                 let e = loop {
                     let tried = Instant::now();
                     match self.run(&["exec", &spec.name, "true"]).await {
-                        Ok(_) => return Ok(sb),
+                        // It answers, whatever the host stopped it for before.
+                        Ok(_) => {
+                            self.stuck.forget(&spec.name);
+                            return Ok(sb);
+                        }
                         Err(e) if self.stuck.stopped(&spec.name) => {
                             tracing::info!("starting {} again: {e:#}", spec.name);
                             log(format!(
@@ -846,11 +866,11 @@ impl ContainerDriver {
         Err(pull_error.context(missing))
     }
 
-    /// Starts the stopped sandbox `name`.
+    /// Starts the stopped sandbox `name`: why the host stopped it is past,
+    /// and a start that fails says why itself.
     async fn start(&self, name: &str) -> Result<()> {
-        self.run(&["start", name]).await?;
         self.stuck.forget(name);
-        Ok(())
+        self.run(&["start", name]).await.map(drop)
     }
 
     /// Starts the sandbox from `image`, pulling the image when it isn't here.
@@ -2257,6 +2277,44 @@ mod tests {
         assert!(!apple_progress("[6/6"));
         assert!(!apple_progress("[a/b] Starting"));
         assert!(!apple_progress("Error: [1/2] failed"));
+    }
+
+    #[tokio::test]
+    async fn only_apples_own_progress_leaves_its_errors() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bin = dir.path().join("cli");
+        write_script(
+            &bin,
+            "#!/bin/sh\nprintf '[1/4] Resolving packages...\\n[2/4] Fetching packages...\\nerror An unexpected error occurred\\n' >&2\nexit 1\n",
+        )?;
+        let apple = ContainerDriver::with_bin(Flavor::Apple, bin.display().to_string());
+        // What a script in the sandbox says stays as it said it.
+        let said = error_of(
+            apple
+                .exec(
+                    &Sandbox {
+                        name: "fctl-ses-1".into(),
+                        root: None,
+                    },
+                    "yarn",
+                )
+                .await,
+        );
+        assert!(
+            said.ends_with(
+                "failed: [1/4] Resolving packages...\n[2/4] Fetching packages...\nerror An unexpected error occurred"
+            ),
+            "{said}"
+        );
+        // Apple's own, as it starts a sandbox, keeps its last step.
+        let said = error_of(apple.run(&["start", "fctl-ses-1"]).await);
+        assert!(
+            said.ends_with(
+                "start failed: [2/4] Fetching packages...\nerror An unexpected error occurred"
+            ),
+            "{said}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -3752,6 +3810,34 @@ esac
         assert!(apple.runs(new)?);
         assert!(driver.stopped_as_stuck(frozen));
         assert!(!apple.runs(frozen)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sandboxes_the_host_stopped_are_known_so_until_they_start_again() -> Result<()> {
+        let frozen = "fctl-ses-stuck-f1";
+        let apple = StuckApple::new(&[frozen], &[frozen])?;
+        let driver = apple.driver();
+        assert!(timed_out(&driver.exec(&sandbox(frozen), "true").await));
+        assert!(driver.stopped_as_stuck(frozen));
+        // Someone starts it outside fctl: it answers, and a session
+        // resumes in it as it is.
+        apple.cli(&["start", frozen])?;
+        assert!(ensured(&driver, &named(frozen)).await?.is_empty());
+        assert!(!driver.stopped_as_stuck(frozen));
+
+        // A start that fails for another reason says so, not that the
+        // sandbox stopped answering.
+        apple.freeze(frozen)?;
+        assert!(timed_out(&driver.exec(&sandbox(frozen), "true").await));
+        assert!(driver.stopped_as_stuck(frozen));
+        apple.refuse_starts()?;
+        let said = error_of(ensured(&driver, &named(frozen)).await);
+        assert!(
+            said.ends_with("Error: failed to bootstrap container"),
+            "{said}"
+        );
+        assert!(!driver.stopped_as_stuck(frozen));
         Ok(())
     }
 

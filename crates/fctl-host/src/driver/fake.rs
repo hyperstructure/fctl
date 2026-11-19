@@ -423,10 +423,11 @@ fn key(name: &str) -> String {
 /// sandbox runs while its helper does. The VM of one with a file
 /// `frozen-NAME` doesn't answer: `stats`, `stop`, `delete`, `cp` and
 /// `exec` in it wait for ever (30 seconds), and an `exec` in it holds the
-/// API server's lock (`lock` names it) until its helper goes, which every
-/// `exec`, `cp`, `start`, `run`, `stop` and `delete` waits for meanwhile.
-/// `list`, `inspect` and the others' `stats` answer as ever. `exec` says
-/// `1000` to `id -u`.
+/// API server's lock (`lock` holds its helper's pid) until that helper
+/// goes, which every `exec`, `cp`, `start`, `run`, `stop` and `delete`
+/// waits for meanwhile. `list`, `inspect` and the others' `stats` answer
+/// as ever. `exec` says `1000` to `id -u`. With `refuse-start` there,
+/// `start` fails.
 const STUCK_APPLE: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -434,7 +435,7 @@ for last in "$@"; do :; done
 alive() { s=$(ps -o stat= -p "$1" 2>/dev/null); [ -n "$s" ] && [ "${s#Z}" = "$s" ]; }
 runs() { [ -e "$d/vm-$1" ] && alive "$(cat "$d/vm-$1")"; }
 frozen() { [ -e "$d/frozen-$1" ] && runs "$1"; }
-held() { [ -e "$d/lock" ] && runs "$(cat "$d/lock")"; }
+held() { [ -e "$d/lock" ] && alive "$(cat "$d/lock")"; }
 hang() { exec sleep 30; }
 wait_lock() { while held; do sleep 0.1; done; }
 vm() {
@@ -464,7 +465,7 @@ case "$1" in
     shift
     while [ "${1#-}" != "$1" ]; do case "$1" in -u) shift 2 ;; *) shift ;; esac; done
     runs "$1" || { echo "Error: container $1 is not running" >&2; exit 1; }
-    if frozen "$1"; then echo "$1" > "$d/lock"; hang; fi
+    if frozen "$1"; then cp "$d/vm-$1" "$d/lock"; hang; fi
     wait_lock
     case "$*" in *"id -u"*) echo 1000 ;; esac ;;
   cp)
@@ -480,6 +481,7 @@ case "$1" in
     echo "$n" ;;
   start)
     wait_lock
+    [ ! -e "$d/refuse-start" ] || { echo "Error: failed to bootstrap container" >&2; exit 1; }
     runs "$last" || vm "$last"
     echo "$last" ;;
   stop)
@@ -550,10 +552,18 @@ impl StuckApple {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// Its `start`s fail from now on, as for a reason of their own.
+    pub fn refuse_starts(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("refuse-start"), "")?)
+    }
+
     /// As if an `exec` had waited on the frozen VM of `name`, and held
     /// the API server's lock since.
     pub fn held_by(&self, name: &str) -> Result<()> {
-        Ok(std::fs::write(self.dir.path().join("lock"), name)?)
+        Ok(std::fs::write(
+            self.dir.path().join("lock"),
+            self.helper(name)?.to_string(),
+        )?)
     }
 
     /// The helper of the sandbox `name`, as it was started last.

@@ -119,7 +119,8 @@ pub enum HostCmd {
     Status,
     /// Check that everything this machine needs to run sessions as a
     /// runner is in place: its configuration and tokens, the connection,
-    /// the driver, the images, the disk and the service.
+    /// the driver and whether its sandboxes answer, the images, the disk
+    /// and the service.
     Doctor,
     /// Print the host service's log.
     Logs {
