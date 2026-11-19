@@ -1209,7 +1209,15 @@ async fn run(
                     sb
                 }
                 Ok(Err(e)) => {
-                    let msg = failure(&ctx.cfg.name, &e);
+                    // Its VM stopped answering as it was readied, and the
+                    // host stopped it (`driver::stuck`).
+                    let msg = match ctx
+                        .driver
+                        .stopped_as_stuck(&sandbox_name(session_id.as_str()))
+                    {
+                        true => stopped_stuck(&ctx.cfg.name),
+                        false => failure(&ctx.cfg.name, &e),
+                    };
                     // The driver may have stopped being ready since the host
                     // last probed it (Docker quit, say): then the session
                     // goes back to the control plane's queue, to start once
