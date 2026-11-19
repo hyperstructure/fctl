@@ -2,6 +2,16 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.36.2 (2026-11-19)
+
+### Features
+
+- **autopilot:** Help autopilots let go of files they no longer need ([#600](https://github.com/hyperstructure/fctl/pull/600))
+
+### Fixes
+
+- **web:** Put a line's facts under its text when they would crowd it ([#601](https://github.com/hyperstructure/fctl/pull/601))
+
 ## 0.36.1 (2026-11-19)
 
 ### Fixes
