@@ -8,6 +8,7 @@
 //! fctl-agent attach`.
 
 use super::pulls::{self, PullProgress};
+use super::stuck::{self, Stuck};
 use super::{
     AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
     RAN_AS_ROOT_SCRIPT, SH, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, Socket,
@@ -40,9 +41,12 @@ pub struct ContainerDriver {
     /// The pulls under way, by image: another pull of the same image waits
     /// for one rather than download it beside it.
     pulls: Mutex<HashMap<String, Arc<Pulling>>>,
-    /// How often a pull says how far along it is, and how long it waits
-    /// before it tries again.
+    /// How often a pull says how far along it is, how long it waits
+    /// before it tries again, and how long commands may take.
     pace: Pace,
+    /// The sandboxes whose VMs stopped answering, with Apple's `container`
+    /// ([`stuck`]).
+    stuck: Stuck,
 }
 
 /// A pull under way, or one that was.
@@ -123,6 +127,15 @@ impl Failure {
 struct Pace {
     progress_every: Duration,
     first_wait: Duration,
+    /// How long a command may take ([`COMMAND_TIMEOUT`]), and one that
+    /// pulls an image or starts a new sandbox ([`SLOW_COMMAND_TIMEOUT`]).
+    command: Duration,
+    slow: Duration,
+    /// [`stuck::STUCK_AFTER`], [`stuck::SLOW_START`] and
+    /// [`stuck::FRESH_FOR`].
+    stuck_after: Duration,
+    slow_start: Duration,
+    fresh_for: Duration,
 }
 
 impl Default for Pace {
@@ -130,6 +143,11 @@ impl Default for Pace {
         Self {
             progress_every: pulls::PROGRESS_EVERY,
             first_wait: pulls::FIRST_WAIT,
+            command: COMMAND_TIMEOUT,
+            slow: SLOW_COMMAND_TIMEOUT,
+            stuck_after: stuck::STUCK_AFTER,
+            slow_start: stuck::SLOW_START,
+            fresh_for: stuck::FRESH_FOR,
         }
     }
 }
@@ -196,6 +214,7 @@ impl ContainerDriver {
             agent_as_root: true,
             pulls: Mutex::default(),
             pace: Pace::default(),
+            stuck: Stuck::default(),
         }
     }
 
@@ -206,6 +225,7 @@ impl ContainerDriver {
             agent_as_root: true,
             pulls: Mutex::default(),
             pace: Pace::default(),
+            stuck: Stuck::default(),
         }
     }
 
@@ -227,6 +247,7 @@ impl ContainerDriver {
             agent_as_root: true,
             pulls: Mutex::default(),
             pace: Pace::default(),
+            stuck: Stuck::default(),
         }
     }
 
@@ -238,6 +259,26 @@ impl ContainerDriver {
             pace: Pace {
                 progress_every,
                 first_wait,
+                ..self.pace
+            },
+            ..self
+        }
+    }
+
+    /// The driver, whose commands may take `command` (ten times that to
+    /// pull or start a new sandbox, which it watches for stuck VMs after
+    /// `command`), and which takes a VM that doesn't answer within
+    /// `stuck_after` for stuck, for tests.
+    #[cfg(test)]
+    pub(crate) fn timed(self, command: Duration, stuck_after: Duration) -> Self {
+        Self {
+            pace: Pace {
+                command,
+                slow: command * 10,
+                stuck_after,
+                slow_start: command,
+                fresh_for: Duration::ZERO,
+                ..self.pace
             },
             ..self
         }
@@ -267,12 +308,21 @@ impl ContainerDriver {
         let writer = tokio::spawn(async move {
             let _ = stdin.write_all(&input).await;
         });
-        let out = tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| TimedOut {
-                command: super::command_line(&self.bin, args),
-                after: COMMAND_TIMEOUT,
-            })??;
+        let limit = self.pace.command;
+        let out = match tokio::time::timeout(limit, child.wait_with_output()).await {
+            Ok(out) => out?,
+            Err(_) => {
+                let e = TimedOut {
+                    command: super::command_line(&self.bin, args),
+                    after: limit,
+                };
+                tracing::warn!("{e}");
+                if stuck::waits_on_vms(args) {
+                    self.unstick().await;
+                }
+                return Err(e.into());
+            }
+        };
         let _ = writer.await;
         if !out.status.success() {
             anyhow::bail!(
@@ -289,12 +339,17 @@ impl ContainerDriver {
         // Pulling an image takes minutes, and so may `run`, which pulls one
         // that is missing.
         let limit = match args {
-            ["pull", ..] | ["image", "pull", ..] | ["run", ..] => SLOW_COMMAND_TIMEOUT,
-            _ => COMMAND_TIMEOUT,
+            ["pull", ..] | ["image", "pull", ..] | ["run", ..] => self.pace.slow,
+            _ => self.pace.command,
         };
-        run_cmd_within(&self.bin, args, limit)
+        let out = run_cmd_within(&self.bin, args, limit)
             .await
-            .map_err(|e| self.unreachable(e))
+            .map_err(|e| self.unreachable(e));
+        // A stuck VM may hold it up: the host stops that one.
+        if timed_out(&out) && stuck::waits_on_vms(args) {
+            self.unstick().await;
+        }
+        out
     }
 
     /// `e`, or what keeps the docker CLI from the daemon when that is why
@@ -307,6 +362,158 @@ impl ContainerDriver {
             Some(why) => why.into(),
             None => e,
         }
+    }
+
+    /// Stops fctl's sandboxes whose VMs don't answer ([`stuck`]), once a
+    /// command that waits on them ran out of time or while `run` takes
+    /// long. Commands that run out of time meanwhile wait for what it
+    /// finds, which stands for [`stuck::FRESH_FOR`].
+    async fn unstick(&self) {
+        if self.flavor != Flavor::Apple {
+            return;
+        }
+        let mut looked = self.stuck.looked.lock().await;
+        if looked.is_some_and(|at| at.elapsed() < self.pace.fresh_for) {
+            return;
+        }
+        self.stop_stuck().await;
+        *looked = Some(Instant::now());
+    }
+
+    /// Whether the host stopped the sandbox `name` since it last started,
+    /// its VM having stopped answering ([`stuck`]).
+    pub fn stopped_as_stuck(&self, name: &str) -> bool {
+        self.stuck.stopped(name)
+    }
+
+    /// Why Apple's `container` runs no commands: VMs that don't answer,
+    /// which the host doesn't stop ([`stuck`]). It looks again first, as
+    /// they may have stopped since.
+    pub async fn held_up(&self) -> Option<String> {
+        self.stuck.held_up()?;
+        self.unstick().await;
+        self.stuck.held_up()
+    }
+
+    /// The running containers whose VMs don't answer `container stats`
+    /// within `within`, fctl's sandboxes and any other, each with the
+    /// processes that run its VM. An error when Apple's `container` doesn't
+    /// list them.
+    pub async fn not_answering(&self, within: Duration) -> Result<Vec<(String, Vec<i32>)>> {
+        let list = ["list", "--format", "json"];
+        let listed = run_cmd_within(&self.bin, &list, within.min(self.pace.command)).await?;
+        let running = stuck::running_in(&listed);
+        let answered = futures::future::join_all(running.iter().map(|name| async move {
+            let stats = ["stats", "--no-stream", "--format", "json", name.as_str()];
+            !timed_out(&run_cmd_within(&self.bin, &stats, within).await)
+        }))
+        .await;
+        let stuck: Vec<String> = running
+            .into_iter()
+            .zip(answered)
+            .filter_map(|(name, answered)| (!answered).then_some(name))
+            .collect();
+        if stuck.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ps = ["-A", "-ww", "-o", "pid=", "-o", "command="];
+        let ps = match run_cmd_within("ps", &ps, COMMAND_TIMEOUT).await {
+            Ok(out) => out,
+            Err(e) => {
+                tracing::warn!("listing processes to find those of VMs that don't answer: {e:#}");
+                String::new()
+            }
+        };
+        Ok(stuck
+            .into_iter()
+            .map(|name| {
+                let pids = stuck::helpers_of(&ps, &name);
+                (name, pids)
+            })
+            .collect())
+    }
+
+    /// Stops fctl's sandboxes whose VMs don't answer within
+    /// [`stuck::STUCK_AFTER`], killing the process that runs each one's VM,
+    /// and waits until Apple's `container` takes them for stopped. Others
+    /// it leaves, saying so.
+    async fn stop_stuck(&self) {
+        let found = match self.not_answering(self.pace.stuck_after).await {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::warn!("looking for sandboxes whose VMs don't answer: {e:#}");
+                return;
+            }
+        };
+        if found.is_empty() {
+            tracing::info!("every running sandbox answers, so none holds up Apple's `container`");
+        }
+        let mut stopped = Vec::new();
+        // Those the host leaves, which hold up Apple's `container` until
+        // someone stops them: the driver isn't ready meanwhile.
+        let mut left = Vec::new();
+        for (name, pids) in found {
+            let holds_up = "which holds up every sandbox of Apple's `container`";
+            if !name.starts_with("fctl-") {
+                let stop = match pids.as_slice() {
+                    [] => "its container-runtime-linux process stops it".to_owned(),
+                    pids => format!("`kill -9 {}` stops it", words_of(pids)),
+                };
+                left.push(format!(
+                    "{name}'s VM does not answer, {holds_up}; it isn't one of fctl's, so the host leaves it to you: {stop}"
+                ));
+                continue;
+            }
+            if pids.is_empty() {
+                left.push(format!(
+                    "{name}'s VM does not answer, {holds_up}, and the host found no container-runtime-linux process of it to stop: `killall -9 container-apiserver; container system stop; container system start` stops every sandbox and starts Apple's `container` again"
+                ));
+                continue;
+            }
+            for pid in &pids {
+                use nix::sys::signal::{Signal, kill};
+                if let Err(e) = kill(nix::unistd::Pid::from_raw(*pid), Signal::SIGKILL) {
+                    tracing::warn!("stopping {name}'s VM, pid {pid}: {e}");
+                }
+            }
+            self.stuck.note(&name);
+            tracing::warn!(
+                "{}",
+                stuck::stopped_line(&name, self.pace.stuck_after, &pids)
+            );
+            stopped.push(name);
+        }
+        for why in &left {
+            tracing::warn!("{why}");
+        }
+        self.stuck
+            .hold_up((!left.is_empty()).then(|| left.join("; ")));
+        // Apple's `container` takes each for stopped as it hears that its
+        // helper went, which takes a moment.
+        let until = Instant::now() + Duration::from_secs(30);
+        for name in &stopped {
+            while Instant::now() < until && self.listed_running(name).await {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+
+    /// Whether Apple's `container` lists the sandbox `name` as running,
+    /// asked without waiting on anything stuck ([`stuck::waits_on_vms`]).
+    async fn listed_running(&self, name: &str) -> bool {
+        let limit = self.pace.command.min(Duration::from_secs(10));
+        let inspect = run_cmd_within(&self.bin, &["inspect", name], limit).await;
+        inspect.is_ok_and(|out| {
+            serde_json::from_str::<Value>(&out)
+                .ok()
+                .and_then(|v| {
+                    v.pointer("/0/status/state")
+                        .or_else(|| v.pointer("/0/status"))
+                        .and_then(Value::as_str)
+                        .map(|s| s == "running")
+                })
+                .unwrap_or(false)
+        })
     }
 
     pub async fn probe(&self) -> DriverInfo {
@@ -375,12 +582,20 @@ impl ContainerDriver {
                 (version.clone(), version.is_some(), hung)
             }
         };
+        // A VM that doesn't answer, which the host leaves, holds up Apple's
+        // `container` ([`stuck`]).
+        let held_up = match ready {
+            true => self.held_up().await,
+            false => None,
+        };
+        let ready = ready && held_up.is_none();
         DriverInfo {
             name: self.flavor_name().into(),
             available: ready,
             isolation: isolation.into(),
             detail: Some(match (self.flavor, ready, hung, refused) {
                 (_, true, ..) => "ready".into(),
+                (_, false, ..) if let Some(why) = held_up => why,
                 (Flavor::Apple, false, true, _) => {
                     "the `container` service is not answering".into()
                 }
@@ -540,11 +755,29 @@ impl ContainerDriver {
             Some("running") => {
                 // Apple's `container` lists a sandbox it failed to stop as
                 // running, and refuses commands in it (see `halt`). A
-                // runtime that doesn't answer says nothing about that.
-                let e = match self.run(&["exec", &spec.name, "true"]).await {
-                    Ok(_) => return Ok(sb),
-                    Err(e) if unanswered(&e) => return Err(e),
-                    Err(e) => e,
+                // runtime that doesn't answer says nothing about that,
+                // unless the host found the sandbox's VM stuck and stopped
+                // it meanwhile ([`stuck`]).
+                let mut again = true;
+                let e = loop {
+                    let tried = Instant::now();
+                    match self.run(&["exec", &spec.name, "true"]).await {
+                        Ok(_) => return Ok(sb),
+                        Err(e) if self.stuck.stopped(&spec.name) => {
+                            tracing::info!("starting {} again: {e:#}", spec.name);
+                            log(format!(
+                                "Starting the sandbox {} again: its VM stopped answering, so the host stopped it",
+                                spec.name
+                            ));
+                            self.start(&spec.name).await?;
+                            return Ok(sb);
+                        }
+                        // Another sandbox's VM held it up, and the host
+                        // stopped that one: it may answer now.
+                        Err(_) if again && self.stuck.stopped_since(tried) => again = false,
+                        Err(e) if unanswered(&e) => return Err(e),
+                        Err(e) => break e,
+                    }
                 };
                 tracing::warn!(
                     "{} is listed as running but takes no commands, so the host starts it again: {e:#}",
@@ -555,15 +788,15 @@ impl ContainerDriver {
                     spec.name
                 ));
                 self.halt(&spec.name).await?;
-                self.run(&["start", &spec.name]).await?;
+                self.start(&spec.name).await?;
                 return Ok(sb);
             }
             Some(_) => {
                 log(format!("Starting the existing sandbox {}", spec.name));
-                self.run(&["start", &spec.name]).await?;
+                self.start(&spec.name).await?;
                 return Ok(sb);
             }
-            None => {}
+            None => self.stuck.forget(&spec.name),
         }
         log(format!(
             "Creating sandbox {} from {}",
@@ -594,6 +827,13 @@ impl ContainerDriver {
             )));
         }
         Err(pull_error.context(missing))
+    }
+
+    /// Starts the stopped sandbox `name`.
+    async fn start(&self, name: &str) -> Result<()> {
+        self.run(&["start", name]).await?;
+        self.stuck.forget(name);
+        Ok(())
     }
 
     /// Starts the sandbox from `image`, pulling the image when it isn't here.
@@ -645,7 +885,34 @@ impl ContainerDriver {
                 .await
                 .map_err(Create::NoImage)?;
         }
-        self.run(&args).await.map(drop).map_err(failed)
+        self.watched(self.run(&args))
+            .await
+            .map(drop)
+            .map_err(failed)
+    }
+
+    /// `work`, which starts a sandbox: with Apple's `container`, the host
+    /// looks for stuck VMs that may hold it up ([`stuck`]) once it has
+    /// taken [`stuck::SLOW_START`], and again as often while it goes on.
+    async fn watched<T>(&self, work: impl std::future::Future<Output = T>) -> T {
+        tokio::pin!(work);
+        if self.flavor != Flavor::Apple {
+            return work.await;
+        }
+        let every = self.pace.slow_start;
+        let mut looks = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        loop {
+            tokio::select! {
+                out = &mut work => return out,
+                _ = looks.tick() => {}
+            }
+            let look = self.unstick();
+            tokio::pin!(look);
+            tokio::select! {
+                out = &mut work => return out,
+                () = &mut look => {}
+            }
+        }
     }
 
     /// The network a new Docker sandbox joins ([`SANDBOX_NETWORK`]), made
@@ -1497,8 +1764,19 @@ impl ContainerDriver {
     /// stops a sandbox again while it is still listed as running.
     async fn halt(&self, name: &str) -> Result<()> {
         let stop = ["stop", "-t", "20", name];
+        let tried = Instant::now();
         let e = match self.run(&stop).await {
             Ok(_) => return Ok(()),
+            // Its VM stopped answering, and the host stopped it ([`stuck`]).
+            Err(_) if self.stuck.stopped(name) => return Ok(()),
+            // Another sandbox's VM held the stop up, and the host stopped
+            // that one: this one may have stopped since, or stops now.
+            Err(e) if unanswered(&e) && self.stuck.stopped_since(tried) => {
+                if !self.listed_running(name).await {
+                    return Ok(());
+                }
+                e
+            }
             Err(e) if unanswered(&e) => return Err(e),
             Err(e) => e,
         };
@@ -1535,8 +1813,17 @@ impl ContainerDriver {
             Flavor::Docker => &["rm", "-f", &sb.name],
         };
         if self.state(&sb.name).await?.is_some() {
-            self.run(args).await?;
+            match self.run(args).await {
+                Ok(_) => {}
+                // Deleting it waited on its VM, which stopped answering, and
+                // the host stopped it ([`stuck`]): now it goes.
+                Err(_) if self.stuck.stopped(&sb.name) => {
+                    self.run(args).await?;
+                }
+                Err(e) => return Err(e),
+            }
         }
+        self.stuck.forget(&sb.name);
         Ok(())
     }
 
@@ -1620,6 +1907,14 @@ pub(crate) fn forward_lines<R: AsyncRead + Unpin + Send + 'static>(
             }
         }
     });
+}
+
+/// `72625 72700`: process ids, for a command line.
+fn words_of(pids: &[i32]) -> String {
+    pids.iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The last line of `why`, at most 200 characters.
@@ -1862,7 +2157,7 @@ fn may_fall_back(e: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::fake::{FakeCli, write_script};
+    use crate::driver::fake::{FakeCli, StuckApple, write_script};
     use std::sync::{Mutex, PoisonError};
 
     #[test]
@@ -3270,5 +3565,178 @@ esac
         );
         assert_eq!(cli.volumes()?.len(), 3);
         Ok(())
+    }
+
+    fn named(name: &str) -> SandboxSpec {
+        SandboxSpec {
+            name: name.into(),
+            ..spec(VERSION_IMAGE, None)
+        }
+    }
+
+    fn sandbox(name: &str) -> Sandbox {
+        Sandbox {
+            name: name.into(),
+            root: None,
+        }
+    }
+
+    /// Readies the sandbox `spec` names: what it said in the session's log.
+    async fn ensured(driver: &ContainerDriver, spec: &SandboxSpec) -> Result<Vec<String>> {
+        let lines = Mutex::new(Vec::new());
+        let log = |line: String| {
+            lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        driver.ensure(spec, &log).await?;
+        Ok(lines.into_inner().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    #[tokio::test]
+    async fn the_host_stops_a_sandbox_whose_vm_stopped_answering() -> Result<()> {
+        let (frozen, fine) = ("fctl-ses-stuck-a1", "fctl-ses-stuck-a2");
+        let apple = StuckApple::new(&[frozen, fine], &[frozen])?;
+        let driver = apple.driver();
+        let (its, others) = (apple.helper(frozen)?, apple.helper(fine)?);
+
+        // An `exec` in it waits for ever, and runs out of time: the host
+        // asks each sandbox's VM for its numbers, and stops the one that
+        // doesn't answer, killing the process that runs its VM.
+        let r = driver.exec(&sandbox(frozen), "true").await;
+        assert!(timed_out(&r), "{}", error_of(r));
+        assert!(driver.stopped_as_stuck(frozen));
+        assert!(!apple.runs(frozen)?);
+        assert!(stuck::helpers_of(&ps()?, frozen).is_empty(), "{its} runs");
+        // The other runs on, and takes commands again.
+        assert!(!driver.stopped_as_stuck(fine));
+        assert!(apple.runs(fine)?);
+        assert_eq!(stuck::helpers_of(&ps()?, fine), [others]);
+        assert!(driver.exec(&sandbox(fine), "true").await.is_ok());
+
+        // A session resumes in it: it starts again.
+        assert_eq!(
+            ensured(&driver, &named(frozen)).await?,
+            [format!("Starting the existing sandbox {frozen}")]
+        );
+        assert!(apple.runs(frozen)?);
+        assert!(!driver.stopped_as_stuck(frozen));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sessions_resume_in_sandboxes_whose_vms_stopped_answering() -> Result<()> {
+        let frozen = "fctl-ses-stuck-b1";
+        let apple = StuckApple::new(&[frozen], &[frozen])?;
+        let driver = apple.driver();
+        let before = apple.helper(frozen)?;
+        assert_eq!(
+            ensured(&driver, &named(frozen)).await?,
+            [format!(
+                "Starting the sandbox {frozen} again: its VM stopped answering, so the host stopped it"
+            )]
+        );
+        assert!(apple.runs(frozen)?);
+        assert_ne!(apple.helper(frozen)?, before);
+        assert!(!driver.stopped_as_stuck(frozen));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn commands_that_a_stuck_vm_held_up_go_through_once_the_host_stops_it() -> Result<()> {
+        let (frozen, fine, new) = (
+            "fctl-ses-stuck-c1",
+            "fctl-ses-stuck-c2",
+            "fctl-ses-stuck-c3",
+        );
+        let apple = StuckApple::new(&[frozen, fine], &[frozen])?;
+        let driver = apple.driver();
+        apple.held_by(frozen)?;
+
+        // A session resumes in a sandbox that answers: its `exec` waits on
+        // the API server, which waits on the frozen VM, until the host
+        // stops that one. Then it goes through.
+        assert!(ensured(&driver, &named(fine)).await?.is_empty());
+        assert!(driver.stopped_as_stuck(frozen));
+        let tries = apple
+            .calls()?
+            .into_iter()
+            .filter(|c| *c == format!("exec {fine} true"))
+            .count();
+        assert_eq!(tries, 2);
+
+        // A new sandbox waits on it too, and starts once the host stops it.
+        let apple = StuckApple::new(&[frozen], &[frozen])?;
+        let driver = apple.driver();
+        apple.held_by(frozen)?;
+        assert!(ensured(&driver, &named(new)).await?[0].starts_with("Creating sandbox"));
+        assert!(apple.runs(new)?);
+        assert!(driver.stopped_as_stuck(frozen));
+        assert!(!apple.runs(frozen)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sandboxes_whose_vms_stopped_answering_stop() -> Result<()> {
+        let frozen = "fctl-ses-stuck-d1";
+        let apple = StuckApple::new(&[frozen], &[frozen])?;
+        let driver = apple.driver();
+        driver.stop(&sandbox(frozen)).await?;
+        assert!(!apple.runs(frozen)?);
+        assert!(driver.stopped_as_stuck(frozen));
+        // And go.
+        driver.remove(&sandbox(frozen)).await?;
+        assert!(!driver.stopped_as_stuck(frozen));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn containers_that_arent_fctls_are_left_to_their_owner() -> Result<()> {
+        let (theirs, fine) = ("stuck-e1-dev", "fctl-ses-stuck-e2");
+        let apple = StuckApple::new(&[theirs, fine], &[theirs])?;
+        let driver = apple.driver();
+        apple.held_by(theirs)?;
+        let r = driver.exec(&sandbox(fine), "true").await;
+        assert!(timed_out(&r), "{}", error_of(r));
+        assert!(apple.runs(theirs)?);
+        assert!(!driver.stopped_as_stuck(theirs));
+        assert!(!driver.stopped_as_stuck(fine));
+        // `fctl host doctor` names it, with what runs its VM.
+        let pid = apple.helper(theirs)?;
+        assert_eq!(
+            driver.not_answering(Duration::from_secs(1)).await?,
+            [(theirs.to_owned(), vec![pid])]
+        );
+        // The driver isn't ready meanwhile, and says why…
+        let probed = driver.probe().await;
+        assert!(!probed.available);
+        assert_eq!(
+            probed.detail.unwrap_or_default(),
+            format!(
+                "{theirs}'s VM does not answer, which holds up every sandbox of Apple's `container`; it isn't one of fctl's, so the host leaves it to you: `kill -9 {pid}` stops it"
+            )
+        );
+        // …until its owner stops it, as it says.
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        )?;
+        let until = Instant::now() + Duration::from_secs(10);
+        while apple.runs(theirs)? && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let probed = driver.probe().await;
+        assert!(probed.available, "{:?}", probed.detail);
+        assert_eq!(probed.detail.as_deref(), Some("ready"));
+        Ok(())
+    }
+
+    /// Every process, as the host lists them to find VMs' helpers.
+    fn ps() -> Result<String> {
+        let out = std::process::Command::new("ps")
+            .args(["-A", "-ww", "-o", "pid=", "-o", "command="])
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }

@@ -197,11 +197,19 @@ impl HostCtx {
     pub async fn refresh_facts(&self) {
         self.driver.start_service().await;
         let data_dir = self.cfg.data_dir();
-        let (drivers, size, spot) = tokio::join!(
+        let (mut drivers, size, spot) = tokio::join!(
             Driver::probe_all(&self.cfg),
             self.driver.measure(),
             self.driver.disk_spot(&data_dir)
         );
+        // What holds up the driver this host uses only it knows: a VM that
+        // doesn't answer, which the host doesn't stop (`driver::stuck`).
+        if let Some(why) = self.driver.held_up().await
+            && let Some(d) = drivers.iter_mut().find(|d| d.name == self.driver.name())
+        {
+            d.available = false;
+            d.detail = Some(why);
+        }
         *self.drivers.lock().unwrap_or_else(PoisonError::into_inner) = drivers;
         if let Some(size) = size {
             *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -907,6 +915,14 @@ fn failure(runner: &str, e: &anyhow::Error) -> String {
     }
 }
 
+/// Why a session ended whose sandbox the host stopped on `runner`, its VM
+/// having stopped answering (`driver::stuck`).
+fn stopped_stuck(runner: &str) -> String {
+    format!(
+        "This session's sandbox stopped answering, so runner {runner}'s host stopped it: with Apple's `container`, one sandbox that doesn't answer holds up every other on the runner. Resume the session to start it again, with its files."
+    )
+}
+
 /// `with 800 MiB free`, or nothing for a disk not measured yet.
 fn with_free(free_mb: Option<u64>) -> String {
     free_mb.map_or_else(String::new, |f| format!(", with {} free", size::memory(f)))
@@ -1313,6 +1329,13 @@ async fn run(
     );
     let gave_up = || {
         let msg = "fctl-agent stopped responding in the sandbox".to_owned();
+        uplink.state(state(SessionStatus::Failed, &msg));
+        (SessionStatus::Failed, Some(msg))
+    };
+    // The host stopped the sandbox, whose VM stopped answering, and the
+    // agent with it.
+    let stuck = || {
+        let msg = stopped_stuck(&ctx.cfg.name);
         uplink.state(state(SessionStatus::Failed, &msg));
         (SessionStatus::Failed, Some(msg))
     };
@@ -1801,6 +1824,16 @@ async fn run(
                     && Instant::now() > deadline {
                         break exited.clone().unwrap_or((SessionStatus::Stopped, Some("Stopped (forced)".into())));
                     }
+                // Its VM stopped answering, and the host stopped it, for
+                // this session's commands or another's (`driver::stuck`).
+                if ctx.driver.stopped_as_stuck(&sb.name) {
+                    tracing::warn!("{session_id} ends: the host stopped {}, whose VM stopped answering", sb.name);
+                    break match (exited.clone(), stop) {
+                        (Some(done), _) => done,
+                        (None, Some(_)) => (SessionStatus::Stopped, Some("Stopped".into())),
+                        (None, None) => stuck(),
+                    };
+                }
                 if exited.is_some() && link.is_none()
                     && let Some(done) = exited.clone() {
                         break done;
@@ -2223,6 +2256,57 @@ mod tests {
             "{reason:?}"
         );
         assert_eq!(ctx.driver_problem(), None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_sandbox_stopped_answering_ends_saying_why() -> Result<()> {
+        use crate::driver::fake::StuckApple;
+        let data = tempfile::tempdir()?;
+        let agent = data.path().join("fctl-agent");
+        std::fs::write(&agent, "")?;
+        let cfg = HostConfig {
+            name: "studio".into(),
+            driver: "apple".into(),
+            // Nothing answers there: the session's uplink tries in vain.
+            server: "http://127.0.0.1:9".into(),
+            data_dir: Some(data.path().to_owned()),
+            agent_bin: Some(agent),
+            ..HostConfig::default()
+        };
+        let apple = StuckApple::new(&[], &[])?;
+        let ctx = Arc::new(HostCtx::new(
+            cfg,
+            Driver::Container(apple.driver()),
+            "fctl_rt_test".into(),
+        ));
+        let (events, mut ended) = mpsc::unbounded_channel();
+        let _handle = spawn(ctx.clone(), Start::New(spec("ses_01STUCK")?), events);
+        // Its sandbox starts, and fctl-agent, which says nothing here: the
+        // host attaches again and again, starting it again first.
+        let name = sandbox_name("ses_01STUCK");
+        let until = Instant::now() + Duration::from_secs(30);
+        while !apple.runs(&name).unwrap_or(false) {
+            anyhow::ensure!(Instant::now() < until, "{name} never started");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Then its VM stops answering: the next command in it runs out of
+        // time, and the host stops it. The session ends, saying why.
+        apple.freeze(&name)?;
+        let (status, reason) = loop {
+            let event = tokio::time::timeout(Duration::from_secs(60), ended.recv()).await?;
+            match event.context("the run ended without saying so")? {
+                SessionEvent::Ended { status, reason, .. } => break (status, reason),
+                SessionEvent::CredentialRequest { .. } => {}
+            }
+        };
+        assert_eq!(status, SessionStatus::Failed);
+        assert_eq!(reason, Some(stopped_stuck("studio")));
+        assert_eq!(
+            stopped_stuck("studio"),
+            "This session's sandbox stopped answering, so runner studio's host stopped it: with Apple's `container`, one sandbox that doesn't answer holds up every other on the runner. Resume the session to start it again, with its files."
+        );
+        assert!(!apple.runs(&name)?);
         Ok(())
     }
 

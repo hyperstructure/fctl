@@ -16,6 +16,7 @@ pub mod firecracker;
 pub mod lima;
 pub mod process;
 pub(crate) mod pulls;
+pub mod stuck;
 
 pub use container::ImageInfo;
 
@@ -842,6 +843,37 @@ impl Driver {
             Self::Container(d) => d.remove(sb).await,
             Self::Firecracker(d) => d.remove(sb).await,
             Self::Lima(d) => d.remove(sb).await,
+        }
+    }
+
+    /// Whether the host stopped the sandbox `name` since it last started,
+    /// its VM having stopped answering: with Apple's `container`, one that
+    /// doesn't answer holds up every other ([`stuck`]).
+    pub fn stopped_as_stuck(&self, name: &str) -> bool {
+        match self {
+            Self::Container(d) => d.stopped_as_stuck(name),
+            _ => false,
+        }
+    }
+
+    /// Why the driver runs no commands though it answers: with Apple's
+    /// `container`, VMs that don't answer, which the host doesn't stop
+    /// ([`stuck`]). It looks again first.
+    pub async fn held_up(&self) -> Option<String> {
+        match self {
+            Self::Container(d) => d.held_up().await,
+            _ => None,
+        }
+    }
+
+    /// The running sandboxes whose VMs don't answer within `within`, each
+    /// with the processes that run its VM, with Apple's `container`, where
+    /// one that doesn't answer holds up every other ([`stuck`]). `None`
+    /// with other drivers, whose sandboxes don't hold each other up.
+    pub async fn not_answering(&self, within: Duration) -> Option<Result<Vec<(String, Vec<i32>)>>> {
+        match self {
+            Self::Container(d) if d.flavor_name() == "apple" => Some(d.not_answering(within).await),
+            _ => None,
         }
     }
 
