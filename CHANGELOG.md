@@ -2,6 +2,13 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.36.1 (2026-11-19)
+
+### Fixes
+
+- **ci:** Wait for fctl.sh to serve a release before checking it ([#598](https://github.com/hyperstructure/fctl/pull/598))
+- **host:** Stop Apple sandboxes whose VMs stop answering ([#599](https://github.com/hyperstructure/fctl/pull/599))
+
 ## 0.36.0 (2026-11-18)
 
 ### Features
