@@ -14,6 +14,7 @@ for the details.
 | Let a portal, a chat bot or a form start agents for your people, each on their own Claude subscription | Service accounts | [Agents from your own portal or bot](#agents-from-your-own-portal-or-bot) |
 | Let CI, a pipeline or another tool start agents as one person | Access tokens and schedules | [Agents from CI and other tools](#agents-from-ci-and-other-tools) |
 | Tell your chat, deploy pipeline or dashboards what agents do | Webhooks | [Your tools hear what agents do](#your-tools-hear-what-agents-do) |
+| Let agents call your own services, and AWS, Google Cloud or Azure, without keys of yours | Identity tokens | [Agents in your own systems](#agents-in-your-own-systems) |
 | Bring a fleet of machines online as runners without signing in on each | Enrollment tokens | [Runners for a fleet](#runners-for-a-fleet) |
 | Know who did what, and with which credential | Audit logs | [Oversight](#oversight) |
 
@@ -292,6 +293,43 @@ A webhook posts while whoever chose its address still manages it: when
 they leave the workspace or lose the role, fctl turns it off and says
 why, and the admin who turns it on again keeps it from then on.
 
+## Agents in your own systems
+
+An agent proves to your services and clouds that a request comes from one
+of your workspace's sessions with an identity token: an OpenID Connect ID
+token, signed by fctl, that says whom the session runs for, its project,
+runner and what it may do on GitHub, and lasts 10 minutes
+([Identity tokens](identity-tokens.md)). Your workspace is an issuer of
+its own, so a cloud set up to trust its agents trusts no one else's:
+
+| To let agents… | Set up | And trust |
+|---|---|---|
+| call an internal API | nothing in fctl: the API checks tokens with your issuer's keys | `iss`, `aud`, then `project_id`, `user_id`, `github_access` |
+| use AWS | the role, in the project (`--aws-role`) | the trust policy `fctl projects identity` prints |
+| use Google Cloud | the workload identity provider (`--gcp-provider`) | the pool's provider and the service account's binding it prints |
+| use Azure | the application (`--azure-tenant`, `--azure-client`) | a federated credential for `project:prj_…` |
+| get secrets from Vault | nothing in fctl | its JWT auth method, bound to your issuer and claims |
+
+```sh
+fctl projects set -p web --aws-role arn:aws:iam::123456789012:role/fctl-web
+fctl projects identity -p web         # the provider, the trust policy and the commands, filled in
+```
+
+The project's agents then run `aws`, `gcloud` and the clouds' SDKs as they
+are, with credentials that last an hour and come again, and nothing to
+leak but a token that expires in minutes. For the rest, `fctl id-token`
+mints a token for whichever service an agent calls:
+
+```sh
+curl -H "Authorization: Bearer $(fctl id-token -a https://deploys.acme.dev)" https://deploys.acme.dev/api/…
+```
+
+Whatever runs in a session's sandbox can mint its tokens, and so can the
+owner of the runner it runs on: trust a project's agents with what they
+should do there, and use `github_access`, `started_by` and
+`runner_personal` to leave out sessions that read text from outsiders or
+run on members' own machines ([What a token proves](identity-tokens.md#what-a-token-proves)).
+
 ## Runners for a fleet
 
 Machines that your autoscaling creates, or that you set up without
@@ -340,3 +378,4 @@ hold it to the images you choose
 | Admin token, `fctl_adm_…` | an instance admin, where the instance takes them | its admin | the people endpoints of the admin API | it expires, someone revokes it, its admin is no longer an active one, or `FCTL_ADMIN_TOKENS` is off |
 | Enrollment token, `fctl_et_…` | a workspace's admins, or a member for their own sessions | nobody | enrolling machines as the workspace's runners | it expires (90 days unless set) or someone revokes it; its runners stay |
 | Webhook secret, `whsec_…` | made with the webhook | nobody | signing what fctl posts to it | a day after it's rotated, or when the webhook is deleted; the webhook stops posting once whoever chose its address no longer manages it |
+| Identity token, a JWT | an agent in a session's sandbox (`fctl id-token`), or fctl-agent for its project's clouds | nobody: it says which session, person, project and runner it comes from | nothing in fctl; whatever trusts your workspace's issuer, for its audience | 10 minutes after it was signed |

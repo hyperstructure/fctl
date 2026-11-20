@@ -217,6 +217,7 @@ struct FactsRow {
     service_account_id: Option<String>,
     runner_id: Option<String>,
     project_slug: String,
+    default_branch: String,
     workspace_slug: Option<String>,
     user_email: Option<String>,
     runner_name: Option<String>,
@@ -229,7 +230,7 @@ async fn facts(db: &D1Database, public_url: &str, session: &RunnerSession) -> Ap
         db,
         "SELECT s.number, s.status, s.created_by, s.branch, s.base_branch, s.schedule_id, s.ticket, \
          s.autopilot_id, s.autopilot_role, s.service_account_id, s.runner_id, \
-         p.slug AS project_slug, w.slug AS workspace_slug, wm.email AS user_email, \
+         p.slug AS project_slug, p.default_branch, w.slug AS workspace_slug, wm.email AS user_email, \
          r.name AS runner_name, rw.personal AS runner_personal \
          FROM sessions s JOIN projects p ON p.id = s.project_id \
          LEFT JOIN workspaces w ON w.id = p.workspace_id \
@@ -271,8 +272,10 @@ async fn facts(db: &D1Database, public_url: &str, session: &RunnerSession) -> Ap
         runner_name: row.runner_name,
         runner_personal: row.runner_personal,
         repository: session.repo.as_ref().map(|r| r.full_name()),
-        branch: row.branch,
-        base_branch: row.base_branch,
+        // As its spec says them (`spec::build`), for sessions from before
+        // their rows had them.
+        branch: Some(row.branch.unwrap_or_else(|| format!("fctl/{}", row.number))),
+        base_branch: Some(row.base_branch.unwrap_or(row.default_branch)),
         github_access: session.github_access,
         started_by: domain::started_by(
             row.autopilot_id.is_some(),

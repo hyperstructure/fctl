@@ -38,6 +38,7 @@ Three pieces make up a factory:
 | Run agents from CI or a bot, such as review agents on your pull requests | [Automation](automation.md) |
 | Run your own instance, on a machine of yours or on Cloudflare | [Self-hosting](self-hosting.md) |
 | Run fctl for an organization: accounts from your directory, agents started from your own portal or bot, webhooks to your tools | [fctl for organizations](organizations.md) |
+| Let agents prove who they are to your own services, and reach AWS, Google Cloud and Azure without keys | [Identity tokens](identity-tokens.md) |
 | Know what sessions run in, give a project its own image, or choose the images a host runs | [Sandbox images](sandbox-images.md) |
 | Understand how the pieces talk to each other | [Architecture](architecture.md) |
 | Know what fctl does with your credentials | [Security](security.md) |

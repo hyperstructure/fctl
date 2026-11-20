@@ -1668,6 +1668,58 @@ leaves the control plane and which it revokes at once
 (`fctl_domain::threads`, `repos::resolve_permissions`). `~/AGENTS.md` tells agents that comment
 how, where the sandbox's fctl has the command.
 
+### Identity tokens
+
+An agent proves to a workspace's own services and clouds that a request
+comes from one of its sessions with an identity token: an OpenID Connect
+ID token the control plane signs, which says whom the session runs for
+and its workspace, project, runner, branch and GitHub access, for one
+audience, for 10 minutes ([Identity tokens](identity-tokens.md),
+[ADR 0090](adr/0090-agents-prove-who-they-are-with-tokens-their-workspaces-issuer-signs.md)).
+
+- **Each workspace is an issuer**, `{FCTL_PUBLIC_URL}/oidc/{wsp_…}`
+  (`fctl_domain::id_tokens::issuer`), which serves its discovery document
+  and keys to anyone (`crate::id_tokens::serve`, ahead of the API in
+  `fetch`; `run_worker_first` sends `/oidc/*` to the Worker). A cloud set
+  up to trust one workspace's agents trusts no other workspace's.
+- **The instance's keys sign for every issuer** (`id_token_keys`): RSA
+  2048, RS256, made with WebCrypto as an issuer is first asked for its
+  keys or an agent first mints a token, the private half sealed with the
+  master key for `id-token-key:<kid>`, its id its RFC 7638 thumbprint. A
+  new key comes 30 days after the last, is published two days before it
+  signs and stays two days after it stops, then goes
+  (`fctl_domain::id_tokens::plan`); two Workers that find one due make
+  one, as the insert checks that no newer key is there.
+- **Agents mint them through their host**, as `fctl memory` does: `fctl
+  id-token` asks fctl-agent (`AgentCall::IdToken`), which refuses where
+  its spec has no `id_tokens`, and the host sends it with its runner token.
+  The control plane checks that the runner runs the session now
+  (`spec::check_runs`), that the session's status is active, that its
+  project lets its agents mint them (`ProjectSettings::id_tokens`, on by
+  default) and that it isn't a review agent's, then fills the claims from
+  D1 (`crate::id_tokens::facts`): the person it runs for, the address
+  they're a member of the workspace as, its runner and whether it runs
+  only its owner's sessions, its effective GitHub access, and what
+  started it, in the words webhooks use. The agent chooses the audience,
+  a nonce, which facts make up the subject (`SubjectPart`) and AWS session
+  tags. A session mints at most 30 a minute (`AUTH_LIMITER`).
+- **A project's clouds** (`ProjectSettings::cloud_access`: an AWS role,
+  a Google Cloud workload identity provider, an Azure application) reach
+  the agent in its spec (`SessionSpec::id_tokens`). fctl-agent keeps a
+  token for each in `~/.fctl/state/id-tokens/` (the AWS audience
+  `sts.amazonaws.com`, Google's provider URL, Azure's
+  `api://AzureADTokenExchange` with the subject `project:prj_…`, which
+  Azure matches exactly), minted again once five minutes are left, writes
+  Google's credential configuration beside them, and gives Claude and the
+  setup script the variables each cloud's CLI and SDKs read
+  (`fctl_domain::clouds::env`), before the project's own. The control
+  plane never talks to a cloud: `GET /api/v1/projects/{id}/identity`
+  (`fctl_domain::clouds::identity`) says what to set up there.
+- Hosts, fctl-agents and control planes from before it refuse the call;
+  their agents' `~/AGENTS.md` says nothing of it, and their sandboxes get
+  no cloud variables. The sandbox's `fctl` needs `fctl id-token`, which
+  `~/AGENTS.md` mentions only where it has it.
+
 ### Pull request state and checks
 
 The web app's pull requests page (`/pulls`) and `fctl pulls` list the pull

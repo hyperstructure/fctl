@@ -25,6 +25,7 @@ trusts.
 | Linear app's client secret and webhook secret | Worker secrets (outside Cloudflare, the server's environment) | the control plane, to install fctl's app in Linear, renew its tokens and check that deliveries come from Linear |
 | Linear tokens (fctl's app in each Linear workspace) | encrypted (AES-256-GCM) in D1 | the control plane, for the projects of the fctl workspaces connected to that Linear workspace; never sandboxes |
 | Web Push (VAPID) key | encrypted in D1 | the control plane, to sign notifications |
+| Identity token signing keys (RSA) | encrypted in D1, a new one every 30 days; their public halves at each workspace's issuer | the control plane, to sign the tokens agents mint for their own sessions |
 | Master key | a Worker secret (outside Cloudflare, the server's environment, or a file it made in its data directory) | the control plane |
 
 Encrypted values are bound to their row (the AES-GCM associated data names the
@@ -252,6 +253,26 @@ owner and purpose), so a value copied between rows does not decrypt.
   admins or the project's maintainers turn publishing off; it is off for
   both until they turn it on. Anyone a link is shared with, or who can read
   the pull request, can pass it on.
+
+- Identity tokens prove to an organization's own services and clouds
+  that a request comes from one of its sessions
+  ([Identity tokens](identity-tokens.md)). The control plane signs one
+  only for a session whose sandbox runs, on the runner that runs it, as
+  that runner's host asks with its runner token, and fills its claims
+  from what it knows of the session: an agent chooses the audience and
+  which facts make up the subject, never what they say. A token lasts 10
+  minutes and names one audience; a session mints at most 30 a minute.
+  Each workspace is an issuer of its own, and a token's signature covers
+  its `iss`, so a service or cloud that trusts one workspace trusts no
+  other's. Review agents get none, and a project's maintainers turn them
+  off for its agents. Whatever runs in a sandbox can mint its session's
+  tokens, and the runner's owner can for the sessions it runs, so a token
+  proves where a request comes from, not what the agent meant: what it
+  reaches is up to the service that trusts it, which can tell sessions
+  apart by person, project, runner, GitHub access and what started them.
+  The signing keys are sealed with the master key: whoever has both D1
+  and the master key can sign tokens, as they can read every other secret
+  there.
 
 ## Sandboxes
 
@@ -916,6 +937,11 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   that was pushed, and a new Claude conversation. With less than 2 GiB
   free, Firecracker hosts pause their running sandboxes, which keep what
   their sessions wrote in memory until there is room.
+- An identity token is kept nowhere by the control plane: it goes to the
+  sandbox that asked, where it lasts 10 minutes. fctl-agent keeps the
+  current one for each of its project's clouds in a file only the
+  session's user reads. Signing keys are deleted two days after another
+  takes over, once no token they signed can still be used.
 - Hosts keep the package caches of projects that share them, with what
   their sessions downloaded, until no session of the project has started
   there for `keep_caches_days` (14 by default; 0 keeps them). They empty
