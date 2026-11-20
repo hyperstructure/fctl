@@ -350,9 +350,18 @@ async fn workspace_exists(db: &D1Database, id: &str) -> AppResult<bool> {
     Ok(row.is_some_and(|r| r.n > 0))
 }
 
+/// What an issuer answers.
+enum Answer {
+    Json(serde_json::Value),
+    /// Its discovery document's address, for whoever opened the issuer's
+    /// own, as the app shows it.
+    SeeDiscovery(String),
+}
+
 /// An issuer's document, which anyone may read, and any page's script
 /// fetch: `GET /oidc/{wsp_…}/.well-known/openid-configuration` or
-/// `…/jwks.json`. Unknown workspaces have none.
+/// `…/jwks.json`; its own address sends people to the first. Unknown
+/// workspaces have none.
 pub async fn serve(env: &Env, req: &Request, path: &str) -> worker::Result<Response> {
     let Some((workspace_id, document)) = domain::document(path) else {
         return Response::error("Not found", 404);
@@ -368,23 +377,27 @@ pub async fn serve(env: &Env, req: &Request, path: &str) -> worker::Result<Respo
         }
         let issuer = domain::issuer(&cfg.public_url, workspace_id);
         AppResult::Ok(Some(match document {
-            Document::Discovery => domain::discovery(&issuer),
+            Document::Issuer => Answer::SeeDiscovery(domain::discovery_url(&issuer)),
+            Document::Discovery => Answer::Json(domain::discovery(&issuer)),
             Document::Keys => {
                 // The first key is made as an issuer is first asked for its
                 // keys, when the instance has a master key to seal it with.
                 let keys = crypto::keys(&cfg).ok();
                 let (published, _) = current(&db, keys.as_ref(), crate::ctx::now_ms()).await?;
-                domain::jwks(
+                Answer::Json(domain::jwks(
                     published
                         .iter()
                         .filter_map(|k| serde_json::from_str(&k.public_jwk).ok())
                         .collect(),
-                )
+                ))
             }
         }))
     };
     let body = match answer.await {
-        Ok(Some(body)) => body,
+        Ok(Some(Answer::Json(body))) => body,
+        Ok(Some(Answer::SeeDiscovery(url))) => {
+            return Response::redirect_with_status(url.parse()?, 302);
+        }
         Ok(None) => return Response::error("Not found", 404),
         Err(e) => {
             worker::console_error!("identity token issuer: {}", e.0.message);

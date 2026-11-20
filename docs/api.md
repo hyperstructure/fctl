@@ -559,6 +559,7 @@ id}`, whose documents anyone may read, without a token, from any origin
 |---|---|
 | `GET /oidc/{workspace}/.well-known/openid-configuration` | its discovery document: `issuer`, `jwks_uri`, `id_token_signing_alg_values_supported` (`RS256`), `claims_supported` and `x_fctl_subject_parts_supported` |
 | `GET /oidc/{workspace}/.well-known/jwks.json` | the instance's public keys, `{"keys": [{"kty": "RSA", "kid", "alg", "use", "n", "e"}]}`: the one that signs, the next before it does, and the last for two days after |
+| `GET /oidc/{workspace}` | the issuer's own address, which redirects (`302`) to its discovery document |
 
 A workspace that doesn't exist has neither (`404`). Agents mint the
 tokens in their sandbox alone (`fctl id-token`), through their runner's
