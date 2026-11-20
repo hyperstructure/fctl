@@ -629,9 +629,9 @@ fctl id-token -a https://api.acme.dev        # an identity token, to prove to a 
   Actions but can't re-run or cancel workflow runs, which in many
   repositories is what starts a release: to run a pull request's checks
   again, agents push an empty commit.
-- An identity token is an OpenID Connect ID token that the workspace's
-  issuer signs, for one audience, for 10 minutes: it says whom the session
-  runs for and its project, workspace and runner, so that the
+- An identity token is an OpenID Connect (OIDC) ID token that the
+  workspace's issuer signs, for one audience, for 10 minutes: it says whom
+  the session runs for and its project, workspace and runner, so that the
   organization's own services and clouds can trust it
   ([Identity tokens](identity-tokens.md)). Where the project reaches AWS,
   Google Cloud or Azure, their CLIs and SDKs sign in on their own with
