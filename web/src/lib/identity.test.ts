@@ -65,7 +65,9 @@ describe("a project's identity", () => {
     };
     expect(cloudAccess(draft)).toEqual({});
     // Azure goes to the control plane with either id, which says what's missing.
-    expect(cloudAccess({ ...draft, azure_client: "c" })).toEqual({ azure: { tenant_id: "", client_id: "c" } });
+    expect(cloudAccess({ ...draft, azure_client: "c" })).toEqual({
+      azure: { tenant_id: "", client_id: "c" },
+    });
   });
 
   it("says in the list of pages whether agents mint tokens, and the clouds they reach", () => {
