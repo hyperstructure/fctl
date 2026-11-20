@@ -63,7 +63,7 @@ organizations that let them assume roles in AWS and the like.
   `AZURE_FEDERATED_TOKEN_FILE`…), which trade it for the cloud's
   credentials and do again as those run out. fctl never calls a cloud
   and holds none of its credentials. `GET /api/v1/projects/{id}/identity`
-  (Settings → Identity, `fctl projects identity`) gives the provider, the
+  (Settings → Identity OIDC, `fctl projects identity`) gives the provider, the
   trust policy and the commands each cloud needs, filled in.
 - **On by default, off for review agents.** A token reaches nothing until
   someone sets a service or a cloud up to trust the workspace's issuer,

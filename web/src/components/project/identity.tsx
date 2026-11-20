@@ -1,4 +1,4 @@
-// Settings → Identity: whether the project's agents mint identity tokens, which prove to your own
+// Settings → Identity OIDC: whether the project's agents mint identity tokens, which prove to your own
 // services and clouds that a request comes from one of its sessions, its workspace's issuer and the
 // subject of its tokens, and the clouds its agents reach with them (AWS, Google Cloud, Azure), each
 // with what to set up there so that it trusts them. The project's owners and maintainers see it.
@@ -62,7 +62,7 @@ export function IdentitySettings({ project }: { project: G.Project }) {
   const setup = (fields: (keyof IdentityDraft)[]) => fields.every((f) => sameDraft(d[f], saved[f]));
   return (
     <Section
-      title="Identity"
+      title="Identity OIDC"
       description="How the project's agents prove who they are to your own services and clouds: with identity tokens your workspace signs, which last 10 minutes, so that they need no keys of yours."
     >
       <form
@@ -239,7 +239,7 @@ export function IdentitySettings({ project }: { project: G.Project }) {
             </Section>
           </div>
         </SectionLayout>
-        <UnsavedGuard dirty={dirty && !save.isPending} page="Identity" at={(l) => placeOf(project, l)} />
+        <UnsavedGuard dirty={dirty && !save.isPending} page="Identity OIDC" at={(l) => placeOf(project, l)} />
         {(dirty || save.isPending) && (
           <SaveBar
             pending={save.isPending}

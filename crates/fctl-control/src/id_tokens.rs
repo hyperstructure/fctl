@@ -307,7 +307,7 @@ pub async fn mint(
     }
     if !session.settings.id_tokens {
         return Err(forbidden(
-            "This project's agents mint no identity tokens. Its maintainers can turn them on in the project's settings, under Identity.",
+            "This project's agents mint no identity tokens. Its maintainers can turn them on in the project's settings, under Identity OIDC.",
         ));
     }
     domain::check(ask).map_err(AppError)?;

@@ -44,7 +44,7 @@ tools and every SDK sign in on their own.
   verifiers that keep the keys for a while always have the one they meet.
 
 A project's agents mint identity tokens unless its maintainers turn them
-off (**Settings → Identity**, or `fctl projects set -p web --id-tokens
+off (**Settings → Identity OIDC**, or `fctl projects set -p web --id-tokens
 off`). Review agents never do: the pull requests they review could steer
 what runs in their sandbox.
 
@@ -202,13 +202,13 @@ def agent_of(token: str) -> dict:
     return claims
 ```
 
-A project's issuer, keys and subject are on its **Settings → Identity**
+A project's issuer, keys and subject are on its **Settings → Identity OIDC**
 page, and `fctl projects identity -p web` prints them.
 
 ## Clouds
 
 A project's maintainers connect its agents to AWS, Google Cloud and Azure
-on its **Settings → Identity** page or with `fctl projects set`. Each
+on its **Settings → Identity OIDC** page or with `fctl projects set`. Each
 cloud trusts the project's agents once someone sets it up to: the same
 page, and `fctl projects identity -p web`, give the commands and policies
 for it, filled in. fctl-agent then keeps a token for each cloud in a file

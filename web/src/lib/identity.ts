@@ -1,4 +1,4 @@
-// A project's identity tokens and the clouds its agents reach with them (Settings → Identity): what
+// A project's identity tokens and the clouds its agents reach with them (Settings → Identity OIDC): what
 // its form edits, how what was typed becomes the settings the control plane takes, and what the list
 // of Settings' pages says of it.
 

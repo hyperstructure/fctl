@@ -970,7 +970,7 @@ impl Supervisor {
             }
             AgentCall::IdToken { .. } if spec.id_tokens.is_none() => {
                 return Err(ApiError::forbidden(
-                    "This project's agents mint no identity tokens: its maintainers can turn them on in the project's settings, under Identity.",
+                    "This project's agents mint no identity tokens: its maintainers can turn them on in the project's settings, under Identity OIDC.",
                 ));
             }
             // Only an autopilot's own session reaches the API from its

@@ -147,7 +147,7 @@ describe("a project's Settings", () => {
       "Tickets",
       "Sandbox",
       "Secrets",
-      "Identity",
+      "Identity OIDC",
       "Webhooks",
     ]);
     expect(s.heading()).toBe("General");

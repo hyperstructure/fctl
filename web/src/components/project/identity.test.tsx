@@ -85,7 +85,7 @@ const AWS_SETUP: G.AwsSetup = {
   commands: "aws iam create-open-id-connect-provider --url https://app.fctl.sh/oidc/wsp_acme\n",
 };
 
-/** The project's Identity page, with `id` as what the control plane says of it. */
+/** The project's Identity OIDC page, with `id` as what the control plane says of it. */
 function open(p: G.Project, id?: G.ProjectIdentity) {
   queryClient.setQueryData(keys.project(p.slug), p);
   if (id) queryClient.setQueryData(keys.projectIdentity(p.id), id);
@@ -128,7 +128,7 @@ function open(p: G.Project, id?: G.ProjectIdentity) {
   return { container, input, type, button, toggle, saved };
 }
 
-describe("a project's Identity page", () => {
+describe("a project's Identity OIDC page", () => {
   it("shows the workspace's issuer and the subject of the project's tokens", () => {
     const s = open(project(), identity());
     expect(s.container.textContent).toContain("https://app.fctl.sh/oidc/wsp_acme");

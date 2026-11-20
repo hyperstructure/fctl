@@ -83,7 +83,7 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
   [
     { page: "sandbox", label: "Sandbox" },
     { page: "secrets", label: "Secrets" },
-    { page: "identity", label: "Identity" },
+    { page: "identity", label: "Identity OIDC" },
   ],
   [{ page: "webhooks", label: "Webhooks" }],
 ];
