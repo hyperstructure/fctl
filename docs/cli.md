@@ -252,8 +252,8 @@ unpublish`.
 ### Identity tokens
 
 An agent proves to your own services and clouds that a request comes from
-its session with an identity token: an OpenID Connect ID token that your
-workspace's issuer signs, which says whom the session runs for and its
+its session with an identity token: an OpenID Connect (OIDC) ID token that
+your workspace's issuer signs, which says whom the session runs for and its
 project, workspace and runner, for one audience, for 10 minutes. In a
 session's sandbox:
 

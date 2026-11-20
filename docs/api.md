@@ -551,9 +551,9 @@ changes roles.
 
 ## Identity tokens
 
-Each workspace is an OpenID Connect issuer, `{instance}/oidc/{workspace
-id}`, whose documents anyone may read, without a token, from any origin
-(CORS), for an hour at a time:
+Each workspace is an OpenID Connect (OIDC) issuer,
+`{instance}/oidc/{workspace id}`, whose documents anyone may read, without
+a token, from any origin (CORS), for an hour at a time:
 
 | Request | What it answers |
 |---|---|

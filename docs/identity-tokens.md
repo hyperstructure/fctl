@@ -2,8 +2,9 @@
 
 An agent proves to your own services and clouds that a request comes from
 one of your fctl sessions with an identity token: a short-lived OpenID
-Connect ID token that your fctl instance signs, which says whom the session
-runs for and its workspace, project, runner and what it may do on GitHub.
+Connect (OIDC) ID token that your fctl instance signs, which says whom the
+session runs for and its workspace, project, runner and what it may do on
+GitHub.
 Your service checks it with your workspace's public keys, as clouds check
 GitHub Actions' tokens, so agents need no long-lived keys of yours: an
 internal API takes the token as a bearer token, AWS trades it for a role's
@@ -21,7 +22,7 @@ tools and every SDK sign in on their own.
 
 ## How it works
 
-- **Each workspace is an issuer of its own**:
+- **Each workspace is an OIDC issuer of its own**:
   `https://app.fctl.sh/oidc/wsp_…` on app.fctl.sh, your instance's address
   and `/oidc/` and the workspace's id on yours. It serves its discovery
   document and keys to anyone at
