@@ -21,16 +21,23 @@ pub const REFRESH_BEFORE_MS: i64 = 5 * 60 * 1000;
 const RETRY_MS: i64 = 30 * 1000;
 /// How long an answer may take before the request counts as lost.
 const ASK_TIMEOUT_MS: i64 = 60 * 1000;
+/// The least time from one cloud's token to the next, whatever else says
+/// one is due: a session mints at most 30 tokens a minute, which its
+/// agent's `fctl id-token` shares.
+const MIN_GAP_MS: i64 = 60 * 1000;
 
 /// One cloud's token, as fctl-agent keeps it.
 #[derive(Debug)]
 struct Kept {
     token: CloudToken,
     path: PathBuf,
-    /// When the token in its file expires: 0 before the first.
+    /// When the token in its file expires, by the sandbox's own clock,
+    /// which may not agree with the control plane's: 0 before the first.
     expires_at: i64,
     /// The request in flight, and when it went.
     asking: Option<(String, i64)>,
+    /// When the token in its file came: 0 before the first.
+    kept_at: i64,
     /// When to try again after a failure.
     retry_at: i64,
     /// The last failure was told in the transcript: the next is not, until
@@ -67,6 +74,7 @@ impl CloudTokens {
                 token,
                 expires_at: 0,
                 asking: None,
+                kept_at: 0,
                 retry_at: 0,
                 told: false,
             })
@@ -80,9 +88,17 @@ impl CloudTokens {
     }
 
     /// Readies the directory, and Google's credential configuration, which
-    /// reads its token from the file beside it.
+    /// reads its token from the file beside it. Tokens an earlier run left
+    /// there have expired: they go, so that what waits for the files waits
+    /// for this run's.
     pub fn prepare(&self) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
+        for k in &self.kept {
+            match std::fs::remove_file(&k.path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
         if let Some(gcp) = &self.access.gcp {
             let token = self.dir.join(Cloud::Gcp.token_file());
             if let Some(config) = clouds::gcp_credentials(gcp, &token.display().to_string()) {
@@ -131,7 +147,8 @@ impl CloudTokens {
 
     /// The requests due at `now`: a token for each cloud whose file has
     /// none, or one that expires within [`REFRESH_BEFORE_MS`], unless one
-    /// is on its way or a failure waits to be tried again.
+    /// is on its way, a failure waits to be tried again, or the last came
+    /// less than [`MIN_GAP_MS`] ago.
     pub fn due(&mut self, now: i64) -> Vec<(String, AgentCall)> {
         let mut calls = Vec::new();
         for k in &mut self.kept {
@@ -140,6 +157,7 @@ impl CloudTokens {
                 .is_some_and(|(_, at)| now - at < ASK_TIMEOUT_MS)
                 || now < k.retry_at
                 || k.expires_at - now > REFRESH_BEFORE_MS
+                || (k.kept_at > 0 && now - k.kept_at < MIN_GAP_MS)
             {
                 continue;
             }
@@ -174,12 +192,10 @@ impl CloudTokens {
             .find(|k| k.asking.as_ref().is_some_and(|(id, _)| id == request_id))?;
         k.asking = None;
         let written = match answer {
-            Some(AgentAnswer::IdToken { token, expires_at }) => {
-                match write_private(&k.path, token) {
-                    Ok(()) => Ok(*expires_at),
-                    Err(e) => Err(format!("writing it failed: {e:#}")),
-                }
-            }
+            Some(AgentAnswer::IdToken { token, .. }) => match write_private(&k.path, token) {
+                Ok(()) => Ok(now + lifetime_ms(token)),
+                Err(e) => Err(format!("writing it failed: {e:#}")),
+            },
             _ => Err(error.map_or_else(
                 || "the host answered nothing".to_owned(),
                 |e| e.message.clone(),
@@ -188,6 +204,7 @@ impl CloudTokens {
         Some(match written {
             Ok(expires_at) => {
                 k.expires_at = expires_at;
+                k.kept_at = now;
                 k.told = false;
                 Outcome::Kept
             }
@@ -203,6 +220,20 @@ impl CloudTokens {
             }
         })
     }
+}
+
+/// How long a token lasts, from its own `iat` and `exp`: the control
+/// plane's clock says both, so the sandbox's needn't agree with it. A token
+/// that doesn't say lasts as long as fctl's do.
+fn lifetime_ms(token: &str) -> i64 {
+    fctl_domain::id_tokens::read_claims(token)
+        .and_then(|c| {
+            let exp = c.get("exp")?.as_i64()?;
+            let iat = c.get("iat")?.as_i64()?;
+            Some((exp - iat) * 1000)
+        })
+        .filter(|ms| *ms > 0)
+        .unwrap_or(fctl_domain::id_tokens::LIFETIME_SECS * 1000)
 }
 
 /// Writes `contents` to `path` whole, readable by its owner alone.
@@ -320,6 +351,71 @@ mod tests {
         assert_eq!(tokens.due(now + 300_000).len(), 3);
         // Someone else's answer is none of theirs.
         assert_eq!(tokens.answer("call_1", None, None, now), None);
+        Ok(())
+    }
+
+    /// A token whose claims say when it was signed and when it expires.
+    fn jwt(iat: i64, exp: i64) -> String {
+        use base64::Engine;
+        let b64 = |v: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+        format!(
+            "{}.{}.sig",
+            b64(r#"{"alg":"RS256"}"#),
+            b64(&format!(r#"{{"iat":{iat},"exp":{exp}}}"#))
+        )
+    }
+
+    #[test]
+    fn the_sandbox_keeps_time_by_its_own_clock() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let only_aws = CloudAccess {
+            gcp: None,
+            azure: None,
+            ..access()
+        };
+        let now = 10_000_000;
+        // The control plane's clock is an hour behind the sandbox's, or an
+        // hour ahead: either way the next token is due five minutes on.
+        for skew in [-3_600_000, 3_600_000] {
+            let Some(mut tokens) = CloudTokens::new(dir.path().to_path_buf(), &only_aws) else {
+                panic!("AWS needs a token");
+            };
+            let (id, _) = tokens.due(now).remove(0);
+            let signed = (now + skew) / 1000;
+            let answer = minted(&jwt(signed, signed + 600), (now + skew) + 600_000);
+            assert_eq!(
+                tokens.answer(&id, Some(&answer), None, now),
+                Some(Outcome::Kept)
+            );
+            assert!(tokens.due(now + 1_000).is_empty(), "{skew}");
+            assert!(tokens.due(now + 299_000).is_empty(), "{skew}");
+            assert_eq!(tokens.due(now + 300_000).len(), 1, "{skew}");
+        }
+        // However short a token's life, one comes at most every minute.
+        let Some(mut tokens) = CloudTokens::new(dir.path().to_path_buf(), &only_aws) else {
+            panic!("AWS needs a token");
+        };
+        let (id, _) = tokens.due(now).remove(0);
+        let answer = minted(&jwt(1, 2), 2_000);
+        tokens.answer(&id, Some(&answer), None, now);
+        assert!(tokens.due(now + 59_000).is_empty());
+        assert_eq!(tokens.due(now + 60_000).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn tokens_an_earlier_run_left_go_before_the_first_mint() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let Some(tokens) = CloudTokens::new(dir.path().to_path_buf(), &access()) else {
+            panic!("three clouds need tokens");
+        };
+        for f in tokens.files() {
+            std::fs::write(&f, "expired")?;
+        }
+        tokens.prepare()?;
+        assert!(tokens.files().iter().all(|f| !f.exists()));
+        // Google's configuration is written again.
+        assert!(dir.path().join(clouds::GCP_CREDENTIALS_FILE).exists());
         Ok(())
     }
 

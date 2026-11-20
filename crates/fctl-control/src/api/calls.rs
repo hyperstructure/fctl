@@ -56,6 +56,19 @@ struct Row {
     review_repo: Option<String>,
 }
 
+/// A project's settings as its agents' calls take them. Settings that
+/// don't read as settings turn the memory, retrospectives and identity
+/// tokens off, and leave the agent reading only.
+fn read_settings(stored: &str) -> ProjectSettings {
+    serde_json::from_str(stored).unwrap_or(ProjectSettings {
+        project_memory: false,
+        retrospectives: false,
+        github_access: Some(GithubAccess::Read),
+        id_tokens: false,
+        ..Default::default()
+    })
+}
+
 impl RunnerSession {
     /// The session, when the runner `runner_id` acts for it now
     /// (`spec::check_runs`).
@@ -75,15 +88,7 @@ impl RunnerSession {
         if row.runner_id.as_deref() != Some(runner_id) {
             return Err(forbidden("This session is not assigned to this runner"));
         }
-        // Settings that don't read as settings turn both off, and leave
-        // the agent reading only.
-        let settings: ProjectSettings =
-            serde_json::from_str(&row.settings).unwrap_or(ProjectSettings {
-                project_memory: false,
-                retrospectives: false,
-                github_access: Some(GithubAccess::Read),
-                ..Default::default()
-            });
+        let settings = read_settings(&row.settings);
         let github_access = fctl_domain::limits::effective(
             row.github_access.as_deref().and_then(GithubAccess::parse),
             settings.github_access,
@@ -407,4 +412,23 @@ async fn ask(
     let asked: crate::internal::Ask =
         crate::internal::post(&stub, "/ask", &crate::internal::Ask { question }).await?;
     Ok(asked.question)
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn unreadable_settings_turn_off_what_agents_reach() {
+        let s = read_settings("{not settings");
+        assert!(!s.project_memory);
+        assert!(!s.retrospectives);
+        assert!(!s.id_tokens);
+        assert!(!s.cloud_access.any());
+        assert_eq!(s.github_access, Some(GithubAccess::Read));
+        // Readable ones keep what they say, identity tokens on by default.
+        assert!(read_settings("{}").id_tokens);
+        assert!(!read_settings(r#"{"id_tokens": false}"#).id_tokens);
+    }
 }
