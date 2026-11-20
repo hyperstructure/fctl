@@ -1060,19 +1060,19 @@ too, from the runners list or with `fctl admin drain`; whoever drained it,
 either can stop the drain.
 
 An autopilot's own session wakes again by itself, on the runner that has
-its sandbox. `fctl host status`, and `fctl host drain --wait` as it
-returns, list the autopilots whose next wake resumes their session here,
-with when each wakes. Draining the runner moves each off once its turn
-has ended: its next wake starts a fresh session on another runner, which
-takes over from its plan, log and files, and the session here stops. So
-while the runner drains, the list keeps only one paused here mid-turn on
-a usage limit, and the runner stays empty once `--wait` returns. Shutting
-the machine down cuts off one at work, which fctl stops ten minutes
-later; while the machine is away, the next wake of each starts a fresh
-session on another runner too, where another would run it, rather than
-resume it there without its conversation. An autopilot whose next wake
-starts a fresh session anyway (its shift is over, or its context is
-full) isn't listed.
+its sandbox: `fctl host status` lists the autopilots whose next wake
+resumes their session here, with when each wakes. Draining the runner
+moves each off once its turn has ended: its next wake starts a fresh
+session on another runner, which takes over from its plan, log and
+files, and the session here stops. So while the runner drains, the list
+keeps only one paused here mid-turn on a usage limit, which `--wait`
+waits for as for any session here, and once `--wait` returns, no
+autopilot comes back to the runner. Shutting the machine down cuts off
+one at work, which fctl stops ten minutes later; while the machine is
+away, the next wake of each starts a fresh session on another runner
+too, where another would run it, rather than resume it there without its
+conversation. An autopilot whose next wake starts a fresh session anyway
+(its shift is over, or its context is full) isn't listed.
 
 `fctl host uninstall` stops the service, so it never leaves sessions to
 agents nobody sees: when sessions run on the machine, it lists them and asks

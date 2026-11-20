@@ -569,7 +569,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         println!("sessions:");
                         admin::print_sessions(&d.sessions);
                     }
-                    print_autopilots(&d.autopilots);
+                    print_autopilots(&d.autopilots, d.runner.drain.is_some());
                 }
                 Err(e) => println!(
                     "runner:   {}",
@@ -690,7 +690,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             if wait {
                 d = wait_until_drained(&api, d, json).await?;
                 if !json {
-                    print_autopilots(&d.autopilots);
+                    print_autopilots(&d.autopilots, d.runner.drain.is_some());
                 }
             } else if !json && !d.sessions.is_empty() {
                 println!(
@@ -1493,10 +1493,11 @@ pub(crate) async fn this_runner(api: &fctl_client::Api) -> Result<Runner> {
 }
 
 /// The autopilots whose next wake resumes their own session here, where
-/// its sandbox is, and what draining the runner or shutting the machine
-/// down does to them. While it drains, the control plane lists only
-/// those paused here mid-turn.
-fn print_autopilots(autopilots: &[RunnerAutopilot]) {
+/// its sandbox is, and what draining the runner (`draining`: it drains)
+/// or shutting the machine down does to them. While it drains, the
+/// control plane lists only those paused here mid-turn, which `fctl host
+/// drain --wait` waits for as for any session.
+fn print_autopilots(autopilots: &[RunnerAutopilot], draining: bool) {
     if autopilots.is_empty() {
         return;
     }
@@ -1516,12 +1517,16 @@ fn print_autopilots(autopilots: &[RunnerAutopilot]) {
             style::dim(&wake)
         );
     }
-    println!(
-        "{}",
-        style::dim(
-            "Draining the runner moves each one off once its turn has ended: its next wake starts a fresh session on another runner, which takes over from its plan, log and files. So does its next wake while the machine is away, when another runner would run it. Shutting the machine down cuts off one at work, which fctl stops 10 minutes later."
-        )
-    );
+    println!("{}", style::dim(autopilots_note(draining)));
+}
+
+/// What [`print_autopilots`] says under its list.
+fn autopilots_note(draining: bool) -> &'static str {
+    if draining {
+        "As the runner drains, only those paused here mid-turn are listed: each carries on here once its usage limit resets, and once that turn has ended, its next wake starts a fresh session on another runner, which takes over from its plan, log and files. Shutting the machine down cuts off one at work, which fctl stops 10 minutes later."
+    } else {
+        "Draining the runner moves each one off once its turn has ended: its next wake starts a fresh session on another runner, which takes over from its plan, log and files. So does its next wake while the machine is away, when another runner would run it. Shutting the machine down cuts off one at work, which fctl stops 10 minutes later."
+    }
 }
 
 /// Polls until no session runs on this runner, saying what changes.

@@ -1391,9 +1391,10 @@ autopilots that are on whose own session's sandbox the runner has
 (FleetDO's `sandboxes`, `POST /homes`) and whose next wake resumes that
 session rather than start a fresh one (`fctl_domain::autopilot::wakes_in_own`,
 at its `wake_at`). While the runner drains, that is only one paused there
-mid-turn on a usage limit: the others' next wake, once their turn has
-ended, starts a fresh session elsewhere, so a runner that `--wait`
-emptied stays empty.
+mid-turn on a usage limit, which `--wait` waits for as for any session
+there: the others' next wake, once their turn has ended, starts a fresh
+session elsewhere, so no autopilot comes back to a runner that `--wait`
+emptied.
 
 Removing a machine is the step that moves its sessions elsewhere.
 `fctl host uninstall` asks the control plane which sessions run on the
