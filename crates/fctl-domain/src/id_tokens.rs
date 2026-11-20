@@ -12,6 +12,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use fctl_proto::hooks::WebhookOrigin;
 use fctl_proto::identity::SubjectPart;
 use fctl_proto::session::GithubAccess;
 use fctl_proto::{ApiError, WorkspaceId};
@@ -103,49 +104,26 @@ pub fn document(path: &str) -> Option<(&str, Document)> {
     WorkspaceId::is_valid(workspace).then_some((workspace, doc))
 }
 
-/// What started a session, as its tokens say (`started_by`): the first
-/// that applies, in this order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StartedBy {
-    /// An autopilot: its own session, or one it started (`autopilot_id`).
-    Autopilot,
-    /// A workspace's service account, for its person
-    /// (`service_account_id`).
-    ServiceAccount,
-    /// A schedule, at its time, on an event or run by hand
-    /// (`schedule_id`).
-    Schedule,
-    /// A ticket delegated to fctl in a tracker (`ticket`).
-    Ticket,
-    /// Its person, in the app, the CLI or with an access token.
-    Person,
-}
-
-impl StartedBy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Autopilot => "autopilot",
-            Self::ServiceAccount => "service_account",
-            Self::Schedule => "schedule",
-            Self::Ticket => "ticket",
-            Self::Person => "person",
-        }
-    }
-
-    /// From what the session's row says of where it came from.
-    pub fn of(autopilot: bool, service_account: bool, schedule: bool, ticket: bool) -> StartedBy {
-        if autopilot {
-            Self::Autopilot
-        } else if service_account {
-            Self::ServiceAccount
-        } else if schedule {
-            Self::Schedule
-        } else if ticket {
-            Self::Ticket
-        } else {
-            Self::Person
-        }
+/// What started a session, as its tokens say (`started_by`), in the words
+/// and order webhooks say it (`crate::hooks::origin`): an autopilot, a
+/// schedule, a ticket delegated to fctl, a service account, or else its
+/// person, with their own hands or one of their access tokens.
+pub fn started_by(
+    autopilot: bool,
+    schedule: bool,
+    ticket: bool,
+    service_account: bool,
+) -> WebhookOrigin {
+    if autopilot {
+        WebhookOrigin::Autopilot
+    } else if schedule {
+        WebhookOrigin::Schedule
+    } else if ticket {
+        WebhookOrigin::Ticket
+    } else if service_account {
+        WebhookOrigin::ServiceAccount
+    } else {
+        WebhookOrigin::Person
     }
 }
 
@@ -174,7 +152,7 @@ pub struct Facts {
     pub branch: Option<String>,
     pub base_branch: Option<String>,
     pub github_access: GithubAccess,
-    pub started_by: StartedBy,
+    pub started_by: WebhookOrigin,
     pub schedule_id: Option<String>,
     /// The ticket it started from: `ENG-123`, `acme/web#12`.
     pub ticket: Option<String>,
@@ -333,7 +311,7 @@ pub struct Claims {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
     pub github_access: GithubAccess,
-    pub started_by: StartedBy,
+    pub started_by: WebhookOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -578,7 +556,7 @@ mod tests {
             branch: Some("fctl/42-fix-the-cart".into()),
             base_branch: Some("main".into()),
             github_access: GithubAccess::Push,
-            started_by: StartedBy::Person,
+            started_by: WebhookOrigin::Person,
             schedule_id: None,
             ticket: None,
             autopilot_id: None,
@@ -749,7 +727,7 @@ mod tests {
     #[test]
     fn aws_session_tags_come_only_when_asked_and_are_all_transitive() {
         let mut f = facts();
-        f.started_by = StartedBy::Schedule;
+        f.started_by = WebhookOrigin::Schedule;
         let tagged = Ask {
             aws_session_tags: true,
             ..ask("sts.amazonaws.com")
@@ -783,15 +761,18 @@ mod tests {
     }
 
     #[test]
-    fn started_by_names_what_did_first() {
-        assert_eq!(StartedBy::of(false, false, false, false), StartedBy::Person);
-        assert_eq!(StartedBy::of(false, false, false, true), StartedBy::Ticket);
-        assert_eq!(StartedBy::of(false, false, true, true), StartedBy::Schedule);
+    fn started_by_says_what_webhooks_say() {
         assert_eq!(
-            StartedBy::of(false, true, true, false),
-            StartedBy::ServiceAccount
+            started_by(false, false, false, false),
+            WebhookOrigin::Person
         );
-        assert_eq!(StartedBy::of(true, true, true, true), StartedBy::Autopilot);
+        assert_eq!(
+            started_by(false, false, false, true),
+            WebhookOrigin::ServiceAccount
+        );
+        assert_eq!(started_by(false, false, true, true), WebhookOrigin::Ticket);
+        assert_eq!(started_by(false, true, true, true), WebhookOrigin::Schedule);
+        assert_eq!(started_by(true, true, true, true), WebhookOrigin::Autopilot);
     }
 
     #[test]

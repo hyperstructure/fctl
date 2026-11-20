@@ -14,7 +14,9 @@ use fctl_proto::identity::{
     AwsAccess, AwsSetup, AzureAccess, AzureSetup, CloudAccess, GcpAccess, GcpSetup,
     ProjectIdentity, SubjectPart,
 };
+use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 /// The audience AWS's identity providers expect.
 pub const AWS_AUDIENCE: &str = "sts.amazonaws.com";
@@ -479,18 +481,51 @@ fn aws_setup(issuer: &str, project_id: &str, aws: &AwsAccess) -> Option<AwsSetup
     if aws.session_tags {
         actions.push("sts:TagSession");
     }
-    let trust_policy = json!({
-        "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Principal": { "Federated": provider_arn },
-            "Action": actions,
-            "Condition": {
-                "StringEquals": { format!("{host_path}:aud"): AWS_AUDIENCE },
-                "StringLike": { format!("{host_path}:sub"): id_tokens::project_subject(project_id) },
+    // In the order AWS's own policies have, which a JSON object loses.
+    #[derive(Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Policy<'a> {
+        version: &'a str,
+        statement: [Statement<'a>; 1],
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Statement<'a> {
+        effect: &'a str,
+        principal: Principal<'a>,
+        action: Vec<&'a str>,
+        condition: Condition,
+    }
+    #[derive(Serialize)]
+    struct Principal<'a> {
+        #[serde(rename = "Federated")]
+        federated: &'a str,
+    }
+    #[derive(Serialize)]
+    struct Condition {
+        #[serde(rename = "StringEquals")]
+        equals: BTreeMap<String, String>,
+        #[serde(rename = "StringLike")]
+        like: BTreeMap<String, String>,
+    }
+    let policy = Policy {
+        version: "2012-10-17",
+        statement: [Statement {
+            effect: "Allow",
+            principal: Principal {
+                federated: &provider_arn,
+            },
+            action: actions,
+            condition: Condition {
+                equals: BTreeMap::from([(format!("{host_path}:aud"), AWS_AUDIENCE.to_owned())]),
+                like: BTreeMap::from([(
+                    format!("{host_path}:sub"),
+                    id_tokens::project_subject(project_id),
+                )]),
             },
         }],
-    });
+    };
+    let trust_policy = serde_json::to_string_pretty(&policy).ok()?;
     let commands = format!(
         "# Once in the account: the workspace's identity provider.\n\
          aws iam create-open-id-connect-provider \\\n  --url {issuer} \\\n  --client-id-list {AWS_AUDIENCE}\n\n\
@@ -566,21 +601,31 @@ fn azure_setup(
     azure: &AzureAccess,
 ) -> AzureSetup {
     let subject = format!("project:{project_id}");
-    let credential = json!({
-        "name": format!("fctl-{project_slug}"),
-        "issuer": issuer,
-        "subject": subject,
-        "audiences": [AZURE_AUDIENCE],
-        "description": format!("fctl agents of the project {project_slug}"),
-    });
+    // In the order Microsoft's own documents have, which a JSON object loses.
+    #[derive(Serialize)]
+    struct Credential<'a> {
+        name: String,
+        issuer: &'a str,
+        subject: &'a str,
+        audiences: [&'a str; 1],
+        description: String,
+    }
+    let credential = Credential {
+        name: format!("fctl-{project_slug}"),
+        issuer,
+        subject: &subject,
+        audiences: [AZURE_AUDIENCE],
+        description: format!("fctl agents of the project {project_slug}"),
+    };
+    let compact = serde_json::to_string(&credential).unwrap_or_default();
     let commands = format!(
-        "az ad app federated-credential create \\\n  --id {} \\\n  --parameters '{credential}'\n",
+        "az ad app federated-credential create \\\n  --id {} \\\n  --parameters '{compact}'\n",
         azure.client_id
     );
     AzureSetup {
+        credential: serde_json::to_string_pretty(&credential).unwrap_or_default(),
         subject,
         audience: AZURE_AUDIENCE.to_owned(),
-        credential,
         commands,
     }
 }
@@ -844,8 +889,14 @@ mod tests {
             aws.provider_arn,
             "arn:aws:iam::123456789012:oidc-provider/app.fctl.sh/oidc/wsp_acme"
         );
+        // Version first, as AWS's own policies have it.
+        assert!(
+            aws.trust_policy
+                .starts_with("{\n  \"Version\": \"2012-10-17\",\n  \"Statement\"")
+        );
+        let policy: Value = serde_json::from_str(&aws.trust_policy).unwrap_or_default();
         assert_eq!(
-            aws.trust_policy["Statement"][0],
+            policy["Statement"][0],
             json!({
                 "Effect": "Allow",
                 "Principal": { "Federated": "arn:aws:iam::123456789012:oidc-provider/app.fctl.sh/oidc/wsp_acme" },
@@ -874,10 +925,13 @@ mod tests {
             true,
             &tagged,
         );
+        let policy: Value = id
+            .aws
+            .and_then(|a| serde_json::from_str(&a.trust_policy).ok())
+            .unwrap_or_default();
         assert_eq!(
-            id.aws
-                .map(|a| a.trust_policy["Statement"][0]["Action"].clone()),
-            Some(json!(["sts:AssumeRoleWithWebIdentity", "sts:TagSession"]))
+            policy["Statement"][0]["Action"],
+            json!(["sts:AssumeRoleWithWebIdentity", "sts:TagSession"])
         );
     }
 
@@ -915,8 +969,9 @@ mod tests {
             panic!("the project reaches Azure");
         };
         assert_eq!(azure.subject, "project:prj_web");
+        assert!(azure.credential.starts_with("{\n  \"name\": \"fctl-web\""));
         assert_eq!(
-            azure.credential,
+            serde_json::from_str::<Value>(&azure.credential).unwrap_or_default(),
             json!({
                 "name": "fctl-web",
                 "issuer": "https://app.fctl.sh/oidc/wsp_acme",

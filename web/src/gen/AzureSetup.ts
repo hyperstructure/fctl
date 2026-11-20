@@ -13,10 +13,10 @@ subject: string,
  */
 audience: string, 
 /**
- * The federated credential, as `az ad app federated-credential create
- * --parameters` takes it.
+ * The federated credential, a JSON document, as `az ad app
+ * federated-credential create --parameters` takes it.
  */
-credential: Record<string, unknown>, 
+credential: string, 
 /**
  * The Azure CLI command that adds it.
  */

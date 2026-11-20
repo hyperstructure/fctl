@@ -14,7 +14,7 @@ use crate::crypto::{self, Keys};
 use crate::ctx::Ctx;
 use crate::db::{n, q, s};
 use crate::error::{AppError, AppResult, forbidden, internal};
-use fctl_domain::id_tokens::{self as domain, Ask, Document, Facts, KeyAge, StartedBy};
+use fctl_domain::id_tokens::{self as domain, Ask, Document, Facts, KeyAge};
 use fctl_proto::session::SessionStatus;
 use fctl_proto::{ApiError, ErrorCode, Millis};
 use js_sys::{Array, Object, Reflect, Uint8Array};
@@ -274,11 +274,11 @@ async fn facts(db: &D1Database, public_url: &str, session: &RunnerSession) -> Ap
         branch: row.branch,
         base_branch: row.base_branch,
         github_access: session.github_access,
-        started_by: StartedBy::of(
+        started_by: domain::started_by(
             row.autopilot_id.is_some(),
-            row.service_account_id.is_some(),
             row.schedule_id.is_some(),
             ticket.is_some(),
+            row.service_account_id.is_some(),
         ),
         schedule_id: row.schedule_id,
         ticket,

@@ -14,9 +14,10 @@ provider_arn: string,
  */
 audience: string, 
 /**
- * The role's trust policy: the project's agents may assume it.
+ * The role's trust policy, a JSON document: the project's agents
+ * may assume it.
  */
-trust_policy: Record<string, unknown>, 
+trust_policy: string, 
 /**
  * The AWS CLI commands that add the provider and the trust policy.
  */

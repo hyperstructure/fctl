@@ -187,9 +187,9 @@ pub struct AwsSetup {
     pub provider_arn: String,
     /// Its audience: `sts.amazonaws.com`.
     pub audience: String,
-    /// The role's trust policy: the project's agents may assume it.
-    #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown>"))]
-    pub trust_policy: serde_json::Value,
+    /// The role's trust policy, a JSON document: the project's agents
+    /// may assume it.
+    pub trust_policy: String,
     /// The AWS CLI commands that add the provider and the trust policy.
     pub commands: String,
 }
@@ -216,10 +216,9 @@ pub struct AzureSetup {
     pub subject: String,
     /// Its audience: `api://AzureADTokenExchange`.
     pub audience: String,
-    /// The federated credential, as `az ad app federated-credential create
-    /// --parameters` takes it.
-    #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown>"))]
-    pub credential: serde_json::Value,
+    /// The federated credential, a JSON document, as `az ad app
+    /// federated-credential create --parameters` takes it.
+    pub credential: String,
     /// The Azure CLI command that adds it.
     pub commands: String,
 }

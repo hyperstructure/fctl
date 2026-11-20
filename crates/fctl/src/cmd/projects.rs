@@ -443,7 +443,7 @@ pub enum ProjectsCmd {
     /// policies that let each of the project's clouds trust them.
     #[command(after_help = "Examples:
   fctl projects identity -p web
-  fctl projects identity -p web --json | jq '.aws.trust_policy' > trust-policy.json")]
+  fctl projects identity -p web --json | jq -r '.aws.trust_policy' > trust-policy.json")]
     Identity {
         /// The project (slug or id); default from `fctl projects use`.
         #[arg(short, long)]
@@ -728,10 +728,7 @@ fn print_identity(slug: &str, id: &fctl_proto::identity::ProjectIdentity) {
         println!("\n{}", style::bold("AWS"));
         println!("{}", aws.commands.trim_end());
         println!("\n{}", style::dim("trust-policy.json:"));
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&aws.trust_policy).unwrap_or_default()
-        );
+        println!("{}", aws.trust_policy);
     }
     if let Some(gcp) = &id.gcp {
         println!("\n{}", style::bold("Google Cloud"));
