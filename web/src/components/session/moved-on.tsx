@@ -1,9 +1,10 @@
 // An earlier session of an autopilot's own, at its message box. A fresh session of its own takes
-// over after 12 hours (or past its handoff size, or as people ask), and from then on the earlier
-// one's agent no longer acts as the autopilot: its `fctl` reaches nothing, so a message there gets
-// the work done in that session alone, rather than planned and handed to sessions. Above the box a
-// line says where the autopilot works now, and a message asks first, in a card over the box: send
-// it there, and go with it, or here anyway. Once sent here anyway, the page asks no more.
+// over after 12 hours (or past its handoff size, as people ask, or as the runner that keeps its
+// sandbox drains or is gone), and from then on the earlier one's agent no longer acts as the
+// autopilot: its `fctl` reaches nothing, so a message there gets the work done in that session
+// alone, rather than planned and handed to sessions. Above the box a line says where the autopilot
+// works now, and a message asks first, in a card over the box: send it there, and go with it, or
+// here anyway. Once sent here anyway, the page asks no more.
 
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";

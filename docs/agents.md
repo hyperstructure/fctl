@@ -564,8 +564,9 @@ fctl host doctor && fctl host status
 ```
 
 `fctl host drain --wait` empties it for maintenance and `fctl host undrain`
-takes sessions again. Autopilots whose session's sandbox is on it still
-wake there: `fctl host status` and `fctl host drain --wait` list them. [Getting started](getting-started.md#5-bring-a-machine-online)
+takes sessions again. An autopilot whose session's sandbox is on it moves
+to another runner at its next wake, in a fresh session, once its turn
+has ended: `fctl host status` lists the autopilots that wake there. [Getting started](getting-started.md#5-bring-a-machine-online)
 and [Hosts](cli.md#hosts) have the rest.
 
 ### Reports
@@ -718,7 +719,9 @@ its own sessions merge.
 
 A fresh session takes its place after 12 hours, or once its context holds
 as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
-at the first wake between its turns: it starts from the plan and log, so
+at the first wake between its turns, as it does when the runner that
+keeps its sandbox drains, or is gone while another runner would resume
+it without its conversation: it starts from the plan and log, so
 the session keeps them current, and as its context nears that size each
 wake message says so. The session's details show how much is left, under
 its context. The fresh session checks what the last one promised
