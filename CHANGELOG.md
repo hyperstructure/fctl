@@ -2,6 +2,18 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.37.0 (2026-11-20)
+
+### Features
+
+- Let agents prove who they are with OIDC identity tokens ([#604](https://github.com/hyperstructure/fctl/pull/604))
+- **control:** Hand autopilots off when their runner drains or is gone ([#605](https://github.com/hyperstructure/fctl/pull/605))
+
+### Fixes
+
+- **web:** Keep a file's name whole while its directory can give way ([#603](https://github.com/hyperstructure/fctl/pull/603))
+- **control:** Send people who open an issuer to its discovery document ([#606](https://github.com/hyperstructure/fctl/pull/606))
+
 ## 0.36.2 (2026-11-19)
 
 ### Features
