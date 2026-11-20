@@ -4,6 +4,7 @@ import type { AutopilotAuthor } from "./AutopilotAuthor";
 import type { AutopilotSpec } from "./AutopilotSpec";
 import type { GitIdentity } from "./GitIdentity";
 import type { GithubAccess } from "./GithubAccess";
+import type { IdTokensSpec } from "./IdTokensSpec";
 import type { MemorySpec } from "./MemorySpec";
 import type { ProjectSpec } from "./ProjectSpec";
 import type { PullRequestRef } from "./PullRequestRef";
@@ -154,4 +155,14 @@ autopilot?: AutopilotSpec,
  * out of the agent's configuration, and their agents say `author`
  * started it.
  */
-crew_of?: AutopilotAuthor, };
+crew_of?: AutopilotAuthor, 
+/**
+ * Where its project lets its agents mint identity tokens
+ * (`ProjectSettings::id_tokens`), its workspace's issuer and the
+ * clouds its agent reaches as itself: its agent tells Claude of `fctl
+ * id-token` and sets the clouds up. Absent for review agents, where
+ * the project turned them off, and from older control planes; older
+ * hosts leave it out of the agent's configuration, and their agents
+ * mint none.
+ */
+id_tokens?: IdTokensSpec, };

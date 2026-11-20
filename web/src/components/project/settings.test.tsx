@@ -83,6 +83,7 @@ const settings: G.ProjectSettings = {
   package_caches: false,
   project_memory: true,
   retrospectives: true,
+  id_tokens: true,
   instructions: "Run the tests first.",
   env: { NODE_ENV: "development" },
 };
@@ -146,6 +147,7 @@ describe("a project's Settings", () => {
       "Tickets",
       "Sandbox",
       "Secrets",
+      "Identity OIDC",
       "Webhooks",
     ]);
     expect(s.heading()).toBe("General");

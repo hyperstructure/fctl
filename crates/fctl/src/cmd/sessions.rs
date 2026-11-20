@@ -1004,7 +1004,7 @@ const OLD_AGENT_FILES: &str = "This sandbox's fctl-agent can't carry files for t
 
 /// Whether fctl-agent refused a request it doesn't know, or one larger
 /// than it took before files (8 MiB).
-fn older_agent(message: &str) -> bool {
+pub(crate) fn older_agent(message: &str) -> bool {
     message.contains("did not understand the request")
         || message.contains("larger than fctl-agent takes")
 }

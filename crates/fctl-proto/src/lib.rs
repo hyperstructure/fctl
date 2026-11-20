@@ -11,6 +11,7 @@
 //! | [`autopilot`] | autopilots (experimental), through the REST API |
 //! | [`event`] | the session event model used everywhere |
 //! | [`hooks`] | webhooks: the REST API's, and what fctl posts to them |
+//! | [`identity`] | identity tokens agents mint, and the clouds they reach with them |
 //! | [`service_accounts`] | a workspace's own programs, through the REST API |
 //! | [`viewer`] | SessionDO ⇄ browsers and the CLI |
 //! | [`runner`] | FleetDO ⇄ hosts (control connection) |
@@ -25,6 +26,7 @@ pub mod autopilot;
 pub mod error;
 pub mod event;
 pub mod hooks;
+pub mod identity;
 pub mod ids;
 pub mod runner;
 pub mod service_accounts;

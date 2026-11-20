@@ -24,6 +24,7 @@ mod github;
 mod hooks;
 mod housekeeping;
 mod http;
+mod id_tokens;
 mod instance;
 mod internal;
 mod linear;
@@ -68,6 +69,11 @@ pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<
     let path = req.path();
     if path == "/robots.txt" || path == "/sitemap.xml" {
         return crawlers(&env, &path);
+    }
+    // Each workspace's identity token issuer: its discovery document and
+    // keys, for whoever checks its agents' tokens.
+    if path.starts_with(fctl_domain::id_tokens::ISSUER_PATH) {
+        return id_tokens::serve(&env, &req, &path).await;
     }
     if !path.starts_with("/api/") {
         // Static assets are served before the Worker runs, unless the
@@ -467,6 +473,7 @@ async fn dispatch(
         (Delete, ["projects", id, "members", user]) => {
             api::projects::remove_member(ctx, id, user).await
         }
+        (Get, ["projects", id, "identity"]) => api::projects::identity(ctx, id).await,
         (Get, ["projects", id, "secrets"]) => api::projects::secrets(ctx, id).await,
         (Put, ["projects", id, "secrets", name]) => {
             api::projects::set_secret(ctx, req, id, name).await

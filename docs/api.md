@@ -408,6 +408,7 @@ how their autopilot stands (`"autopilot": {"allowed", "state", "scope",
 | `GET`, `POST /api/v1/projects/{project}/members`, `PATCH`, `DELETE …/members/{user}` | its members: `{"email", "role": "owner" | "maintainer" | "editor" | "viewer"}` (maintainers) |
 | `GET /api/v1/projects/{project}/secrets`, `PUT`, `DELETE …/secrets/{name}` | secrets as environment variables of its sandboxes: `PUT` takes `{"value": "…"}`; the list has names and who set them, never values (maintainers) |
 | `GET /api/v1/projects/{project}/tickets` | its ticket tracker as it works now, and the sessions its tickets started |
+| `GET /api/v1/projects/{project}/identity` | how its agents prove who they are: its workspace's `issuer`, `discovery_url` and `jwks_url`, the `subject` of its agents' identity tokens, their `lifetime_secs`, and for each cloud it reaches (`aws`, `gcp`, `azure`) the `commands` and documents that set the cloud up to trust them ([Identity tokens](identity-tokens.md)) |
 
 `default_branch` is where sessions start unless they ask for another
 branch (`base_branch`), so the repository must have it, unless it has no
@@ -451,8 +452,12 @@ requests and issues: `null` for fctl's defaults, `""` for nothing),
 `github_access`, `follow_ups` (`comments`, `checks`, `conflicts`,
 `closed`), `tickets`, `remote_control`, `claude_ai_connectors`,
 `credit_people`, `credit_claude`, `publish_screenshots`,
-`screenshot_days`, `project_memory` and `retrospectives`
-([`ProjectSettings`](../crates/fctl-proto/src/session.rs) describes each).
+`screenshot_days`, `project_memory`, `retrospectives`, `id_tokens`
+(agents mint identity tokens: on unless `false`) and `cloud_access`
+(`{"aws": {"role_arn", "region", "session_tags"}, "gcp": {"provider",
+"service_account"}, "azure": {"tenant_id", "client_id"}}`, each left out
+for none) ([`ProjectSettings`](../crates/fctl-proto/src/session.rs)
+describes each).
 
 ### Memory, retrospectives and reviews
 
@@ -543,6 +548,22 @@ Anything else answers `forbidden`, and so do the endpoints only admin
 tokens reach to anyone else. No token changes the primary instance
 owner's account, only the primary owner's tokens change admins', and none
 changes roles.
+
+## Identity tokens
+
+Each workspace is an OpenID Connect issuer, `{instance}/oidc/{workspace
+id}`, whose documents anyone may read, without a token, from any origin
+(CORS), for an hour at a time:
+
+| Request | What it answers |
+|---|---|
+| `GET /oidc/{workspace}/.well-known/openid-configuration` | its discovery document: `issuer`, `jwks_uri`, `id_token_signing_alg_values_supported` (`RS256`), `claims_supported` and `x_fctl_subject_parts_supported` |
+| `GET /oidc/{workspace}/.well-known/jwks.json` | the instance's public keys, `{"keys": [{"kty": "RSA", "kid", "alg", "use", "n", "e"}]}`: the one that signs, the next before it does, and the last for two days after |
+
+A workspace that doesn't exist has neither (`404`). Agents mint the
+tokens in their sandbox alone (`fctl id-token`), through their runner's
+host; nothing else does, and no API request returns one. What tokens say
+and how services check them: [Identity tokens](identity-tokens.md).
 
 ## Everything else
 

@@ -584,6 +584,17 @@ impl Api {
         }
     }
 
+    /// How a project's agents prove who they are: its workspace's issuer,
+    /// the subject of its agents' identity tokens, and how each cloud it
+    /// reaches is set up to trust them.
+    pub async fn project_identity(
+        &self,
+        project: &str,
+    ) -> Result<fctl_proto::identity::ProjectIdentity> {
+        self.get(&format!("/projects/{}/identity", enc(project)))
+            .await
+    }
+
     /// The repositories a project's agents may use, the primary one first.
     pub async fn project_repos(&self, project: &str) -> Result<ProjectRepoList> {
         self.get(&format!("/projects/{}/repos", enc(project))).await

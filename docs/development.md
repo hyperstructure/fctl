@@ -144,7 +144,14 @@ people who follow the session the rest of the line with `fctl ask`, offering the
 to click (`ask Ship it today? / Yes / Not yet`), as agents do when they
 need someone's input, `recall` lists the memory with `fctl memory`, a line
 that starts with `fctl ticket` runs as it is (`fctl ticket view ENG-1`), as
-agents reach their project's tracker,
+agents reach their project's tracker, and so does one that starts with
+`fctl id-token`, as agents prove who they are (`fctl id-token -a
+https://api.acme.dev --claims`; check one against the dev instance's
+issuer, `http://localhost:8787/oidc/<workspace id>`), `clouds` shows the
+variables fctl-agent set for the project's clouds and the token files they
+name (`cargo run -p fctl -- projects set -p playground --aws-role
+arn:aws:iam::123456789012:role/x` first: no cloud is reached, but the
+files are kept fresh all the same),
 `printenv` shows the `CLAUDE_CODE_…` variables it got and says the token
 back, streamed in pieces (the host redacts the Claude token in both),
 `retro`

@@ -31,6 +31,8 @@
 //! | `recall` | lists the project's memory with `fctl memory` |
 //! | a line that starts with `ask <question>` | asks the people who follow the session `<question>` (to the end of its line) with `fctl ask`, offering the answers after each ` / ` in it to click (`ask Ship it today? / Yes / Not yet`), and ends its turn, as agents do when they need a person's input |
 //! | a line that starts with `fctl ticket` | runs it, as agents read and write their project's tickets (`fctl ticket view ENG-1`, `fctl ticket comment ENG-1 "On it"`) |
+//! | a line that starts with `fctl id-token` | runs it, as agents prove who they are to a service (`fctl id-token -a https://api.acme.dev --claims`) |
+//! | `clouds` | shows the variables fctl-agent set for the project's clouds (`AWS_…`, `GOOGLE_…`, `CLOUDSDK_…`, `AZURE_…`) and the token files they name, as an agent that checks its cloud access does |
 //! | `printenv` | shows the `CLAUDE_CODE_…` variables it got, its Claude token among them, in a `Bash` call, as an agent that looks at its environment does, then says the token back in pieces of five characters, as Claude streams what it writes (the host keeps the token out of both) |
 //! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work: completed, or `partial` or `blocked` when the message says so |
 //! | `revise` | updates the session's newest retrospective (after `retro`, in the same message or an earlier one) with `fctl retro list` and `fctl retro update`: completed, with what the work was and what got in the way said again, as agents do when a later turn carries on with work they recorded |
@@ -1441,6 +1443,20 @@ impl Session {
             .filter(|l| l.starts_with("fctl ticket"))
         {
             self.bash(line, "Work with the project's tickets");
+        }
+        // So do `fctl id-token` commands, as agents prove who they are.
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("fctl id-token"))
+        {
+            self.bash(line, "Prove who I am to a service");
+        }
+        if says(&lower, "clouds") {
+            self.bash(
+                "env | grep -E '^(AWS_|GOOGLE_|CLOUDSDK_|AZURE_)' | sort; for f in \"$AWS_WEB_IDENTITY_TOKEN_FILE\" \"$GOOGLE_APPLICATION_CREDENTIALS\" \"$AZURE_FEDERATED_TOKEN_FILE\"; do [ -n \"$f\" ] && wc -c \"$f\"; done; true",
+                "Show the clouds this session reaches",
+            );
         }
         if says(&lower, "printenv") {
             self.bash(

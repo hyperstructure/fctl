@@ -138,6 +138,23 @@ Examples:
   fctl ask \"Which Stripe account should the webhooks use?\"
   fctl ask --withdraw                  # you found the answer yourself")]
     Ask(cmd::ask::AskArgs),
+    /// Mint an identity token, which proves to a service that a request
+    /// comes from your session (agents, in its sandbox): an OpenID Connect
+    /// ID token your workspace's issuer signs, saying whom the session runs
+    /// for and its project, workspace and runner. It lasts 10 minutes.
+    #[command(
+        name = "id-token",
+        after_help = "Services check it with the keys of its issuer (`iss`), as clouds do for AWS roles, \
+Google Cloud workload identity and Azure federated credentials: \
+https://fctl.sh/docs/identity-tokens
+
+Examples:
+  curl -H \"Authorization: Bearer $(fctl id-token -a https://api.acme.dev)\" https://api.acme.dev/deploys
+  fctl id-token -a sts.amazonaws.com --aws-session-tags
+  fctl id-token -a api://AzureADTokenExchange --subject project
+  fctl id-token -a https://vault.acme.dev --claims     # what it says, without the token"
+    )]
+    IdToken(cmd::id_token::IdTokenArgs),
     /// Resolve review threads of a pull request (agents that review and
     /// comment, in their session's sandbox): GitHub lets only tokens that
     /// can push resolve them, so fctl does it for them.
@@ -570,6 +587,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Edit(args) => cmd::sessions::edit(server, args, json).await,
         Command::Publish(args) => cmd::publish::publish(args, json).await,
         Command::Ask(args) => cmd::ask::run(args, json).await,
+        Command::IdToken(args) => cmd::id_token::run(args, json).await,
         Command::Pulls(args) => cmd::pulls::run(server, args, json).await,
         Command::Unpublish { links } => cmd::publish::unpublish(server, &links, json).await,
         Command::Memory(args) => cmd::memory::run(server, args, json).await,

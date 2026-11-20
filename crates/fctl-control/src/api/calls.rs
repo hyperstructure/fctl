@@ -1,13 +1,14 @@
 //! What agents ask of the control plane about their session's project
 //! ([`AgentCall`]): `fctl memory`, `fctl retro`, `fctl resolve`, `fctl
-//! review` and `fctl ticket` in a sandbox go through fctl-agent to its
+//! review`, `fctl ticket` and `fctl id-token` in a sandbox go through fctl-agent to its
 //! host, which sends them here with its runner token, for a session it
 //! runs, and so does an autopilot's own session's `fctl`, whose requests to
 //! the API come as [`AgentCall::Api`] (`crate::autopilots::relay`), and
 //! its files as they are, to [`runner_relay`]. Each needs its project's
 //! setting: `project_memory` for the memory,
 //! `retrospectives` for retrospectives, a ticket tracker for tickets
-//! (`crate::tickets`); resolving review threads needs an agent that may
+//! (`crate::tickets`), `id_tokens` for identity tokens
+//! (`crate::id_tokens`); resolving review threads needs an agent that may
 //! comment on GitHub, and reviews a review agent's session
 //! (`crate::reviews`).
 
@@ -55,6 +56,19 @@ struct Row {
     review_repo: Option<String>,
 }
 
+/// A project's settings as its agents' calls take them. Settings that
+/// don't read as settings turn the memory, retrospectives and identity
+/// tokens off, and leave the agent reading only.
+fn read_settings(stored: &str) -> ProjectSettings {
+    serde_json::from_str(stored).unwrap_or(ProjectSettings {
+        project_memory: false,
+        retrospectives: false,
+        github_access: Some(GithubAccess::Read),
+        id_tokens: false,
+        ..Default::default()
+    })
+}
+
 impl RunnerSession {
     /// The session, when the runner `runner_id` acts for it now
     /// (`spec::check_runs`).
@@ -74,15 +88,7 @@ impl RunnerSession {
         if row.runner_id.as_deref() != Some(runner_id) {
             return Err(forbidden("This session is not assigned to this runner"));
         }
-        // Settings that don't read as settings turn both off, and leave
-        // the agent reading only.
-        let settings: ProjectSettings =
-            serde_json::from_str(&row.settings).unwrap_or(ProjectSettings {
-                project_memory: false,
-                retrospectives: false,
-                github_access: Some(GithubAccess::Read),
-                ..Default::default()
-            });
+        let settings = read_settings(&row.settings);
         let github_access = fctl_domain::limits::effective(
             row.github_access.as_deref().and_then(GithubAccess::parse),
             settings.github_access,
@@ -289,6 +295,21 @@ pub async fn runner_call(
                 "Files go to POST /api/v1/runner/sessions/{id}/relay as they are, not in JSON.",
             )));
         }
+        AgentCall::IdToken {
+            audience,
+            nonce,
+            subject,
+            aws_session_tags,
+        } => {
+            let ask = fctl_domain::id_tokens::Ask {
+                audience: &audience,
+                nonce: nonce.as_deref(),
+                subject: &subject,
+                aws_session_tags,
+            };
+            let (token, expires_at) = crate::id_tokens::mint(ctx, &session, &ask).await?;
+            AgentAnswer::IdToken { token, expires_at }
+        }
     };
     http::ok(&answer)
 }
@@ -391,4 +412,23 @@ async fn ask(
     let asked: crate::internal::Ask =
         crate::internal::post(&stub, "/ask", &crate::internal::Ask { question }).await?;
     Ok(asked.question)
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn unreadable_settings_turn_off_what_agents_reach() {
+        let s = read_settings("{not settings");
+        assert!(!s.project_memory);
+        assert!(!s.retrospectives);
+        assert!(!s.id_tokens);
+        assert!(!s.cloud_access.any());
+        assert_eq!(s.github_access, Some(GithubAccess::Read));
+        // Readable ones keep what they say, identity tokens on by default.
+        assert!(read_settings("{}").id_tokens);
+        assert!(!read_settings(r#"{"id_tokens": false}"#).id_tokens);
+    }
 }

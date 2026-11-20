@@ -274,6 +274,8 @@ export const api = {
   deleteSecret: (id: string, name: string) =>
     request<G.SecretList>("DELETE", `/projects/${enc(id)}/secrets/${enc(name)}`),
   projectRepos: (id: string) => request<G.ProjectRepoList>("GET", `/projects/${enc(id)}/repos`),
+  /** How the project's agents prove who they are, and what each of its clouds needs to trust them. */
+  projectIdentity: (id: string) => request<G.ProjectIdentity>("GET", `/projects/${enc(id)}/identity`),
   addProjectRepo: (id: string, b: G.AddProjectRepoRequest) =>
     request<G.ProjectRepoList>("POST", `/projects/${enc(id)}/repos`, b),
   /** `name` absent: the owner-wide grant. */

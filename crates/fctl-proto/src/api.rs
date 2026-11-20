@@ -4325,6 +4325,35 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(optional))]
         content_type: Option<String>,
     },
+    /// An identity token for the session (`fctl id-token`): an OpenID
+    /// Connect ID token its workspace's issuer signs, which says who the
+    /// session runs for, in which project and on which runner, for
+    /// `audience` alone (docs/identity-tokens.md). Only where the project
+    /// lets its agents mint them (`ProjectSettings::id_tokens`), and never
+    /// for review agents. Hosts, fctl-agents and control planes from before
+    /// it refuse it.
+    IdToken {
+        /// Whom it is for, its `aud`: `sts.amazonaws.com`, or an address of
+        /// your own. Printable ASCII without spaces, up to 512 characters.
+        audience: String,
+        /// Echoed in its `nonce`, for a verifier that takes each token
+        /// once. Up to 512 characters.
+        #[cfg_attr(feature = "ts", ts(optional))]
+        nonce: Option<String>,
+        /// The parts of its subject, in place of the project and the
+        /// person (`project:prj_…:user:usr_…`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(
+            feature = "ts",
+            ts(as = "Option<Vec<crate::identity::SubjectPart>>", optional)
+        )]
+        subject: Vec<crate::identity::SubjectPart>,
+        /// It carries AWS session tags (`https://aws.amazon.com/tags`), for
+        /// a role whose trust policy allows `sts:TagSession`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+        aws_session_tags: bool,
+    },
 }
 
 /// The header of `POST /api/v1/runner/sessions/{id}/relay`'s answer (an
@@ -4406,6 +4435,12 @@ pub enum AgentAnswer {
         /// The body, base64.
         #[serde(default)]
         body: String,
+    },
+    /// The identity token an [`AgentCall::IdToken`] asked for: the signed
+    /// JWT, and when it expires (its `exp`).
+    IdToken {
+        token: String,
+        expires_at: Millis,
     },
 }
 

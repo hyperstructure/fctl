@@ -8,6 +8,7 @@ use crate::attachments;
 use crate::caches;
 use crate::claude::{self, AskError, Claude, ClaudeOut, LaunchSpec};
 use crate::followed::Pulls;
+use crate::id_tokens;
 use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
 use crate::local;
@@ -315,6 +316,9 @@ pub struct Supervisor {
     /// Claude's proxy, where the host keeps its token, and the certificates
     /// Claude trusts there.
     relay: Option<(relay::Relay, PathBuf)>,
+    /// The tokens of the clouds the session's project reaches, which it
+    /// keeps fresh in files ([`id_tokens`]).
+    cloud_tokens: Option<id_tokens::CloudTokens>,
 }
 
 impl Supervisor {
@@ -406,6 +410,7 @@ impl Supervisor {
                 model_name: ModelName::default(),
                 relay_socket: None,
                 relay: None,
+                cloud_tokens: None,
             },
             claude_rx,
             work_rx,
@@ -956,6 +961,18 @@ impl Supervisor {
                     "This project's agents reach no ticket tracker: its maintainers choose one in the project's settings, under Tickets.",
                 ));
             }
+            // Where its project lets its agents; the control plane checks
+            // it again.
+            AgentCall::IdToken { .. } if spec.review.is_some() => {
+                return Err(ApiError::forbidden(
+                    "Review agents mint no identity tokens: what they review could steer what runs in their sandbox.",
+                ));
+            }
+            AgentCall::IdToken { .. } if spec.id_tokens.is_none() => {
+                return Err(ApiError::forbidden(
+                    "This project's agents mint no identity tokens: its maintainers can turn them on in the project's settings, under Identity OIDC.",
+                ));
+            }
             // Only an autopilot's own session reaches the API from its
             // sandbox; the control plane checks it again.
             AgentCall::Api { .. } | AgentCall::ApiBytes { .. } if spec.autopilot.is_none() => {
@@ -980,6 +997,22 @@ impl Supervisor {
         Ok(request_id)
     }
 
+    /// Asks the host for the clouds' tokens that are due: none yet in their
+    /// files, or soon expiring.
+    fn mint_cloud_tokens(&mut self) {
+        if self.host.is_none() {
+            return;
+        }
+        let due = self
+            .cloud_tokens
+            .as_mut()
+            .map(|t| t.due(now_ms()))
+            .unwrap_or_default();
+        for (request_id, call) in due {
+            self.send(&AgentToHost::Call { request_id, call });
+        }
+    }
+
     /// The control plane's answer to a call: the caller gets it, and the
     /// transcript shows what the agent kept.
     fn on_answer(
@@ -988,6 +1021,17 @@ impl Supervisor {
         answer: Option<AgentAnswer>,
         error: Option<ApiError>,
     ) {
+        // A cloud's token, which goes in its file.
+        let kept = self
+            .cloud_tokens
+            .as_mut()
+            .and_then(|t| t.answer(request_id, answer.as_ref(), error.as_ref(), now_ms()));
+        if let Some(outcome) = kept {
+            if let id_tokens::Outcome::Failed(Some(why)) = outcome {
+                self.log(LogSource::Agent, LogLevel::Warn, &why);
+            }
+            return;
+        }
         let Some((tx, _)) = self.calling.remove(request_id) else {
             // Too late for the caller, not for the transcript.
             if let Some(i) = self.late_calls.iter().position(|id| id == request_id) {
@@ -1246,6 +1290,30 @@ impl Supervisor {
             .as_ref()
             .map(|c| c.env.clone())
             .unwrap_or_default();
+        // The clouds its project reaches: their tokens, on their way before
+        // the setup script runs, which may need them, and their variables,
+        // which the project's own environment comes after.
+        self.cloud_tokens = spec.id_tokens.as_ref().and_then(|t| {
+            id_tokens::CloudTokens::new(self.user_state.join("id-tokens"), &t.cloud_access)
+        });
+        let (cloud_env, cloud_files) = match &self.cloud_tokens {
+            Some(t) => (t.env(&spec.project.slug, spec.number), t.files()),
+            None => (Vec::new(), Vec::new()),
+        };
+        if let Some(t) = &self.cloud_tokens {
+            let summary = t.summary();
+            if let Err(e) = t.prepare() {
+                tracing::warn!("readying the clouds' tokens failed: {e:#}");
+            }
+            self.log(
+                LogSource::Agent,
+                LogLevel::Info,
+                &format!(
+                    "The agent reaches {summary}, with identity tokens fctl-agent keeps fresh"
+                ),
+            );
+        }
+        self.mint_cloud_tokens();
         self.config = Some(config);
         self.set_status(
             SessionStatus::Preparing,
@@ -1301,6 +1369,7 @@ impl Supervisor {
                 {
                     let env: Vec<(String, String)> = cache_env
                         .into_iter()
+                        .chain(cloud_env)
                         .chain(
                             spec.project
                                 .settings
@@ -1311,6 +1380,10 @@ impl Supervisor {
                         )
                         .chain(sandbox_env)
                         .collect();
+                    // Its first tokens come through the host as the
+                    // repository is cloned; a setup script that reaches a
+                    // cloud waits for them a little.
+                    id_tokens::wait_for(&cloud_files, Duration::from_secs(15)).await;
                     let (setup_tx, mut setup_rx) = mpsc::unbounded_channel::<(LogLevel, String)>();
                     let setup_work = work.clone();
                     let setup_fwd = tokio::spawn(async move {
@@ -1644,6 +1717,12 @@ impl Supervisor {
             // An agent that comments resolves review threads through fctl.
             let review_threads = spec.github_access == Some(GithubAccess::Comment)
                 && fctl_can(&paths, "resolve").await;
+            // Identity tokens, where the project lets its agents mint them
+            // and the sandbox's fctl can.
+            let id_tokens = match &spec.id_tokens {
+                Some(t) if fctl_can(&paths, "id-token").await => Some(t),
+                _ => None,
+            };
             let extras = prompt::Extras {
                 screenshot_days: days,
                 memory: memory_md.as_deref(),
@@ -1653,6 +1732,7 @@ impl Supervisor {
                 autopilot: spec.autopilot.is_some(),
                 // Through this agent and its host, which carry files.
                 autopilot_files: spec.autopilot.is_some() && fctl_can(&paths, "files").await,
+                id_tokens,
             };
             if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(&extras)) {
                 tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
@@ -1695,7 +1775,14 @@ impl Supervisor {
             .cache
             .iter()
             .flat_map(|c| c.env.iter().map(|(k, v)| (k, v)));
+        // The clouds' variables, which the project's own come after.
+        let cloud_env = self
+            .cloud_tokens
+            .as_ref()
+            .map(|t| t.env(&spec.project.slug, spec.number))
+            .unwrap_or_default();
         for (k, v) in cache_env
+            .chain(cloud_env.iter().map(|(k, v)| (k, v)))
             .chain(project_env.iter())
             .chain(spec.secrets.iter())
             .chain(config.env.iter())
@@ -2869,6 +2956,9 @@ impl Supervisor {
                 self.on_delivery(d).await;
             }
         }
+        // The clouds' tokens last ten minutes; each is minted again five
+        // minutes early.
+        self.mint_cloud_tokens();
         // GitHub tokens last an hour; refresh both ten minutes early.
         if self.github_expires_at - now < 10 * 60 * 1000 && self.host.is_some() {
             self.github_expires_at = now + 5 * 60 * 1000; // retry in five minutes if this fails
@@ -3128,7 +3218,9 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
             )
         }],
         // The tool call shows it.
-        AgentAnswer::Thread { .. } | AgentAnswer::ReviewThreads { .. } => vec![],
+        AgentAnswer::Thread { .. }
+        | AgentAnswer::ReviewThreads { .. }
+        | AgentAnswer::IdToken { .. } => vec![],
         AgentAnswer::ReviewPosted { review } if !review.again => vec![Notice {
             review: Some(review.clone()),
             ..notice("review_posted", posted_message(review))
@@ -4231,6 +4323,78 @@ mod tests {
         assert!(
             matches!(alone, Some(SessionReply::Error { ref error }) if error.code == fctl_proto::ErrorCode::Unavailable)
         );
+        Ok(())
+    }
+
+    fn id_token() -> AgentCall {
+        AgentCall::IdToken {
+            audience: "https://api.acme.dev".into(),
+            nonce: None,
+            subject: vec![],
+            aws_session_tags: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_tokens_only_where_the_project_lets_its_agents_mint_them() -> anyhow::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host_rx) = keeping(dir.path(), false, false)?;
+        let refused = ask(&mut sup, calling(id_token()));
+        assert!(
+            matches!(refused, Some(SessionReply::Error { ref error }) if error.message.contains("mint no identity tokens: its maintainers"))
+        );
+        assert!(host_rx.try_recv().is_err());
+        // Where it does, the host gets the call, and the caller the token.
+        if let Some(c) = sup.config.as_mut() {
+            c.spec.id_tokens = Some(fctl_proto::identity::IdTokensSpec {
+                issuer: "https://app.fctl.sh/oidc/wsp_acme".into(),
+                cloud_access: Default::default(),
+            });
+        }
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(id_token()),
+            reply: tx,
+        });
+        let sent: Value = serde_json::from_str(&host_rx.try_recv()?)?;
+        assert_eq!(sent["type"], "call");
+        assert_eq!(sent["call"]["type"], "id_token");
+        assert_eq!(sent["call"]["audience"], "https://api.acme.dev");
+        let id = sent["request_id"].as_str().unwrap_or_default().to_owned();
+        sup.on_answer(
+            &id,
+            Some(AgentAnswer::IdToken {
+                token: "a.b.c".into(),
+                expires_at: 1,
+            }),
+            None,
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionReply::Answer { answer: AgentAnswer::IdToken { ref token, .. } }) if token == "a.b.c")
+        );
+        // A review agent never mints one.
+        if let Some(c) = sup.config.as_mut() {
+            c.spec.review = Some(fctl_proto::runner::ReviewSpec {
+                repo: fctl_proto::session::RepoRef {
+                    owner: "acme".into(),
+                    name: "web".into(),
+                },
+                number: 1,
+                url: String::new(),
+                title: String::new(),
+                head_sha: String::new(),
+                head_ref: String::new(),
+                base_ref: String::new(),
+                previous_sha: None,
+                instructions: String::new(),
+            });
+        }
+        let refused = ask(&mut sup, calling(id_token()));
+        assert!(
+            matches!(refused, Some(SessionReply::Error { ref error }) if error.message.contains("Review agents mint no identity tokens"))
+        );
+        assert!(host_rx.try_recv().is_err());
         Ok(())
     }
 

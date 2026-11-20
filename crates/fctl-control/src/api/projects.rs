@@ -50,8 +50,26 @@ pub async fn get(ctx: &Ctx, id: &str) -> AppResult<Response> {
     http::ok(&p.row.to_project(p.role))
 }
 
+/// `GET /api/v1/projects/{id}/identity`: how the project's agents prove
+/// who they are, for anyone who sees the project: its workspace's issuer,
+/// the subject of its agents' identity tokens, and how each cloud it
+/// reaches is set up to trust them (`fctl_domain::clouds::identity`).
+pub async fn identity(ctx: &Ctx, id: &str) -> AppResult<Response> {
+    let p = access::project(ctx, id).await?;
+    let settings = p.row.settings();
+    http::ok(&fctl_domain::clouds::identity(
+        &ctx.cfg.public_url,
+        p.workspace_id(),
+        &p.row.id,
+        &p.row.slug,
+        settings.id_tokens,
+        &settings.cloud_access,
+    ))
+}
+
 /// Validates and normalizes project settings.
 fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
+    s.cloud_access = fctl_domain::clouds::check(&s.cloud_access).map_err(AppError)?;
     if let Some(img) = s.image.as_deref() {
         s.image = if img.trim().is_empty() {
             None

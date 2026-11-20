@@ -729,6 +729,23 @@ pub struct ProjectSettings {
     /// chose one. An update that leaves it out keeps what was stored.
     #[cfg_attr(feature = "ts", ts(as = "Option<Tickets>", optional))]
     pub tickets: Tickets,
+    /// Agents mint identity tokens (`fctl id-token`): OpenID Connect ID
+    /// tokens the workspace's issuer signs, which prove to the workspace's
+    /// own systems and clouds that whoever holds one acts for one of the
+    /// project's sessions (docs/identity-tokens.md). On by default; review
+    /// agents never mint them. An update that leaves it out keeps what was
+    /// stored. Agents from before it mint none.
+    pub id_tokens: bool,
+    /// The clouds agents reach as themselves, with identity tokens
+    /// ([`crate::identity::CloudAccess`]): fctl-agent keeps a token for
+    /// each in the sandbox and sets the variables the cloud's CLI and SDKs
+    /// read. Only while `id_tokens` is on. An update that leaves it out
+    /// keeps what was stored. Agents from before it reach no cloud this way.
+    #[cfg_attr(
+        feature = "ts",
+        ts(as = "Option<crate::identity::CloudAccess>", optional)
+    )]
+    pub cloud_access: crate::identity::CloudAccess,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -1076,6 +1093,8 @@ impl Default for ProjectSettings {
             github_access: None,
             follow_ups: FollowUps::default(),
             tickets: Tickets::default(),
+            id_tokens: true,
+            cloud_access: Default::default(),
             env: Default::default(),
         }
     }

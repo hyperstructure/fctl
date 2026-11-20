@@ -616,6 +616,7 @@ fctl publish after.png                       # where the project publishes scree
 fctl resolve PRRT_…                          # agents that comment: resolve a review thread
 fctl review threads && fctl review submit review.json   # review agents
 fctl review summarize summary.json           # review agents, first, where the project asks for a summary
+fctl id-token -a https://api.acme.dev        # an identity token, to prove to a service that a request comes from this session
 ```
 
 - The repository is at `~/workspace`, on the session's branch; other
@@ -627,6 +628,13 @@ fctl review summarize summary.json           # review agents, first, where the p
   Actions but can't re-run or cancel workflow runs, which in many
   repositories is what starts a release: to run a pull request's checks
   again, agents push an empty commit.
+- An identity token is an OpenID Connect ID token that the workspace's
+  issuer signs, for one audience, for 10 minutes: it says whom the session
+  runs for and its project, workspace and runner, so that the
+  organization's own services and clouds can trust it
+  ([Identity tokens](identity-tokens.md)). Where the project reaches AWS,
+  Google Cloud or Azure, their CLIs and SDKs sign in on their own with
+  tokens fctl-agent keeps in the sandbox.
 - A session's branch, `fctl/<number>-…`, carries its number in fctl,
   which the system prompt says is no issue's.
 - fctl pushes the branch after every turn until its pull request merges,

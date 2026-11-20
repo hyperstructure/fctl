@@ -1053,7 +1053,7 @@ any image a project chooses until its owner lists the ones it allows
 some (`allowed_builds`): set both on machines that run other people's
 projects ([Which images a host runs](sandbox-images.md#which-images-a-host-runs)).
 
-## Notifications and published screenshots
+## Notifications, published screenshots and identity tokens
 
 - **Notifications** need no setup and no push provider account: the control
   plane makes its Web Push (VAPID) key the first time someone opens
@@ -1068,3 +1068,14 @@ projects ([Which images a host runs](sandbox-images.md#which-images-a-host-runs)
   instance has a privacy policy, say so there. GitHub shows them in pull
   requests only when its image proxy can fetch them, so only from an
   instance it can reach.
+- **Identity tokens** need no setup either: the control plane makes its
+  signing key the first time an issuer is asked for its keys or an agent
+  mints a token, keeps it in D1 sealed with the master key, and makes a
+  new one every 30 days ([Identity tokens](identity-tokens.md)). Each
+  workspace's issuer is `FCTL_PUBLIC_URL` with `/oidc/` and the
+  workspace's id, so set `FCTL_PUBLIC_URL` to the address services reach
+  the instance at, and pass `/oidc/` through your proxy as the rest. AWS,
+  Google Cloud and Azure fetch an issuer's documents themselves before
+  they trust its agents: they take only `https://` with a certificate they
+  trust, on the public internet. A service on your own network checks
+  tokens against an instance on it.

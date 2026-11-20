@@ -170,11 +170,13 @@ impl Instance {
             vars.push(("FCTL_ADMIN_TOKENS", "1".to_owned()));
         }
         // The Worker runs first for the app's files too, to redirect them;
-        // otherwise Cloudflare serves them itself, over http as well.
+        // otherwise Cloudflare serves them itself, over http as well, and
+        // the Worker only the API, the crawlers' files and the identity
+        // token issuers (`/oidc/…`).
         let worker_first = if self.https_only {
             "true"
         } else {
-            r#"["/api/*", "/robots.txt", "/sitemap.xml"]"#
+            r#"["/api/*", "/robots.txt", "/sitemap.xml", "/oidc/*"]"#
         };
         let q = |s: &str| toml::Value::String(s.to_owned()).to_string();
         let vars = vars
@@ -551,7 +553,7 @@ client_id = "lin_client"
                 .iter()
                 .filter_map(|p| p.as_str())
                 .collect::<Vec<_>>(),
-            ["/api/*", "/robots.txt", "/sitemap.xml"]
+            ["/api/*", "/robots.txt", "/sitemap.xml", "/oidc/*"]
         );
     }
 

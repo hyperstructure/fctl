@@ -12,6 +12,7 @@ use crate::model::{
 use fctl_domain::image::ImageWant;
 use fctl_domain::size::Want;
 use fctl_proto::autopilot::{AutopilotAuthor, AutopilotRole};
+use fctl_proto::identity::IdTokensSpec;
 use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
     SessionRepo, SessionSpec,
@@ -416,6 +417,13 @@ pub async fn build(
         None
     };
     let retrospectives = settings.retrospectives;
+    // Its agent mints identity tokens, and reaches its project's clouds
+    // with them, where the project lets it. Hosts from before them leave
+    // it out of the agent's configuration, and their agents mint none.
+    let id_tokens = settings.id_tokens.then(|| IdTokensSpec {
+        issuer: fctl_domain::id_tokens::issuer(&cfg.public_url, &workspace_id),
+        cloud_access: settings.cloud_access.clone(),
+    });
     let tickets =
         crate::tickets::spec(db, &row, &project, &settings, &grants, github_access).await?;
     Ok(SessionSpec {
@@ -495,6 +503,7 @@ pub async fn build(
                 project_id: a.project_id,
                 project_slug: a.project_slug,
             }),
+        id_tokens,
     })
 }
 
@@ -614,6 +623,10 @@ async fn review_spec(
             tracker: fctl_proto::session::Tracker::None,
             ..Default::default()
         },
+        // What it reviews could steer what runs in its sandbox: it proves
+        // itself to nothing, and reaches no cloud.
+        id_tokens: false,
+        cloud_access: Default::default(),
         env: p.env.clone(),
     };
     settings.env = fctl_domain::settings::session_env(&settings);
@@ -689,6 +702,8 @@ async fn review_spec(
         tickets: None,
         autopilot: None,
         crew_of: None,
+        // What it reviews could steer what runs in its sandbox.
+        id_tokens: None,
     })
 }
 

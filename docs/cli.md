@@ -249,6 +249,33 @@ at most 5 MB, up to 100 per session. The transcript shows each one, and
 people who manage the session can delete it there or with `fctl
 unpublish`.
 
+### Identity tokens
+
+An agent proves to your own services and clouds that a request comes from
+its session with an identity token: an OpenID Connect ID token that your
+workspace's issuer signs, which says whom the session runs for and its
+project, workspace and runner, for one audience, for 10 minutes. In a
+session's sandbox:
+
+```sh
+fctl id-token -a https://api.acme.dev            # the token, to send as a bearer token
+fctl id-token -a https://api.acme.dev --claims   # what it says, without it
+fctl id-token -a https://api.acme.dev --json     # the token, when it expires and its claims
+fctl id-token -a api://AzureADTokenExchange --subject project   # sub: project:prj_… alone
+fctl id-token -a sts.amazonaws.com --aws-session-tags            # with AWS session tags
+```
+
+`--subject` chooses the parts of its subject (`workspace`, `project`,
+`user`, `session`, `runner`, `github_access`; the project and the person
+without it), and `--nonce` a value it repeats. Projects mint them unless
+their maintainers turn them off (`fctl projects set --id-tokens off`), and
+review agents never do. A project that reaches AWS, Google Cloud or Azure
+(`--aws-role`, `--gcp-provider`, `--azure-client`) needs no `fctl
+id-token` for them: fctl-agent keeps their tokens fresh in the sandbox,
+and their CLIs and SDKs sign in on their own. `fctl projects identity`
+prints what each cloud needs to trust the project's agents. How services
+check tokens, and every claim: [Identity tokens](identity-tokens.md).
+
 ## Workspaces
 
 Projects, the runners that run their sessions and the GitHub accounts they
@@ -370,6 +397,11 @@ fctl projects show my-app --pr-instructions > prs.md   # what agents are told ab
 fctl projects set -p my-app --pr-instructions-file prs.md   # the project's own instead (--pr-instructions default for fctl's, "" for none)
 fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
 fctl projects set -p my-app --tickets linear --linear-team ENG,DES   # its tickets are these Linear teams'
+fctl projects set -p my-app --aws-role arn:aws:iam::123456789012:role/fctl-web --aws-region eu-north-1   # its agents assume this AWS role ("" for none)
+fctl projects set -p my-app --gcp-provider projects/123456789/locations/global/workloadIdentityPools/fctl/providers/acme --gcp-service-account agents@acme.iam.gserviceaccount.com
+fctl projects set -p my-app --azure-tenant 72f988bf-… --azure-client 6d1c1d3b-…   # an Entra application (--azure-client "" for none)
+fctl projects set -p my-app --id-tokens off       # its agents mint no identity tokens, and reach no cloud
+fctl projects identity -p my-app       # the issuer, the subject, and what each cloud needs to trust its agents
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
