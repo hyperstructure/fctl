@@ -2,8 +2,9 @@
 
 With the Apple container and Docker drivers, each session runs in a
 container made from an image. This page describes the default image and
-how hosts get it, how a project uses an image of its own or builds one from
-its repository, which images a host runs, and what an image needs.
+how hosts get it, how a project uses an image of its own (built on the
+default one, or on another base such as Ubuntu) or builds one from its
+repository, which images a host runs, and what an image needs.
 
 ## The default image
 
@@ -192,9 +193,11 @@ USER agent
 
 When sessions need tools the default image lacks, such as .NET or a
 company's CLIs, give the project an image that has them. A setup script
-would install them in every session instead. This example adds the .NET 8
-SDK. .NET needs ICU, which Debian has, and the SDK goes into `agent`'s
-home, like Rust. The PATH is set twice: `ENV` for Claude and the commands
+would install them in every session instead. An image you already have,
+on Ubuntu say, works too once fctl and Claude Code are in it ([An image
+from another base](#an-image-from-another-base)). This example adds the
+.NET 8 SDK. .NET needs ICU, which Debian has, and the SDK goes into
+`agent`'s home, like Rust. The PATH is set twice: `ENV` for Claude and the commands
 it runs, and `/etc/profile.d` for login shells, which setup scripts run in:
 
 ```dockerfile
@@ -215,6 +218,12 @@ ENV DOTNET_ROOT=/home/agent/.dotnet \
   DOTNET_CLI_TELEMETRY_OPTOUT=1 \
   PATH=/home/agent/.dotnet:/home/agent/.dotnet/tools:$PATH
 ```
+
+Of the image's variables, Claude gets the PATH and the locale but not the
+others ([An image from another base](#an-image-from-another-base)):
+`dotnet` finds its SDK beside itself, and for Claude's commands,
+`DOTNET_ROOT` and `DOTNET_CLI_TELEMETRY_OPTOUT` go in the project's
+variables too.
 
 1. **Build it for both architectures** and push it to a registry: Apple
    silicon runners run arm64 images, most others amd64.
@@ -251,6 +260,126 @@ ENV DOTNET_ROOT=/home/agent/.dotnet \
 
 Lima runners don't use images: their sessions run in a clone of the VM
 `fctl host image build` prepared. The process driver uses none either.
+
+## An image from another base
+
+An image doesn't have to start from the default one. One your company
+already has, on Ubuntu with its own toolchains say, runs sessions once it
+has what fctl needs ([What an image needs](#what-an-image-needs)): fctl,
+Claude Code, git, gh, bash and a user other than root. fctl-agent, the
+supervisor, isn't one of them: the host copies its own into each sandbox
+when it starts a session there, of the host's version, so an image has
+none to install or update.
+
+This Dockerfile makes Ubuntu 24.04 into a sandbox image: add your packages
+and steps to it, or its steps to your Dockerfile. The sandbox repository
+keeps it, as
+[`examples/ubuntu/Dockerfile`](https://github.com/hyperstructure/sandbox/blob/main/examples/ubuntu/Dockerfile),
+and builds and checks it for both architectures.
+
+```dockerfile
+FROM ubuntu:24.04
+
+# A download piped into a shell fails the step when it fails.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# What fctl needs: bash, git, curl and CA certificates (for the installers,
+# and git over HTTPS), and the GitHub CLI from GitHub's repository. sudo lets
+# the agent install what a task needs: the sandbox is the boundary. Add your
+# own packages to the list.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl git sudo \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends gh \
+  && rm -rf /var/lib/apt/lists/*
+
+# fctl, for every user: a static build, which runs on any Linux. An empty
+# FCTL_VERSION installs the latest release. The host puts its own fctl-agent
+# into the sandbox each time a session starts, so the archive's goes.
+ARG FCTL_VERSION=
+RUN curl -fsSL https://fctl.sh/install \
+    | env FCTL_VERSION="$FCTL_VERSION" FCTL_INSTALL_DIR=/usr/local/bin FCTL_NO_COMPLETIONS=1 sh \
+  && rm -f /usr/local/bin/fctl-agent-*-linux
+
+# The user sessions run as, with sudo and the package caches' directory.
+# Ubuntu's images come with the user ubuntu at uid 1000: agent takes its
+# place.
+RUN if id ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi \
+  && useradd --create-home --shell /bin/bash --uid 1000 agent \
+  && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/agent \
+  && chmod 0440 /etc/sudoers.d/agent \
+  && install -d -o agent -g agent /var/cache/fctl
+
+# Claude Code, the native build, in ~/.local/bin, as the user. Claude and its
+# commands find their tools through the image's PATH, and so do setup
+# scripts: Ubuntu's login shells keep it.
+USER agent
+WORKDIR /home/agent
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH=/home/agent/.local/bin:$PATH
+```
+
+- **fctl** comes from its installer, into `/usr/local/bin` for every
+  user: with it, agents name their sessions, ask people, publish
+  screenshots and keep their project's memory. Its Linux builds are
+  static, so they run on any distribution, on arm64 and amd64.
+  `--build-arg FCTL_VERSION=0.37.0` pins a release; without it, the
+  latest. The archive has the Linux fctl-agent beside fctl, which the
+  image doesn't need.
+- **Claude Code** installs as the user sessions run as, into
+  `~/.local/bin`, which the image's `PATH` names.
+- **The user.** Sessions run as the image's `USER`, in `~/workspace`: a
+  user with a line in `/etc/passwd`, where fctl-agent finds its home, and a
+  home it can write to. Ubuntu's images from 24.04 come with the user
+  `ubuntu`, uid 1000, which sessions could run as too (`USER ubuntu`); the
+  example gives the image `agent`, as the default image has. sudo without a
+  password lets the agent install what a task needs. `/var/cache/fctl` is
+  the user's, as in the default image: projects that share package caches
+  mount them there ([Its layout](#its-layout)).
+- **The environment.** Claude and its commands get the image's `PATH`,
+  `LANG`, `LC_ALL`, `TZ` and `TMPDIR`, and none of its other variables: put
+  tools on the PATH, and set the variables they need in the project's
+  Settings → Sandbox → Environment (`fctl projects set -p my-app --env
+  JAVA_HOME=/opt/java`). The setup script gets the image's whole
+  environment, in a login shell (`bash -lc`). Ubuntu's login shells keep
+  the image's PATH, but Debian's and Alpine's `/etc/profile` set one of
+  their own, so an image on those names its directories in
+  `/etc/profile.d` too, as the default image does:
+  `echo 'PATH="$HOME/.local/bin:$PATH"' > /etc/profile.d/fctl.sh`, as root.
+- **What the image starts doesn't run.** fctl gives each sandbox a main
+  process of its own (`tail -f /dev/null` in a container, fctl-agent in a
+  Firecracker VM) in place of the image's `ENTRYPOINT` and `CMD`: a
+  database or another service the image would start, the project's setup
+  script starts instead.
+- **Keep it current.** fctl turns off Claude Code's auto-updater, so the
+  image's Claude Code is as old as the image, and agents reach fctl's new
+  features through the image's fctl: a session whose fctl lacks one it
+  needs says so in its log. Build the image again for fctl's releases, with
+  `--no-cache` or a new `FCTL_VERSION`, since Docker would otherwise reuse
+  the steps that installed them; the default image is also rebuilt on each
+  day Claude Code has a new release.
+- **Other distributions** take the same steps with their own packages. On
+  Alpine: `apk add bash ca-certificates curl git github-cli sudo shadow`
+  (Claude Code needs bash, and `shadow` has `useradd`), and the PATH in
+  `/etc/profile.d`.
+
+The sandbox repository's
+[`examples/check.sh`](https://github.com/hyperstructure/sandbox/blob/main/examples/check.sh)
+checks an image for what fctl needs: it runs in the image as its user, and
+says what's missing.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hyperstructure/sandbox/main/examples/check.sh -o check.sh
+docker run --rm -i my-sandbox sh -s < check.sh
+```
+
+Then build the image for both architectures, push it and choose it for
+the project, as [Your own image](#your-own-image) describes.
 
 ## Building it from the repository
 
@@ -325,9 +454,10 @@ Dockerfile with `USER vscode`, say, to run as that user. Docker Compose
 configurations aren't built.
 
 The image still needs what every image needs ([below](#what-an-image-needs)):
-most dev container images lack Claude Code. Start the Dockerfile `FROM
-ghcr.io/hyperstructure/sandbox:0.14`, or install Claude Code in it as the
-user sessions run as (`curl -fsSL https://claude.ai/install.sh | bash`).
+most dev container images lack Claude Code and fctl. Start the Dockerfile
+`FROM ghcr.io/hyperstructure/sandbox:0.14`, or install them in it as [An
+image from another base](#an-image-from-another-base) does: fctl for every
+user, and Claude Code as the user sessions run as.
 
 ## Which images a host runs
 
@@ -383,10 +513,20 @@ show each runner's image and lists.
 
 ## What an image needs
 
-An image that doesn't start from the default one needs:
+An image that doesn't start from the default one needs what follows
+([An image from another base](#an-image-from-another-base) builds one on
+Ubuntu, and the sandbox repository's `examples/check.sh` checks an image
+for it). It needs no fctl-agent: the host copies its own in ([What fctl
+writes into a sandbox](#what-fctl-writes-into-a-sandbox)).
 
-- **`sh`, `tail`, `id` and git** on the PATH. The sandbox's main process
-  is `tail -f /dev/null`, and `id -u` tells fctl who the image's user is.
+- **`/bin/sh`, `tail`, `id`, `mkdir`, `chown`, `chmod`, `mv`, `rm` and
+  `stat`** in `/usr/bin` or `/bin`, where the host runs them in the
+  sandbox. A container's main process is `tail -f /dev/null`, in place of
+  the image's `ENTRYPOINT` and `CMD`, and `id -u` tells fctl who the
+  image's user is.
+- **git**, with CA certificates for HTTPS, on the PATH: fctl-agent clones
+  the project's repositories with it.
+- **bash**, which runs the project's setup script, in a login shell.
 - **Claude Code 2.1.101 or later**, as `claude` on the PATH. fctl relies on
   requests that Claude Code sends and answers in its stream-json mode: it
   asks fctl for a fresh OAuth access token (`oauth_token_refresh`, from
@@ -402,11 +542,13 @@ An image that doesn't start from the default one needs:
   update their retrospectives where it has `fctl retro update`, and
   record one for each follow-up where it doesn't). Without it, sessions
   keep the title they start with, and their agents keep no memory.
-- **A non-root user with a writable home.** fctl copies its supervisor into
-  `/opt/fctl/bin` as root at session start, gives the directory to root,
-  and runs the supervisor as root, and Claude and its commands as the
-  image's user (its `USER`), in `~/workspace`. An image that runs as root
-  runs Claude as root, whose commands can stop fctl-agent.
+- **A non-root user with a writable home**, and a line in `/etc/passwd`,
+  where fctl-agent finds its home (without one, its home is `/`). fctl
+  copies its supervisor into `/opt/fctl/bin` as root at session start,
+  gives the directory to root, and runs the supervisor as root, and Claude
+  and its commands as the image's user (its `USER`), in `~/workspace`. An
+  image that runs as root runs Claude as root, whose commands can stop
+  fctl-agent.
 - **arm64** builds for Apple silicon runners, and amd64 for most others.
 
 ## What fctl writes into a sandbox
