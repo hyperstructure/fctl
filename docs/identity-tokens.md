@@ -26,10 +26,11 @@ tools and every SDK sign in on their own.
   and `/oidc/` and the workspace's id on yours. It serves its discovery
   document and keys to anyone at
   `{issuer}/.well-known/openid-configuration` and
-  `{issuer}/.well-known/jwks.json`, and every token says it in `iss`. A
-  cloud set up to trust one workspace's agents trusts no other
-  workspace's, on the same instance or any other, whatever its conditions
-  leave out.
+  `{issuer}/.well-known/jwks.json`, and every token says it in `iss`. The
+  issuer's own address names it rather than holding a document: opening it
+  leads to the discovery document. A cloud set up to trust one workspace's
+  agents trusts no other workspace's, on the same instance or any other,
+  whatever its conditions leave out.
 - **Agents mint them in their sandbox** with `fctl id-token`, which asks
   fctl-agent, which asks the runner's host, which asks the control plane
   with its runner token. The control plane signs a token only for a

@@ -89,17 +89,23 @@ pub fn issuer_host_path(issuer: &str) -> &str {
 pub enum Document {
     Discovery,
     Keys,
+    /// The issuer's own address, which identifies it rather than holding
+    /// a document: whoever opens it is sent on to its discovery document.
+    Issuer,
 }
 
 /// The workspace and document a path under [`ISSUER_PATH`] asks for:
 /// `/oidc/wsp_…/.well-known/openid-configuration` or `…/jwks.json`.
 pub fn document(path: &str) -> Option<(&str, Document)> {
     let rest = path.strip_prefix(ISSUER_PATH)?;
-    let (workspace, doc) = rest.split_once('/')?;
-    let doc = match format!("/{doc}").as_str() {
-        DISCOVERY_PATH => Document::Discovery,
-        JWKS_PATH => Document::Keys,
-        _ => return None,
+    let (workspace, doc) = match rest.split_once('/') {
+        Some((workspace, "")) => (workspace, Document::Issuer),
+        Some((workspace, doc)) => match format!("/{doc}").as_str() {
+            DISCOVERY_PATH => (workspace, Document::Discovery),
+            JWKS_PATH => (workspace, Document::Keys),
+            _ => return None,
+        },
+        None => (rest, Document::Issuer),
     };
     WorkspaceId::is_valid(workspace).then_some((workspace, doc))
 }
@@ -594,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn issuers_serve_their_discovery_document_and_keys_only() {
+    fn issuers_serve_their_discovery_document_and_keys_and_send_people_to_them() {
         assert_eq!(
             document("/oidc/wsp_01ABC/.well-known/openid-configuration"),
             Some(("wsp_01ABC", Document::Discovery))
@@ -603,9 +609,19 @@ mod tests {
             document("/oidc/wsp_01ABC/.well-known/jwks.json"),
             Some(("wsp_01ABC", Document::Keys))
         );
+        // Its own address, as people open it from the app.
+        assert_eq!(
+            document("/oidc/wsp_01ABC"),
+            Some(("wsp_01ABC", Document::Issuer))
+        );
+        assert_eq!(
+            document("/oidc/wsp_01ABC/"),
+            Some(("wsp_01ABC", Document::Issuer))
+        );
         for path in [
-            "/oidc/wsp_01ABC",
-            "/oidc/wsp_01ABC/",
+            "/oidc/",
+            "/oidc/wsp_01ABC//",
+            "/oidc/wsp_01ABC/.well-known",
             "/oidc/wsp_01ABC/.well-known/other",
             "/oidc/prj_01ABC/.well-known/jwks.json",
             "/oidc/wsp_01ABC/x/.well-known/jwks.json",
