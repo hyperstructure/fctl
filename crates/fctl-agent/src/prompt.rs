@@ -38,6 +38,10 @@ pub struct Extras<'a> {
     /// send --attach` through its session): it attaches them to its
     /// sessions, rather than publishing screenshots for them.
     pub autopilot_files: bool,
+    /// The project lets its agents mint identity tokens, and the sandbox's
+    /// fctl can (`fctl id-token`): its workspace's issuer, and the clouds
+    /// the agent reaches with them.
+    pub id_tokens: Option<&'a fctl_proto::identity::IdTokensSpec>,
 }
 
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
@@ -73,6 +77,9 @@ pub fn agents_md(extras: &Extras<'_>) -> String {
         };
         s.push_str(&md.replace("{lasts}", lasts));
     }
+    if let Some(spec) = extras.id_tokens {
+        s.push_str(&id_tokens_md(spec));
+    }
     if let Some(memory) = extras.memory {
         s.push_str(memory);
     }
@@ -90,6 +97,74 @@ pub fn agents_md(extras: &Extras<'_>) -> String {
     }
     s
 }
+
+/// How the agent proves who it is (`fctl id-token`), and the clouds it
+/// reaches as itself, which fctl-agent set up.
+pub fn id_tokens_md(spec: &fctl_proto::identity::IdTokensSpec) -> String {
+    let mut s = ID_TOKENS_MD.replace("{issuer}", &spec.issuer);
+    let access = &spec.cloud_access;
+    if !access.any() {
+        return s;
+    }
+    s.push_str(CLOUDS_MD);
+    if let Some(aws) = &access.aws {
+        s.push_str(&format!(
+            "- AWS, as the role `{}`: run `aws` and the SDKs as they are\n  (`aws sts get-caller-identity` shows the role).\n",
+            aws.role_arn
+        ));
+    }
+    if let Some(gcp) = &access.gcp {
+        let who = match &gcp.service_account {
+            Some(sa) => format!("as `{sa}`"),
+            None => "as the project's agents in its workload identity pool".to_owned(),
+        };
+        s.push_str(&format!(
+            "- Google Cloud, {who}: `gcloud` and the client libraries\n  sign in on their own. Give `gcloud` a project with `--project`.\n"
+        ));
+    }
+    if let Some(azure) = &access.azure {
+        s.push_str(&format!(
+            "- Azure, as the application `{}`: the Azure SDKs sign in on their\n  own (`DefaultAzureCredential`). Sign the Azure CLI in with\n  `az login --service-principal -u \"$AZURE_CLIENT_ID\" -t \"$AZURE_TENANT_ID\" --federated-token \"$(cat \"$AZURE_FEDERATED_TOKEN_FILE\")\"`.\n",
+            azure.client_id
+        ));
+    }
+    s.push_str(CLOUDS_END_MD);
+    s
+}
+
+const ID_TOKENS_MD: &str = r#"
+## Identity tokens
+
+To prove to a service that a request comes from this session, send it an
+identity token from `fctl id-token`: an OpenID Connect ID token that fctl
+signs, which says whom the session runs for and its project, workspace and
+runner, and lasts 10 minutes. The service checks it with the keys of its
+issuer, {issuer}. Send it as the service asks, usually as a bearer token:
+
+```sh
+curl -H "Authorization: Bearer $(fctl id-token --audience https://api.example.com)" \
+  https://api.example.com/…
+```
+
+- `--audience` says which service the token is for, and each takes only
+  its own: its owners or its docs say which.
+- Mint one when you need it rather than keep one: it expires soon.
+- It proves that a request comes from this session: send it only to the
+  service it is for, and never print it, write it to a file or commit it.
+  `fctl id-token --audience … --claims` shows what it says, without it.
+- If `fctl id-token` fails, say so in your reply.
+"#;
+
+const CLOUDS_MD: &str = r#"
+This session reaches these clouds as itself, with tokens fctl keeps fresh,
+so their CLIs and SDKs need no keys or sign-in:
+
+"#;
+
+const CLOUDS_END_MD: &str = r#"
+What it may do there is up to each cloud's policies: if one refuses
+something, say so in your reply rather than look for other credentials.
+"#;
 
 /// The project's memory as `~/AGENTS.md` gives it: the notes, newest
 /// first, with how old they are at `now`, and how to keep them.
@@ -1205,6 +1280,7 @@ mod tests {
             tickets: None,
             autopilot: None,
             crew_of: None,
+            id_tokens: None,
         }
     }
 
@@ -1963,6 +2039,46 @@ mod tests {
         assert!(text.contains("fctl resolve PRRT_"));
         assert!(text.contains("reviewThreads(first: 100)"));
         assert!(!agents_md(&Extras::default()).contains("Review threads"));
+    }
+
+    #[test]
+    fn agents_md_says_how_to_prove_who_it_is_and_which_clouds_it_reaches() {
+        use fctl_proto::identity::{AwsAccess, AzureAccess, CloudAccess, GcpAccess, IdTokensSpec};
+        let mut spec = IdTokensSpec {
+            issuer: "https://app.fctl.sh/oidc/wsp_acme".into(),
+            cloud_access: CloudAccess::default(),
+        };
+        let md = agents_md(&Extras {
+            id_tokens: Some(&spec),
+            ..Extras::default()
+        });
+        assert!(md.contains("## Identity tokens"));
+        assert!(md.contains("issuer, https://app.fctl.sh/oidc/wsp_acme."));
+        assert!(md.contains("$(fctl id-token --audience https://api.example.com)"));
+        assert!(md.contains("--claims"));
+        assert!(!md.contains("reaches these clouds"));
+        assert!(!agents_md(&Extras::default()).contains("fctl id-token"));
+        spec.cloud_access = CloudAccess {
+            aws: Some(AwsAccess {
+                role_arn: "arn:aws:iam::123456789012:role/agents".into(),
+                ..AwsAccess::default()
+            }),
+            gcp: Some(GcpAccess {
+                provider: "projects/1/locations/global/workloadIdentityPools/fctl/providers/acme"
+                    .into(),
+                service_account: Some("agents@acme.iam.gserviceaccount.com".into()),
+            }),
+            azure: Some(AzureAccess {
+                tenant_id: "72f988bf-86f1-41af-91ab-2d7cd011db47".into(),
+                client_id: "00000000-1111-2222-3333-444444444444".into(),
+            }),
+        };
+        let md = id_tokens_md(&spec);
+        assert!(md.contains("- AWS, as the role `arn:aws:iam::123456789012:role/agents`"));
+        assert!(md.contains("- Google Cloud, as `agents@acme.iam.gserviceaccount.com`"));
+        assert!(md.contains("- Azure, as the application `00000000-1111-2222-3333-444444444444`"));
+        assert!(md.contains("--federated-token \"$(cat \"$AZURE_FEDERATED_TOKEN_FILE\")\""));
+        assert!(md.contains("rather than look for other credentials"));
     }
 
     #[test]

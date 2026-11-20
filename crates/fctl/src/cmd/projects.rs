@@ -193,7 +193,7 @@ pub enum ProjectsCmd {
     /// (maintainers). Sessions take a change of settings when they next
     /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "compact_window", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "compact_window", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory", "id_tokens", "aws_role", "aws_region", "aws_session_tags", "gcp_provider", "gcp_service_account", "azure_tenant", "azure_client"])),
         after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --compact-window 400k        # Claude compacts as its context nears 400K tokens\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
@@ -402,6 +402,52 @@ pub enum ProjectsCmd {
         /// Memory per sandbox, like 16g ("default" for each runner's default).
         #[arg(long, value_name = "SIZE|default", value_parser = memory_arg)]
         memory: Option<OrDefault>,
+        /// Let agents mint identity tokens (`fctl id-token`), which prove
+        /// to your services and clouds that a request comes from one of the
+        /// project's sessions (on by default). Review agents never do.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        id_tokens: Option<bool>,
+        /// The AWS role its agents assume with their identity tokens, like
+        /// arn:aws:iam::123456789012:role/fctl-agents ("" for none). Its
+        /// trust policy must trust them: `fctl projects identity` prints it.
+        #[arg(long, value_name = "ARN")]
+        aws_role: Option<String>,
+        /// The region the AWS CLI and SDKs use there ("" for theirs).
+        #[arg(long, value_name = "REGION")]
+        aws_region: Option<String>,
+        /// Put session tags in the agents' AWS tokens (fctl:project,
+        /// fctl:user and more), for conditions and permissions on them. The
+        /// role's trust policy must then allow sts:TagSession.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        aws_session_tags: Option<bool>,
+        /// The Google Cloud workload identity provider its agents' tokens go
+        /// to: projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
+        /// ("" for none).
+        #[arg(long, value_name = "PROVIDER")]
+        gcp_provider: Option<String>,
+        /// The service account they act as there ("" to act as the pool's
+        /// principals, given access themselves).
+        #[arg(long, value_name = "EMAIL")]
+        gcp_service_account: Option<String>,
+        /// The Microsoft Entra tenant (directory) id of the Azure application
+        /// its agents act as.
+        #[arg(long, value_name = "ID")]
+        azure_tenant: Option<String>,
+        /// That application's client id, whose federated credential trusts
+        /// them ("" for no Azure).
+        #[arg(long, value_name = "ID")]
+        azure_client: Option<String>,
+    },
+    /// How the project's agents prove who they are: their workspace's
+    /// issuer, the subject of their identity tokens, and the commands and
+    /// policies that let each of the project's clouds trust them.
+    #[command(after_help = "Examples:
+  fctl projects identity -p web
+  fctl projects identity -p web --json | jq '.aws.trust_policy' > trust-policy.json")]
+    Identity {
+        /// The project (slug or id); default from `fctl projects use`.
+        #[arg(short, long)]
+        project: Option<String>,
     },
     /// The project's ticket tracker as it works now, and the sessions its
     /// tickets started lately. Change it with `fctl projects set --tickets`.
@@ -547,6 +593,161 @@ fn learning(s: &ProjectSettings) -> &'static str {
         (true, false) => "keep the project's memory and record no retrospectives",
         (false, true) => "keep no memory and record retrospectives",
         (false, false) => "keep no memory and record no retrospectives",
+    }
+}
+
+/// Whether a project's agents prove who they are, and the clouds they
+/// reach, in words.
+fn identity(s: &ProjectSettings) -> String {
+    if !s.id_tokens {
+        return "mint no identity tokens".to_owned();
+    }
+    let c = &s.cloud_access;
+    let mut clouds = Vec::new();
+    if let Some(aws) = &c.aws {
+        clouds.push(format!("AWS as {}", aws.role_arn));
+    }
+    if let Some(gcp) = &c.gcp {
+        clouds.push(match &gcp.service_account {
+            Some(sa) => format!("Google Cloud as {sa}"),
+            None => "Google Cloud".to_owned(),
+        });
+    }
+    if let Some(azure) = &c.azure {
+        clouds.push(format!("Azure as {}", azure.client_id));
+    }
+    if clouds.is_empty() {
+        "prove who they are with identity tokens (fctl id-token)".to_owned()
+    } else {
+        format!(
+            "prove who they are with identity tokens, and reach {}",
+            clouds.join(", ")
+        )
+    }
+}
+
+/// What `fctl projects set` changes of a project's clouds: an empty value
+/// takes a cloud, or one of its settings, away.
+struct CloudFlags {
+    aws_role: Option<String>,
+    aws_region: Option<String>,
+    aws_session_tags: Option<bool>,
+    gcp_provider: Option<String>,
+    gcp_service_account: Option<String>,
+    azure_tenant: Option<String>,
+    azure_client: Option<String>,
+}
+
+impl CloudFlags {
+    fn any(&self) -> bool {
+        self.aws_role.is_some()
+            || self.aws_region.is_some()
+            || self.aws_session_tags.is_some()
+            || self.gcp_provider.is_some()
+            || self.gcp_service_account.is_some()
+            || self.azure_tenant.is_some()
+            || self.azure_client.is_some()
+    }
+
+    fn apply(&self, c: &mut fctl_proto::identity::CloudAccess, slug: &str) -> Result<()> {
+        use fctl_proto::identity::{AwsAccess, AzureAccess, GcpAccess};
+        fn given(v: &Option<String>) -> Option<&str> {
+            v.as_deref().map(str::trim)
+        }
+        match given(&self.aws_role) {
+            Some("") => c.aws = None,
+            Some(arn) => c.aws.get_or_insert_with(AwsAccess::default).role_arn = arn.to_owned(),
+            None => {}
+        }
+        if self.aws_region.is_some() || self.aws_session_tags.is_some() {
+            let Some(aws) = c.aws.as_mut() else {
+                bail!("{slug}'s agents reach no AWS role: name one with --aws-role");
+            };
+            if let Some(region) = given(&self.aws_region) {
+                aws.region = (!region.is_empty()).then(|| region.to_owned());
+            }
+            if let Some(on) = self.aws_session_tags {
+                aws.session_tags = on;
+            }
+        }
+        match given(&self.gcp_provider) {
+            Some("") => c.gcp = None,
+            Some(provider) => {
+                c.gcp.get_or_insert_with(GcpAccess::default).provider = provider.to_owned();
+            }
+            None => {}
+        }
+        if let Some(sa) = given(&self.gcp_service_account) {
+            let Some(gcp) = c.gcp.as_mut() else {
+                bail!(
+                    "{slug}'s agents reach no Google Cloud workload identity provider: name one with --gcp-provider"
+                );
+            };
+            gcp.service_account = (!sa.is_empty()).then(|| sa.to_owned());
+        }
+        match (given(&self.azure_tenant), given(&self.azure_client)) {
+            (_, Some("")) => c.azure = None,
+            (None, None) => {}
+            (tenant, client) => {
+                let was = c.azure.clone().unwrap_or_default();
+                let azure = AzureAccess {
+                    tenant_id: tenant.map_or(was.tenant_id, str::to_owned),
+                    client_id: client.map_or(was.client_id, str::to_owned),
+                };
+                if azure.tenant_id.is_empty() || azure.client_id.is_empty() {
+                    bail!(
+                        "Azure takes both the tenant (--azure-tenant) and the application's client id (--azure-client)"
+                    );
+                }
+                c.azure = Some(azure);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `fctl projects identity`: the issuer, the subject, and what each cloud
+/// needs to trust the project's agents.
+fn print_identity(slug: &str, id: &fctl_proto::identity::ProjectIdentity) {
+    println!("issuer:   {}", id.issuer);
+    println!("keys:     {}", id.jwks_url);
+    println!(
+        "subject:  {} {}",
+        id.subject,
+        style::dim(&format!("(tokens last {} minutes)", id.lifetime_secs / 60))
+    );
+    if !id.enabled {
+        println!(
+            "\n{}",
+            style::amber(&format!(
+                "{slug}'s agents mint no identity tokens: turn them on with `fctl projects set -p {slug} --id-tokens on`."
+            ))
+        );
+    }
+    if let Some(aws) = &id.aws {
+        println!("\n{}", style::bold("AWS"));
+        println!("{}", aws.commands.trim_end());
+        println!("\n{}", style::dim("trust-policy.json:"));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&aws.trust_policy).unwrap_or_default()
+        );
+    }
+    if let Some(gcp) = &id.gcp {
+        println!("\n{}", style::bold("Google Cloud"));
+        println!("{}", gcp.commands.trim_end());
+    }
+    if let Some(azure) = &id.azure {
+        println!("\n{}", style::bold("Azure"));
+        println!("{}", azure.commands.trim_end());
+    }
+    if id.aws.is_none() && id.gcp.is_none() && id.azure.is_none() {
+        println!(
+            "\n{}",
+            style::dim(&format!(
+                "Services check tokens with the issuer's keys. Clouds: fctl projects set -p {slug} --aws-role, --gcp-provider or --azure-client. https://fctl.sh/docs/identity-tokens"
+            ))
+        );
     }
 }
 
@@ -1072,6 +1273,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             println!("context: {}", fctl_domain::context::describe(&p.settings));
             println!("claude:  {}", claude_apps(&p.settings));
             println!("github:  agents {}", on_github(&p.settings));
+            println!("identity: agents {}", identity(&p.settings));
             println!("prs:     agents {}", pull_requests(&p.settings));
             println!("         and {}", rules(&p.settings));
             println!("tickets: {}", tickets(&p.settings));
@@ -1171,10 +1373,27 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             unset_env,
             cpus,
             memory,
+            id_tokens,
+            aws_role,
+            aws_region,
+            aws_session_tags,
+            gcp_provider,
+            gcp_service_account,
+            azure_tenant,
+            azure_client,
         } => {
             let project = super::sessions::project_or_default(project)?;
             let p = api.project(&project).await?;
             let new_icon = icon.apply(p.icon.as_ref())?;
+            let clouds = CloudFlags {
+                aws_role,
+                aws_region,
+                aws_session_tags,
+                gcp_provider,
+                gcp_service_account,
+                azure_tenant,
+                azure_client,
+            };
             // An update replaces all settings: send the others as they are.
             let mut settings = p.settings.clone();
             if let Some(i) = &new_image {
@@ -1251,6 +1470,10 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             if let Some(OrDefault(m)) = memory {
                 settings.memory_mb = m;
             }
+            if let Some(on) = id_tokens {
+                settings.id_tokens = on;
+            }
+            clouds.apply(&mut settings.cloud_access, &p.slug)?;
             if let Some(on) = credit_people {
                 settings.credit_people = on;
             }
@@ -1465,6 +1688,23 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     caches(&p.settings)
                 );
             }
+            if id_tokens.is_some() || clouds.any() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    identity(&p.settings)
+                );
+                if clouds.any() && p.settings.id_tokens {
+                    println!(
+                        "{}",
+                        style::dim(&format!(
+                            "What each cloud needs to trust them: fctl projects identity -p {}",
+                            p.slug
+                        ))
+                    );
+                }
+            }
             if !env.is_empty() || !unset_env.is_empty() {
                 let keys: Vec<&str> = p.settings.env.keys().map(String::as_str).collect();
                 println!(
@@ -1570,6 +1810,15 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::dim("Sessions take the change when they next start or resume.")
                 );
             }
+        }
+        ProjectsCmd::Identity { project } => {
+            let project = super::sessions::project_or_default(project)?;
+            let p = api.project(&project).await?;
+            let id = api.project_identity(p.id.as_str()).await?;
+            if json {
+                return style::print_json(&id);
+            }
+            print_identity(&p.slug, &id);
         }
         ProjectsCmd::Tickets { project } => {
             let project = super::sessions::project_or_default(project)?;
@@ -1968,6 +2217,95 @@ mod tests {
         Fctl::try_parse_from(["fctl", "set"].iter().chain(args).copied())
             .ok()
             .map(|f| f.projects)
+    }
+
+    fn clouds(args: &[&str]) -> Option<CloudFlags> {
+        let Some(ProjectsCmd::Set {
+            aws_role,
+            aws_region,
+            aws_session_tags,
+            gcp_provider,
+            gcp_service_account,
+            azure_tenant,
+            azure_client,
+            ..
+        }) = set(args)
+        else {
+            return None;
+        };
+        Some(CloudFlags {
+            aws_role,
+            aws_region,
+            aws_session_tags,
+            gcp_provider,
+            gcp_service_account,
+            azure_tenant,
+            azure_client,
+        })
+    }
+
+    #[test]
+    fn clouds_are_added_changed_and_taken_away() {
+        use fctl_proto::identity::CloudAccess;
+        const PROVIDER: &str =
+            "projects/1/locations/global/workloadIdentityPools/fctl/providers/acme";
+        let mut c = CloudAccess::default();
+        let Some(added) = clouds(&[
+            "--aws-role",
+            "arn:aws:iam::123456789012:role/agents",
+            "--aws-region",
+            "eu-north-1",
+            "--gcp-provider",
+            PROVIDER,
+            "--azure-tenant",
+            "72f988bf-86f1-41af-91ab-2d7cd011db47",
+            "--azure-client",
+            "00000000-1111-2222-3333-444444444444",
+        ]) else {
+            panic!("parses");
+        };
+        assert!(added.any());
+        assert!(added.apply(&mut c, "web").is_ok());
+        assert_eq!(
+            c.aws.as_ref().and_then(|a| a.region.as_deref()),
+            Some("eu-north-1")
+        );
+        assert_eq!(c.gcp.as_ref().map(|g| g.provider.as_str()), Some(PROVIDER));
+        assert!(c.azure.is_some());
+        // A setting of each changes it alone.
+        let Some(tags) = clouds(&[
+            "--aws-session-tags",
+            "on",
+            "--gcp-service-account",
+            "a@b.iam.gserviceaccount.com",
+        ]) else {
+            panic!("parses");
+        };
+        assert!(tags.apply(&mut c, "web").is_ok());
+        assert_eq!(c.aws.as_ref().map(|a| a.session_tags), Some(true));
+        assert_eq!(
+            c.aws.as_ref().map(|a| a.role_arn.as_str()),
+            Some("arn:aws:iam::123456789012:role/agents")
+        );
+        assert!(c.gcp.as_ref().is_some_and(|g| g.service_account.is_some()));
+        // Empty takes each away.
+        let Some(none) = clouds(&["--aws-role", "", "--gcp-provider", "", "--azure-client", ""])
+        else {
+            panic!("parses");
+        };
+        assert!(none.apply(&mut c, "web").is_ok());
+        assert!(!c.any());
+        // What needs a cloud says so.
+        for args in [
+            &["--aws-region", "eu-north-1"][..],
+            &["--gcp-service-account", "a@b.iam.gserviceaccount.com"],
+            &["--azure-tenant", "72f988bf-86f1-41af-91ab-2d7cd011db47"],
+        ] {
+            let Some(flags) = clouds(args) else {
+                panic!("parses");
+            };
+            assert!(flags.apply(&mut CloudAccess::default(), "web").is_err());
+        }
     }
 
     #[test]

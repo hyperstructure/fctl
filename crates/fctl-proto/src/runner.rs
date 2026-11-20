@@ -467,6 +467,14 @@ pub struct SessionSpec {
     /// out of the agent's configuration, and their agents say `author`
     /// started it.
     pub crew_of: Option<crate::autopilot::AutopilotAuthor>,
+    /// Where its project lets its agents mint identity tokens
+    /// (`ProjectSettings::id_tokens`), its workspace's issuer and the
+    /// clouds its agent reaches as itself: its agent tells Claude of `fctl
+    /// id-token` and sets the clouds up. Absent for review agents, where
+    /// the project turned them off, and from older control planes; older
+    /// hosts leave it out of the agent's configuration, and their agents
+    /// mint none.
+    pub id_tokens: Option<crate::identity::IdTokensSpec>,
 }
 
 /// What hosts whose agents run review sessions announce in their hello

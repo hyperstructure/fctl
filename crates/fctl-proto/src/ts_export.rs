@@ -12,8 +12,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         };
     }
     use crate::{
-        agent, api, autopilot, event, hooks, runner, service_accounts, session, tickets, uplink,
-        viewer,
+        agent, api, autopilot, event, hooks, identity, runner, service_accounts, session, tickets,
+        uplink, viewer,
     };
     export!(
         crate::ApiError,
@@ -367,6 +367,16 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         hooks::HookReviewData,
         hooks::HookRun,
         hooks::HookScheduleData,
+        identity::SubjectPart,
+        identity::CloudAccess,
+        identity::AwsAccess,
+        identity::GcpAccess,
+        identity::AzureAccess,
+        identity::ProjectIdentity,
+        identity::AwsSetup,
+        identity::GcpSetup,
+        identity::AzureSetup,
+        identity::IdToken,
     );
     // Values the web app shows as they are here, beside the types.
     let instructions = serde_json::to_string(session::DEFAULT_PULL_REQUEST_INSTRUCTIONS)

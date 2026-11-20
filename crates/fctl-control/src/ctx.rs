@@ -324,16 +324,19 @@ impl Ctx {
 
     /// Applies the `AUTH_LIMITER` rate limit to `key`.
     pub async fn rate_limit(&self, key: &str) -> AppResult<()> {
+        self.limit(key, "Too many attempts. Wait a minute and try again.")
+            .await
+    }
+
+    /// Applies the `AUTH_LIMITER` rate limit to `key`, saying `message`
+    /// when it is reached.
+    pub async fn limit(&self, key: &str, message: &str) -> AppResult<()> {
         let Ok(limiter) = self.env.rate_limiter("AUTH_LIMITER") else {
             return Ok(());
         };
         match limiter.limit(key.to_owned()).await {
             Ok(outcome) if !outcome.success => Err(AppError(
-                ApiError::new(
-                    ErrorCode::RateLimited,
-                    "Too many attempts. Wait a minute and try again.",
-                )
-                .with_retry_after(60),
+                ApiError::new(ErrorCode::RateLimited, message).with_retry_after(60),
             )),
             _ => Ok(()),
         }

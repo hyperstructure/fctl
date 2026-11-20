@@ -206,7 +206,7 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
                 "projects",
                 _,
                 "repos" | "members" | "memories" | "retrospectives" | "review-agents" | "reviews"
-                | "schedules" | "tickets",
+                | "schedules" | "tickets" | "identity",
             ]
             | ["memories", _]
             | ["schedules", _]

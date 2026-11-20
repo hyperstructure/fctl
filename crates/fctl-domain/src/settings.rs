@@ -81,9 +81,11 @@ pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
 /// Issues of the repositories agents write to, which would reach issues the
 /// project keeps its agents away from; for the Linear teams of `tickets`
 /// besides the first (`more_teams`), none, while the first stays in the same
-/// Linear workspace (send `[]` for none). An `image_build` it leaves out
-/// stays unless it chooses an image instead (send `null` for none). `sent`
-/// is the update's `settings` object as it arrived.
+/// Linear workspace (send `[]` for none); for `id_tokens`, on, which would
+/// let agents mint identity tokens again; for `cloud_access`, no cloud. An
+/// `image_build` it leaves out stays unless it chooses an image instead
+/// (send `null` for none). `sent` is the update's `settings` object as it
+/// arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
     let follow_ups = sent.get("follow_ups");
     let unsent = |key: &str| follow_ups.and_then(|f| f.get(key)).is_none();
@@ -142,6 +144,12 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("tickets").is_none() {
         settings.tickets = stored.tickets.clone();
+    }
+    if sent.get("id_tokens").is_none() {
+        settings.id_tokens = stored.id_tokens;
+    }
+    if sent.get("cloud_access").is_none() {
+        settings.cloud_access = stored.cloud_access.clone();
     }
     if let (Some(l), Some(was)) = (settings.tickets.linear.as_mut(), &stored.tickets.linear)
         && l.more_teams.is_none()
@@ -320,6 +328,35 @@ mod tests {
         };
         keep_unsent(&mut s, &stored, &json!({ "github_access": "push" }));
         assert_eq!(s.github_access, Some(GithubAccess::Push));
+    }
+
+    #[test]
+    fn updates_without_identity_tokens_keep_them_as_they_were() {
+        let stored = ProjectSettings {
+            id_tokens: false,
+            cloud_access: fctl_proto::identity::CloudAccess {
+                aws: Some(fctl_proto::identity::AwsAccess {
+                    role_arn: "arn:aws:iam::123456789012:role/agents".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..ProjectSettings::default()
+        };
+        // An older client sends neither: tokens stay off, AWS stays.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert!(!s.id_tokens);
+        assert_eq!(s.cloud_access, stored.cloud_access);
+        // One that sends them changes them.
+        let mut s = ProjectSettings::default();
+        keep_unsent(
+            &mut s,
+            &stored,
+            &json!({ "id_tokens": true, "cloud_access": {} }),
+        );
+        assert!(s.id_tokens);
+        assert!(!s.cloud_access.any());
     }
 
     #[test]

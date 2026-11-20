@@ -9,6 +9,7 @@ pub mod completions;
 pub mod files;
 pub mod host;
 pub mod host_claude;
+pub mod id_token;
 pub mod memory;
 pub mod notifications;
 pub mod passkeys;
