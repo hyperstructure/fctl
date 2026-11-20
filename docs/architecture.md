@@ -1426,15 +1426,15 @@ messages. A session that runs on another runner by then, that someone
 stopped or archived, or whose project was deleted, stops instead, with a
 reason that says which (`fctl_domain::reconcile`).
 
-An autopilot's own session that its runner was away from is one whose
-next wake may start a fresh session instead: once it is stopped, when
-another runner would resume it in a new sandbox without its
-conversation, or right away when its runner was uninstalled or removed
-([Autopilots](#autopilots)). That earlier session doesn't carry on if its
-runner comes back with it (`Known.superseded`): the fresh one has taken
-over. Where no other runner would run it (the workspace has one runner,
-say), the wake resumes it as any session's resume does, and it waits for
-that runner.
+An autopilot whose own session such a runner had starts a fresh session
+at its next wake once that session is stopped (ten minutes after the
+runner went away, or at once when it was uninstalled or removed), if
+another runner would otherwise resume it in a new sandbox, without its
+conversation ([Autopilots](#autopilots)). The earlier session doesn't
+carry on should its runner come back with it (`Known.superseded`): the
+fresh one has taken over. Where no other runner would run it (the
+workspace has only that one, say), the wake resumes it as a message
+would, and the resume waits for its runner.
 
 ### Host updates
 
