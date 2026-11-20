@@ -45,6 +45,7 @@ const settings: G.ProjectSettings = {
   package_caches: false,
   project_memory: true,
   retrospectives: true,
+  id_tokens: true,
   env: {},
 };
 

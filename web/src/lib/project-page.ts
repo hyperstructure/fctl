@@ -4,6 +4,7 @@
 
 import type * as G from "@/gen";
 import { compactGist } from "./context";
+import { identityGist } from "./identity";
 import { imageSource } from "./images";
 import { effortLabel, modelLabel } from "./models";
 import { TRACKERS, trackerOf } from "./tickets";
@@ -29,6 +30,7 @@ export const SETTINGS_PAGES = [
   "tickets",
   "sandbox",
   "secrets",
+  "identity",
   "webhooks",
 ] as const;
 export type ProjectSettingsPage = (typeof SETTINGS_PAGES)[number];
@@ -67,7 +69,10 @@ export interface SettingsEntry {
   label: string;
 }
 
-/** Settings' pages in their groups: the project, how its agents work, where they run, what it tells other tools. */
+/**
+ * Settings' pages in their groups: the project, how its agents work, where they run and what they
+ * reach, what it tells other tools.
+ */
 export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
   [{ page: "general", label: "General" }],
   [
@@ -78,6 +83,7 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
   [
     { page: "sandbox", label: "Sandbox" },
     { page: "secrets", label: "Secrets" },
+    { page: "identity", label: "Identity" },
   ],
   [{ page: "webhooks", label: "Webhooks" }],
 ];
@@ -185,6 +191,7 @@ export function settingsGists(
     "pull-requests": pullRequestsGist(s),
     tickets: ticketsGist(s),
     sandbox: sandboxGist(s),
+    identity: identityGist(s),
     secrets:
       loaded.secrets === undefined
         ? undefined

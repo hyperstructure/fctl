@@ -50,6 +50,8 @@ export const keys = {
   members: (id: string) => ["members", id] as const,
   secrets: (id: string) => ["secrets", id] as const,
   projectRepos: (id: string) => ["project-repos", id] as const,
+  /** A project's issuer, the subject of its agents' identity tokens and its clouds' setup, by project id. */
+  projectIdentity: (id: string) => ["project-identity", id] as const,
   /** A project's memory, by project id; a session's notes under it. */
   memories: (project: string) => ["memories", project] as const,
   sessionMemories: (project: string, session: string) => ["memories", project, "session", session] as const,

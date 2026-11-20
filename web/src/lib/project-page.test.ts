@@ -24,6 +24,7 @@ const settings: G.ProjectSettings = {
   package_caches: false,
   project_memory: true,
   retrospectives: true,
+  id_tokens: true,
   env: {},
 };
 
@@ -98,6 +99,7 @@ describe("a project's page", () => {
       "tickets",
       "sandbox",
       "secrets",
+      "identity",
       "webhooks",
     ]);
     expect(settingsPagesFor("maintainer")).toEqual(settingsPagesFor("owner"));

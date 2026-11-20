@@ -112,6 +112,7 @@ const project = (more: Partial<G.Project> = {}): G.Project => ({
     package_caches: false,
     project_memory: true,
     retrospectives: true,
+    id_tokens: true,
     env: {},
   },
   role: "maintainer",

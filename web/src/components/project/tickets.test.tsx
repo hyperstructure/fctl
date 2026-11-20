@@ -81,6 +81,7 @@ const settings: G.ProjectSettings = {
   package_caches: false,
   project_memory: true,
   retrospectives: true,
+  id_tokens: true,
   env: {},
 };
 const workspace: G.WorkspaceRef = { id: "wsp_1", slug: "acme", name: "Acme", color: "yellow" };

@@ -1,6 +1,6 @@
 // A project's Settings tab: its pages, listed beside the one open where both fit, else the list
 // alone (a phone), which opens one with the way back to it. General; Agents, Pull requests and
-// Tickets; Sandbox and Secrets. Owners and maintainers see them all; everyone else in the project
+// Tickets; Sandbox, Secrets and Identity; Webhooks. Owners and maintainers see them all; everyone else in the project
 // reads Tickets, which shows alone. Each page that edits saves on its own, once something changed,
 // and asks before someone leaves it with changes unsaved. Which pages there are, who sees them and
 // what the list says of each: lib/project-page.ts.
@@ -11,6 +11,7 @@ import {
   Bot,
   Box,
   ChevronLeft,
+  Fingerprint,
   GitPullRequest,
   KeyRound,
   type LucideIcon,
@@ -21,6 +22,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { ProjectIconPicker } from "@/components/project/icon-picker";
+import { IdentitySettings } from "@/components/project/identity";
 import { ProjectIcon } from "@/components/project/project-icon";
 import { Secrets } from "@/components/project/secrets";
 import { TicketsSettings } from "@/components/project/tickets";
@@ -94,6 +96,7 @@ const ICONS: Record<ProjectSettingsPage, LucideIcon> = {
   tickets: Ticket,
   sandbox: Box,
   secrets: KeyRound,
+  identity: Fingerprint,
   webhooks: Webhook,
 };
 
@@ -255,6 +258,8 @@ function SettingsBody({
       return <Sandbox project={project} />;
     case "secrets":
       return <Secrets project={project} />;
+    case "identity":
+      return <IdentitySettings project={project} />;
     case "webhooks":
       return <Webhooks project={project} open={webhook} />;
   }

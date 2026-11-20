@@ -74,6 +74,7 @@ const project: G.Project = {
     package_caches: false,
     project_memory: true,
     retrospectives: true,
+    id_tokens: true,
     env: {},
   },
   role: "editor",

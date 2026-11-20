@@ -60,6 +60,7 @@ const project = (name: string, w: G.Workspace, active_sessions = 0): G.Project =
     package_caches: false,
     project_memory: true,
     retrospectives: true,
+    id_tokens: true,
   },
   role: "owner",
   created_by: { id: "usr_ada", name: "Ada Lovelace" },
