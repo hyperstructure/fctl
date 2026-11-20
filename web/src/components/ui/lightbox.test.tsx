@@ -1,7 +1,15 @@
 import { act, type ReactNode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fitWidth, Lightbox, type LightboxFile, type LightboxItem, plainClick, Swipe } from "./lightbox";
+import {
+  fitWidth,
+  Lightbox,
+  type LightboxFile,
+  type LightboxItem,
+  oriented,
+  plainClick,
+  Swipe,
+} from "./lightbox";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -65,6 +73,28 @@ describe("Lightbox", () => {
     expect(img.style.getPropertyValue("--fit-width")).toBe(fitWidth({ width: 1440, height: 900 }));
     expect(img.className).toMatch(/\bw-\(--fit-width\)/);
     expect(img.className).not.toMatch(/\bw-auto\b/);
+  });
+
+  it("turns a photo's size as the browser turns the photo, once it has loaded", () => {
+    // A JPEG's size in its file leaves out its orientation: the browser shows this one standing up.
+    const img = open({
+      name: "photo.jpg",
+      media_type: "image/jpeg",
+      width: 4032,
+      height: 3024,
+    }).dialog.querySelector("img") as HTMLImageElement;
+    expect([img.getAttribute("width"), img.getAttribute("height")]).toEqual(["4032", "3024"]);
+    Object.defineProperties(img, { naturalWidth: { value: 3024 }, naturalHeight: { value: 4032 } });
+    act(() => img.dispatchEvent(new Event("load")));
+    expect([img.getAttribute("width"), img.getAttribute("height")]).toEqual(["3024", "4032"]);
+    expect(img.style.getPropertyValue("--fit-width")).toBe(fitWidth({ width: 3024, height: 4032 }));
+  });
+
+  it("keeps its file's size when the browser takes the image to be smaller, as Safari can", () => {
+    const img = open().dialog.querySelector("img") as HTMLImageElement;
+    Object.defineProperties(img, { naturalWidth: { value: 308 }, naturalHeight: { value: 192 } });
+    act(() => img.dispatchEvent(new Event("load")));
+    expect([img.getAttribute("width"), img.getAttribute("height")]).toEqual(["1440", "900"]);
   });
 
   it("leaves the size of an image whose file doesn't say it to the browser", () => {
@@ -1161,5 +1191,34 @@ describe("fitWidth", () => {
   it("is the image's own width, or as wide as the room's height lets it be, with its border", () => {
     expect(fitWidth({ width: 1440, height: 900 })).toBe("min(1442px, (100dvh - 8rem - 2px) * 1.6 + 2px)");
     expect(fitWidth({ width: 400, height: 800 })).toBe("min(402px, (100dvh - 8rem - 2px) * 0.5 + 2px)");
+  });
+});
+
+describe("oriented", () => {
+  const photo = { width: 4032, height: 3024 };
+  it("is the file's size until the image loads", () => {
+    expect(oriented(photo)).toEqual(photo);
+    expect(oriented(photo, { width: 0, height: 0 })).toEqual(photo);
+  });
+
+  it("turns it when the browser shows the image the other way round", () => {
+    expect(oriented(photo, { width: 3024, height: 4032 })).toEqual({ width: 3024, height: 4032 });
+    // Smaller too, as Safari can take it to be.
+    expect(oriented({ width: 1440, height: 900 }, { width: 192, height: 308 })).toEqual({
+      width: 900,
+      height: 1440,
+    });
+  });
+
+  it("keeps it when the browser shows it as the file says, whatever size it takes it to be", () => {
+    expect(oriented(photo, photo)).toEqual(photo);
+    expect(oriented({ width: 1440, height: 900 }, { width: 308, height: 192 })).toEqual({
+      width: 1440,
+      height: 900,
+    });
+    expect(oriented({ width: 900, height: 1440 }, { width: 192, height: 308 })).toEqual({
+      width: 900,
+      height: 1440,
+    });
   });
 });

@@ -52,6 +52,27 @@ export function fitWidth({ width, height }: { width: number; height: number }): 
   return `min(${width + 2}px, (100dvh - 8rem - 2px) * ${width / height} + 2px)`;
 }
 
+/** An image's size in pixels. */
+interface Size {
+  width: number;
+  height: number;
+}
+
+/**
+ * A file's size as the browser shows the image, which it says is `natural`
+ * (its proportions, if not always its size): turned a quarter if those are
+ * the other way round. A photo's orientation turns it so, which a JPEG's
+ * size in its file leaves out. Before it loads, as the file says.
+ */
+export function oriented(file: Size, natural?: Size): Size {
+  if (!natural?.width || !natural.height) return file;
+  const ratio = file.width / file.height;
+  const shown = natural.width / natural.height;
+  return Math.abs(Math.log(shown * ratio)) < Math.abs(Math.log(shown / ratio))
+    ? { width: file.height, height: file.width }
+    : file;
+}
+
 /**
  * A finger that lets go of a picture swiped this far aside (a fraction of
  * the window's width), or moving aside this fast (px/ms) over its last
@@ -286,7 +307,8 @@ export function Lightbox({
     };
     const viewOf = (img: HTMLImageElement) => (zoomed.current?.img === img ? zoomed.current.view : FITS);
     // Where it fits, in the figure that fills the window. Offsets leave its
-    // zoom out. Its own width is its file's, where that is known (`Slide`).
+    // zoom out. Its own width is its file's, as it shows, where that is known
+    // (`Slide`).
     const measure = (img: HTMLImageElement) =>
       new Zoom(
         { width: d.clientWidth, height: d.clientHeight },
@@ -746,8 +768,11 @@ function Slide({ item, offset, steps }: { item: LightboxItem; offset: number; st
   // larger than it shows it, and may then lay out each <img> of it, the
   // lightbox's too, at that decode's size in pixels, until the page loads
   // again. An image whose size is known shows at that size instead
-  // (`fitWidth`), and takes its room while it loads.
-  const size = file.width && file.height ? { width: file.width, height: file.height } : undefined;
+  // (`fitWidth`), and takes its room while it loads; once it has, turned as
+  // the browser turns it (`oriented`).
+  const [natural, setNatural] = useState<Size>();
+  const size =
+    file.width && file.height ? oriented({ width: file.width, height: file.height }, natural) : undefined;
   // Room at the sides for the buttons, where a mouse uses them.
   const wide = cn("max-w-[calc(100vw-2rem)]", steps && "not-pointer-coarse:max-w-[calc(100vw-8rem)]");
   // Room above for the X, and below for the caption (`fitWidth` too).
@@ -782,6 +807,10 @@ function Slide({ item, offset, steps }: { item: LightboxItem; offset: number; st
           width={size?.width}
           height={size?.height}
           decoding="async"
+          onLoad={(e) => {
+            const { naturalWidth: width, naturalHeight: height } = e.currentTarget;
+            setNatural({ width, height });
+          }}
           onError={() => setFailed(true)}
           style={size && ({ "--fit-width": fitWidth(size) } as CSSProperties)}
           className={cn(
