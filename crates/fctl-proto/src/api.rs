@@ -2700,9 +2700,10 @@ pub struct RunnerDetail {
     pub runner: Runner,
     pub sessions: Vec<RunnerSession>,
     /// The autopilots that are on whose own session keeps its sandbox on
-    /// the runner: their wakes resume that session here, between turns
-    /// too, and even while the runner drains. Absent from older control
-    /// planes.
+    /// the runner, and whose next wake resumes that session here, between
+    /// turns too. While the runner drains, only those paused there
+    /// mid-turn: the others' next wake, once their turn has ended, starts a
+    /// fresh session on another runner. Absent from older control planes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<RunnerAutopilot>>", optional))]
     pub autopilots: Vec<RunnerAutopilot>,

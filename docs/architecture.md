@@ -1351,7 +1351,9 @@ runs as many sessions as it may, the session waits for it, for up to ten
 minutes. Then, or right away when that runner is offline, can't start
 sandboxes now (its driver isn't ready) or no longer gives the sandbox the
 session asks for, the session starts on another runner in a new sandbox: the agent clones the session's branch and starts
-a new conversation from the session's task.
+a new conversation from the session's task. An autopilot's wake doesn't
+resume its own session that way: it starts a fresh one, which takes over
+from its plan, log and files ([Autopilots](#autopilots)).
 
 ### Draining a runner
 
@@ -1370,7 +1372,10 @@ can end it.
   waits because every runner online drains says so.
 - A resume still goes back to the draining runner that has the session's
   sandbox ([Idle sessions](#idle-sessions)): it keeps Claude's conversation
-  and needs no new sandbox.
+  and needs no new sandbox. Not an autopilot's wake: between its own
+  session's turns, it starts a fresh session on another runner instead,
+  and the session here stops ([Autopilots](#autopilots)), so that the
+  autopilot doesn't come back.
 - Sessions that wait for a message stop once they have waited a minute,
   instead of after the idle timeout. FleetDO asks each idle session it sees
   in the runner's heartbeats, and SessionDO agrees only when no message is
@@ -1385,9 +1390,11 @@ when, and the sessions that still run. The host's view also lists the
 autopilots that are on whose own session's sandbox the runner has
 (FleetDO's `sandboxes`, `POST /homes`) and whose next wake resumes that
 session rather than start a fresh one (`fctl_domain::autopilot::wakes_in_own`,
-at its `wake_at`): such a wake comes back here even while the runner
-drains, so a runner that `--wait` emptied is busy again at their next
-check-in.
+at its `wake_at`). While the runner drains, that is only one paused there
+mid-turn on a usage limit, which `--wait` waits for as for any session
+there: the others' next wake, once their turn has ended, starts a fresh
+session elsewhere, so no autopilot comes back to a runner that `--wait`
+emptied.
 
 Removing a machine is the step that moves its sessions elsewhere.
 `fctl host uninstall` asks the control plane which sessions run on the
@@ -1419,6 +1426,16 @@ resumed meanwhile that no runner took: the agent that still runs gets the
 messages. A session that runs on another runner by then, that someone
 stopped or archived, or whose project was deleted, stops instead, with a
 reason that says which (`fctl_domain::reconcile`).
+
+An autopilot whose own session such a runner had starts a fresh session
+at its next wake once that session is stopped (ten minutes after the
+runner went away, or at once when it was uninstalled or removed), if
+another runner would otherwise resume it in a new sandbox, without its
+conversation ([Autopilots](#autopilots)). The earlier session doesn't
+carry on should its runner come back with it (`Known.superseded`): the
+fresh one has taken over. Where no other runner would run it (the
+workspace has only that one, say), the wake resumes it as a message
+would, and the resume waits for its runner.
 
 ### Host updates
 
@@ -2498,8 +2515,14 @@ sessions to do it, and sets up what the work needs, as far as they let it
    which resumes it if it stopped, while that started less than 12 hours
    ago (`fctl_domain::autopilot::SHIFT_MS`), holds less context than where
    people want it to hand off, didn't fail and people didn't ask for a
-   fresh one, or works now (`fctl_domain::autopilot::fresh`). Otherwise it
-   stops that one and
+   fresh one, or works now (`fctl_domain::autopilot::fresh`). Between its
+   turns, where that session's sandbox is counts too (FleetDO's
+   `POST /sandbox`, `fctl_domain::autopilot::moves`): not on a runner that
+   drains ([Draining a runner](#draining-a-runner)), and, once it stops,
+   not where its runner can't take it back (offline, or uninstalled) while
+   another runner would resume it in a new sandbox, without its
+   conversation ([A runner that goes away](#a-runner-that-goes-away)); its
+   log names the runner. Otherwise it stops that one and
    starts a fresh one, whose first message is its briefing
    (`fctl_domain::autopilot::briefing`): who it is and for whom, the
    direction, and how it works, then why it takes over from the last one
