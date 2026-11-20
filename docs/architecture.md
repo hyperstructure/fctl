@@ -1689,8 +1689,8 @@ how, where the sandbox's fctl has the command.
 
 An agent proves to a workspace's own services and clouds that a request
 comes from one of its sessions with an identity token: an OpenID Connect
-ID token the control plane signs, which says whom the session runs for
-and its workspace, project, runner, branch and GitHub access, for one
+(OIDC) ID token the control plane signs, which says whom the session runs
+for and its workspace, project, runner, branch and GitHub access, for one
 audience, for 10 minutes ([Identity tokens](identity-tokens.md),
 [ADR 0090](adr/0090-agents-prove-who-they-are-with-tokens-their-workspaces-issuer-signs.md)).
 

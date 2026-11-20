@@ -84,6 +84,15 @@ describe("images in the agent's answers", () => {
     }
   });
 
+  it("show at full size at the size the page knows", () => {
+    const c = render(`![after.png](${src})`, new Map([[src, { width: 1440, height: 900 }]]));
+    act(() => c.querySelector<HTMLButtonElement>('button[aria-label="View after.png"]')?.click());
+    const dialog = document.querySelector("dialog") as HTMLDialogElement;
+    const img = dialog.querySelector("img");
+    expect([img?.getAttribute("width"), img?.getAttribute("height")]).toEqual(["1440", "900"]);
+    expect(dialog.querySelector("figcaption")?.textContent).toBe("after.png1440×900");
+  });
+
   it("load with the page when their size isn't known, so that they can't push it as the reader scrolls up", () => {
     const other = render("![a diagram](https://app.fctl.test/diagram.png)").querySelector("img");
     expect(other?.getAttribute("loading")).toBeNull();
