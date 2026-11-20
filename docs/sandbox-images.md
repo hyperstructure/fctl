@@ -358,11 +358,14 @@ ENV PATH=/home/agent/.local/bin:$PATH
   script starts instead.
 - **Keep it current.** fctl turns off Claude Code's auto-updater, so the
   image's Claude Code is as old as the image, and agents reach fctl's new
-  features through the image's fctl: a session whose fctl lacks one it
-  needs says so in its log. Build the image again for fctl's releases, with
-  `--no-cache` or a new `FCTL_VERSION`, since Docker would otherwise reuse
-  the steps that installed them; the default image is also rebuilt on each
-  day Claude Code has a new release.
+  features through the image's fctl. fctl tells agents only of the
+  commands it has: the session's log says when it lacks those that rename
+  the session, keep the project's memory, reach its tickets or run an
+  autopilot or a review agent, and others, like asking people or
+  publishing screenshots, the agent goes without. Build the image again
+  for fctl's releases, with `--no-cache` or a new `FCTL_VERSION`, since
+  Docker would otherwise reuse the steps that installed them; the default
+  image is also rebuilt on each day Claude Code has a new release.
 - **Other distributions** take the same steps with their own packages. On
   Alpine: `apk add bash ca-certificates curl git github-cli sudo shadow`
   (Claude Code needs bash, and `shadow` has `useradd`), and the PATH in
@@ -370,12 +373,13 @@ ENV PATH=/home/agent/.local/bin:$PATH
 
 The sandbox repository's
 [`examples/check.sh`](https://github.com/hyperstructure/sandbox/blob/main/examples/check.sh)
-checks an image for what fctl needs: it runs in the image as its user, and
-says what's missing.
+checks an image for what fctl needs: it runs in the image as its user, in
+place of the image's `ENTRYPOINT` as in a session, and says what's
+missing.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hyperstructure/sandbox/main/examples/check.sh -o check.sh
-docker run --rm -i my-sandbox sh -s < check.sh
+docker run --rm -i --entrypoint sh my-sandbox -s < check.sh
 ```
 
 Then build the image for both architectures, push it and choose it for
@@ -519,8 +523,8 @@ Ubuntu, and the sandbox repository's `examples/check.sh` checks an image
 for it). It needs no fctl-agent: the host copies its own in ([What fctl
 writes into a sandbox](#what-fctl-writes-into-a-sandbox)).
 
-- **`/bin/sh`, `tail`, `id`, `mkdir`, `chown`, `chmod`, `mv`, `rm` and
-  `stat`** in `/usr/bin` or `/bin`, where the host runs them in the
+- **`/bin/sh`, `tail`, `id`, `cat`, `mkdir`, `chown`, `chmod`, `mv`, `rm`
+  and `stat`** in `/usr/bin` or `/bin`, where the host runs them in the
   sandbox. A container's main process is `tail -f /dev/null`, in place of
   the image's `ENTRYPOINT` and `CMD`, and `id -u` tells fctl who the
   image's user is.
