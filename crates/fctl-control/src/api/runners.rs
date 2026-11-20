@@ -630,8 +630,9 @@ async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
         }
         Err(e) => Err(e),
     };
+    let draining = runner.drain.is_some();
     let autopilots = match homes {
-        Ok(homes) => autopilots_here(&ctx.db, &homes.sessions, ctx.now).await,
+        Ok(homes) => autopilots_here(&ctx.db, &homes.sessions, draining, ctx.now).await,
         Err(e) => Err(e),
     }
     .unwrap_or_else(|e| {
@@ -660,11 +661,13 @@ async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
 /// The autopilots that are on whose own session is among `homes`, the
 /// sessions whose sandboxes a runner keeps, and whose next wake resumes it
 /// there rather than start a fresh session anywhere: those a runner that
-/// shuts down would cut off, or make carry on elsewhere without their
-/// conversation. Soonest to wake first.
+/// shuts down would cut off. While the runner drains (`draining`), only
+/// one paused there mid-turn: the others' next wake, once their turn has
+/// ended, starts a fresh session elsewhere. Soonest to wake first.
 async fn autopilots_here(
     db: &worker::D1Database,
     homes: &[String],
+    draining: bool,
     now: i64,
 ) -> AppResult<Vec<RunnerAutopilot>> {
     use fctl_domain::autopilot as ap;
@@ -721,7 +724,7 @@ async fn autopilots_here(
                 .split(',')
                 .any(|w| AutopilotWakeReason::parse(w.trim()) == Some(AutopilotWakeReason::Fresh));
             let wake = r.wake_at.unwrap_or(now).max(now);
-            ap::wakes_in_own(own, handoff_at, asked, wake).then(|| RunnerAutopilot {
+            ap::wakes_in_own(own, handoff_at, asked, wake, draining).then(|| RunnerAutopilot {
                 session: RunnerSession {
                     id: fctl_proto::SessionId(r.id),
                     project_slug: r.project_slug,
@@ -960,7 +963,8 @@ mod tests {
 
     /// Only the autopilots that are on, whose own session's sandbox is
     /// here, and whose next wake resumes that session rather than start a
-    /// fresh one, soonest first.
+    /// fresh one, soonest first: while the runner drains, only one paused
+    /// there mid-turn.
     #[wasm_bindgen_test]
     async fn lists_the_autopilots_whose_next_wake_resumes_here() -> AppResult<()> {
         let db = testing::database();
@@ -981,7 +985,7 @@ mod tests {
             .iter()
             .map(|p| format!("ses_{p}"))
             .collect();
-        let here = autopilots_here(&db, &homes, NOW).await?;
+        let here = autopilots_here(&db, &homes, false, NOW).await?;
         let listed: Vec<(&str, Option<i64>)> = here
             .iter()
             .map(|a| (a.session.project_slug.as_str(), a.wake_at))
@@ -995,7 +999,20 @@ mod tests {
         );
         let shop = here.last().map(|a| (a.session.number, a.session.status));
         assert_eq!(shop, Some((7, SessionStatus::Stopped)));
-        assert!(autopilots_here(&db, &[], NOW).await?.is_empty());
+        assert!(autopilots_here(&db, &[], false, NOW).await?.is_empty());
+        // While the runner drains, only one paused there mid-turn comes
+        // back to it: the others' next wake, once their turn has ended,
+        // starts a fresh session on another runner.
+        autopilot(&db, "limit", "on", "paused", HOUR, NOW + HOUR).await?;
+        autopilot(&db, "busy", "on", "running", HOUR, NOW + 45 * 60_000).await?;
+        let mut all = homes.clone();
+        all.extend(["ses_limit".to_owned(), "ses_busy".to_owned()]);
+        let draining: Vec<String> = autopilots_here(&db, &all, true, NOW)
+            .await?
+            .into_iter()
+            .map(|a| a.session.project_slug)
+            .collect();
+        assert_eq!(draining, vec!["limit".to_owned()]);
         Ok(())
     }
 }

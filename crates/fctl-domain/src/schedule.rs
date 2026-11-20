@@ -318,6 +318,24 @@ pub fn pick<'a>(
         .ok_or(Wait::Busy)
 }
 
+/// Whether `slot` could run a session that wants `want` and `image` (a
+/// review agent's: `review`) now, its free slots aside, as [`pick`]
+/// judges it: online, running the session's workspace's sessions for its
+/// person, its image and a sandbox its size, with its driver ready. As the
+/// runner that keeps the session's sandbox (`home`), it takes the session
+/// back even while it drains or is low on disk; another runner takes it
+/// only while it does neither.
+pub fn could_run(slot: &Slot<'_>, want: Want, image: &ImageWant, review: bool, home: bool) -> bool {
+    slot.online
+        && slot.enabled
+        && slot.serves
+        && (!review || slot.reviews)
+        && slot.images.takes(image)
+        && slot.sandbox.is_none_or(|l| want.fits(&l))
+        && slot.unready.is_none()
+        && (home || !(slot.draining || slot.low_disk))
+}
+
 /// Why no online runner fits `want` (all of them report limits).
 fn too_big(online: &[&Slot], want: Want) -> Wait {
     let limits = || online.iter().filter_map(|s| s.sandbox);
@@ -917,6 +935,109 @@ mod tests {
             Wait::Draining.reason(),
             "Waiting for a runner: the ones online are draining"
         );
+    }
+
+    #[test]
+    fn could_run_says_what_pick_does_its_free_slots_aside() {
+        let none: Vec<String> = vec![];
+        let base = slot("studio", 2, 0, &none);
+        let built = ImageWant::Build(fctl_proto::session::RepoRef {
+            owner: "acme".into(),
+            name: "shop".into(),
+        });
+        let unready = Unready {
+            driver: "docker",
+            why: "the Docker daemon isn't running",
+        };
+        // (slot, the image it is asked for, a review agent's, whether it
+        // could run it as the session's home, and as another runner)
+        let cases = [
+            (base.clone(), &ImageWant::Default, false, true, true),
+            (
+                Slot {
+                    online: false,
+                    ..base.clone()
+                },
+                &ImageWant::Default,
+                false,
+                false,
+                false,
+            ),
+            (
+                Slot {
+                    serves: false,
+                    ..base.clone()
+                },
+                &ImageWant::Default,
+                false,
+                false,
+                false,
+            ),
+            (
+                Slot {
+                    unready: Some(unready),
+                    ..base.clone()
+                },
+                &ImageWant::Default,
+                false,
+                false,
+                false,
+            ),
+            (
+                Slot {
+                    sandbox: limits(2, 4096),
+                    ..base.clone()
+                },
+                &ImageWant::Default,
+                false,
+                false,
+                false,
+            ),
+            (base.clone(), &built, false, false, false),
+            (base.clone(), &ImageWant::Default, true, false, false),
+            (
+                Slot {
+                    draining: true,
+                    ..base.clone()
+                },
+                &ImageWant::Default,
+                false,
+                true,
+                false,
+            ),
+            (
+                Slot {
+                    low_disk: true,
+                    ..base.clone()
+                },
+                &ImageWant::Default,
+                false,
+                true,
+                false,
+            ),
+        ];
+        let want = memory(8192);
+        for (i, (s, image, review, as_home, as_other)) in cases.into_iter().enumerate() {
+            assert_eq!(could_run(&s, want, image, review, true), as_home, "{i}");
+            assert_eq!(could_run(&s, want, image, review, false), as_other, "{i}");
+            // As pick has it, with a free slot and without.
+            for active in [0, 2] {
+                let slots = [Slot {
+                    active,
+                    ..s.clone()
+                }];
+                let home_takes = matches!(
+                    pick(&slots, &[], want, image, home("studio", true), review),
+                    Ok(_) | Err(Wait::Home { .. })
+                );
+                assert_eq!(home_takes, as_home, "{i}, {active} at work");
+                let other_takes = matches!(
+                    pick(&slots, &[], want, image, None, review),
+                    Ok(_) | Err(Wait::Busy)
+                );
+                assert_eq!(other_takes, as_other, "{i}, {active} at work");
+            }
+        }
     }
 
     #[test]

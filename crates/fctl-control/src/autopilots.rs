@@ -979,6 +979,30 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
             }
             _ => Some(ap::Fresh::Failed),
         };
+        // Between its turns, where its sandbox is counts too: off a runner
+        // that drains, and rather than resume without its conversation on
+        // another runner, it moves to a fresh session (`ap::moves`). Should
+        // the fleet not say, it carries on as before.
+        let mut sandbox = None;
+        let fresh = match (fresh, row.session_id.as_deref(), status) {
+            (None, Some(id), Some(st)) if ap::between_turns(st) => match sandbox_of(env, id).await
+            {
+                Ok(at) => {
+                    let moved = ap::moves(st, sandbox_view(&at));
+                    sandbox = Some(at);
+                    moved
+                }
+                Err(e) => {
+                    worker::console_error!(
+                        "autopilot {}: where its session's sandbox is: {}",
+                        row.project_id,
+                        e.0.message
+                    );
+                    None
+                }
+            },
+            (f, ..) => f,
+        };
         let carries_on = fresh.is_none();
         // Near where it hands off, it hears so, to write down what its next
         // session needs while its cache is warm.
@@ -1070,11 +1094,13 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
         .run()
         .await?;
         let mut line = woke_line(&reasons, &wake);
-        if let Some(ap::Fresh::Full(tokens)) = fresh.filter(|_| row.session_id.is_some()) {
-            line.push_str(&format!(
-                ", in a fresh session: the last one's context held {} tokens",
-                fctl_domain::context::short(u32::try_from(tokens).unwrap_or(u32::MAX))
-            ));
+        if let Some(why) = fresh.filter(|_| row.session_id.is_some())
+            && let Some(said) = ap::fresh_why(
+                why,
+                sandbox.as_ref().map(sandbox_view).unwrap_or_default(),
+            )
+        {
+            line.push_str(&format!(", in a fresh session: {said}"));
         }
         log(
             db,
@@ -1483,6 +1509,30 @@ async fn stop_session(env: &Env, id: &str) {
     .await;
     if let Err(e) = stopped {
         worker::console_error!("stopping the autopilot's session {id}: {}", e.0.message);
+    }
+}
+
+/// Where its own session's sandbox is, as the fleet has it, and whether a
+/// resume now would leave it.
+async fn sandbox_of(env: &Env, session_id: &str) -> AppResult<crate::internal::SandboxAt> {
+    let fleet = crate::internal::fleet_stub(env)?;
+    crate::internal::post(
+        &fleet,
+        "/sandbox",
+        &crate::internal::SandboxOf {
+            session_id: session_id.to_owned(),
+        },
+    )
+    .await
+}
+
+/// [`sandbox_of`]'s answer, as `fctl_domain::autopilot` reads it.
+fn sandbox_view(at: &crate::internal::SandboxAt) -> ap::Sandbox<'_> {
+    ap::Sandbox {
+        runner: at.runner.as_ref().map(|r| r.name.as_str()),
+        online: at.runner.as_ref().is_some_and(|r| r.online),
+        draining: at.runner.as_ref().is_some_and(|r| r.draining),
+        elsewhere: at.elsewhere,
     }
 }
 
@@ -3031,6 +3081,20 @@ pub async fn by_pilot(db: &D1Database, session_id: &str) -> AppResult<Option<Aut
     .await
 }
 
+/// Whether `session_id`, a session of the autopilot of `autopilot_id`'s
+/// own, is an earlier one: the autopilot works in another now, or in none
+/// yet after people put it on again.
+pub async fn superseded(db: &D1Database, autopilot_id: &str, session_id: &str) -> AppResult<bool> {
+    let row: Option<Value> = q(
+        db,
+        "SELECT 1 AS earlier FROM autopilots WHERE project_id = ? AND session_id IS NOT ?",
+        &[s(autopilot_id), s(session_id)],
+    )?
+    .first()
+    .await?;
+    Ok(row.is_some())
+}
+
 /// An autopilot's request from its own session, checked, and who it acts
 /// as for it.
 struct Relayed {
@@ -3759,6 +3823,31 @@ mod tests {
         .first()
         .await?;
         Ok(c.map_or(0, |c| c.n))
+    }
+
+    /// A session of its own is an earlier one once it works in another,
+    /// or in none yet after people put it on again; another autopilot's
+    /// sessions say nothing of it.
+    #[wasm_bindgen_test]
+    async fn an_earlier_session_of_its_own_is_superseded() -> AppResult<()> {
+        async fn works_in(db: &D1Database, id: Option<&str>) -> AppResult<usize> {
+            q(
+                db,
+                "UPDATE autopilots SET session_id = ? WHERE project_id = 'prj_web'",
+                &[os(id)],
+            )?
+            .run()
+            .await
+        }
+        let db = testing::database();
+        autopilot(&db).await?;
+        works_in(&db, Some("ses_2")).await?;
+        assert!(superseded(&db, "prj_web", "ses_1").await?);
+        assert!(!superseded(&db, "prj_web", "ses_2").await?);
+        works_in(&db, None).await?;
+        assert!(superseded(&db, "prj_web", "ses_2").await?);
+        assert!(!superseded(&db, "prj_shop", "ses_1").await?);
+        Ok(())
     }
 
     /// A question may be about a session in its places, but not one of

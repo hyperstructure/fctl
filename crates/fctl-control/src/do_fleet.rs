@@ -498,6 +498,13 @@ impl DurableObject for FleetObject {
                 Ok(b) => self.homes(&b.runner_id).map(|h| serde_json::json!(h)),
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
+            (worker::Method::Post, "/sandbox") => match req.json::<internal::SandboxOf>().await {
+                Ok(b) => self
+                    .sandbox_at(&b.session_id)
+                    .await
+                    .map(|a| serde_json::json!(a)),
+                Err(e) => Err(ApiError::bad_request(e.to_string())),
+            },
             (worker::Method::Post, "/drain") => match req.json::<Drain>().await {
                 Ok(b) => self.drain(b).await,
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
@@ -1499,13 +1506,32 @@ impl FleetObject {
                     continue;
                 }
             };
+            let stopped_away = self.stopped_away(id, runner_id);
+            // An earlier session of an autopilot's own, which a fresh one
+            // took over from while this runner was away, doesn't carry on.
+            let superseded = match (&db, row.as_ref()) {
+                (Ok(db), Some(row)) if stopped_away && row.is_pilot() => {
+                    let autopilot = row.autopilot_id.as_deref().unwrap_or_default();
+                    crate::autopilots::superseded(db, autopilot, id)
+                        .await
+                        .unwrap_or_else(|e| {
+                            worker::console_error!(
+                                "reconciling {id} on {}: whether its autopilot moved on: {}",
+                                rs.name,
+                                e.0.message
+                            );
+                            false
+                        })
+                }
+                _ => false,
+            };
             let known = row.as_ref().map(|row| Known {
                 runner_id: row.runner_id.as_deref(),
                 status: row.status(),
                 archived: row.archived,
+                superseded,
             });
-            let mut verdict =
-                reconcile::unassigned(runner_id, known, self.stopped_away(id, runner_id));
+            let mut verdict = reconcile::unassigned(runner_id, known, stopped_away);
             // A runner that stopped serving the session's workspace while it
             // was away doesn't carry on with it there.
             if matches!(verdict, Unassigned::Keep | Unassigned::CarryOn)
@@ -2551,6 +2577,69 @@ impl FleetObject {
         Ok(internal::HomeSessions {
             sessions: rows.into_iter().map(|h| h.session_id).collect(),
         })
+    }
+
+    /// Where a session's sandbox is, and whether a resume now would start
+    /// the session on another runner, in a new sandbox without its
+    /// conversation: its runner can't take it back (offline, its driver
+    /// not ready, or it no longer runs the session or gives it its size)
+    /// and another runner online, that neither drains nor is low on disk,
+    /// would run it, busy or not. An autopilot's wake starts a fresh
+    /// session instead (`fctl_domain::autopilot::moves`), as it does,
+    /// without asking that, while the runner drains.
+    async fn sandbox_at(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<internal::SandboxAt, ApiError> {
+        let home = self.home_of(session_id);
+        let runner = home
+            .as_deref()
+            .and_then(|id| self.live_rows().into_iter().find(|r| r.id == id))
+            .map(|r| internal::SandboxRunner {
+                online: r.online(self),
+                draining: r.draining_since.is_some(),
+                id: r.id,
+                name: r.name,
+            });
+        if runner.as_ref().is_some_and(|r| r.draining) {
+            return Ok(internal::SandboxAt {
+                runner,
+                elsewhere: false,
+            });
+        }
+        let db = self
+            .env
+            .d1("DB")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let Some(want) = spec::session_wants(&db, &[session_id])
+            .await
+            .map_err(|e| e.0)?
+            .remove(session_id)
+        else {
+            return Ok(internal::SandboxAt {
+                runner,
+                elsewhere: false,
+            });
+        };
+        self.load_runner_workspaces(&db).await;
+        let runs = |c: &Candidate, home: bool| {
+            fctl_domain::schedule::could_run(
+                &c.slot(&want),
+                want.size,
+                &want.image,
+                want.review,
+                home,
+            )
+        };
+        let candidates = self.candidates();
+        let takes_back = candidates
+            .iter()
+            .any(|c| Some(c.id.as_str()) == home.as_deref() && runs(c, true));
+        let elsewhere = !takes_back
+            && candidates
+                .iter()
+                .any(|c| Some(c.id.as_str()) != home.as_deref() && runs(c, false));
+        Ok(internal::SandboxAt { runner, elsewhere })
     }
 
     /// Whether the fleet gave the session to `runner_id`.

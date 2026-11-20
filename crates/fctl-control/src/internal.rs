@@ -286,6 +286,38 @@ pub struct HomeSessions {
     pub sessions: Vec<String>,
 }
 
+/// Asks FleetDO where a session's sandbox is, and whether a resume now
+/// would leave it (`POST /sandbox`).
+#[derive(Serialize, Deserialize)]
+pub struct SandboxOf {
+    pub session_id: String,
+}
+
+/// Where a session's sandbox is, as FleetDO has it.
+#[derive(Serialize, Deserialize, Default)]
+pub struct SandboxAt {
+    /// The runner that keeps it: `None` when FleetDO knows of none (it
+    /// was uninstalled or removed, or no longer runs the session).
+    #[serde(default)]
+    pub runner: Option<SandboxRunner>,
+    /// A resume now would start the session on another runner, in a new
+    /// sandbox without its conversation: its runner can't take it back
+    /// (offline, its driver not ready, or it no longer runs the session)
+    /// and another runner online would run it. Unasked while its runner
+    /// drains.
+    #[serde(default)]
+    pub elsewhere: bool,
+}
+
+/// The runner that keeps a session's sandbox, as FleetDO has it now.
+#[derive(Serialize, Deserialize)]
+pub struct SandboxRunner {
+    pub id: String,
+    pub name: String,
+    pub online: bool,
+    pub draining: bool,
+}
+
 /// Drains a runner, or stops draining it.
 #[derive(Serialize, Deserialize)]
 pub struct Drain {

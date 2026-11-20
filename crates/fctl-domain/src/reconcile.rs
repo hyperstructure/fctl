@@ -14,6 +14,9 @@ pub struct Known<'a> {
     pub status: SessionStatus,
     /// Someone put it away.
     pub archived: bool,
+    /// It is an earlier session of an autopilot's own: a fresh one took
+    /// over from it, while this runner was away say.
+    pub superseded: bool,
 }
 
 /// What becomes of the run.
@@ -39,9 +42,14 @@ pub fn unassigned(runner_id: &str, known: Option<Known<'_>>, stopped_away: bool)
         // It moved to another runner.
         Some(id) if id != runner_id => Unassigned::Stop(StopReason::Shutdown),
         // Stopped, resumed but waiting for a runner, or kept up to date by
-        // the run's uplink, which stayed open. Not a resume that failed, nor
-        // a session someone put away.
-        _ if stopped_away && known.status != SessionStatus::Failed && !known.archived => {
+        // the run's uplink, which stayed open. Not a resume that failed, a
+        // session someone put away, nor an autopilot's that a fresh one
+        // took over from.
+        _ if stopped_away
+            && known.status != SessionStatus::Failed
+            && !known.archived
+            && !known.superseded =>
+        {
             Unassigned::CarryOn
         }
         Some(_) if !known.status.is_terminal() => Unassigned::Keep,
@@ -102,6 +110,7 @@ mod tests {
             runner_id,
             status,
             archived: false,
+            superseded: false,
         })
     }
 
@@ -168,9 +177,31 @@ mod tests {
             runner_id: None,
             status: SessionStatus::Stopped,
             archived: true,
+            superseded: false,
         });
         assert_eq!(
             unassigned("r1", archived, true),
+            Unassigned::Stop(StopReason::User)
+        );
+    }
+
+    #[test]
+    fn an_autopilots_session_that_a_fresh_one_took_over_from_stays_stopped() {
+        let superseded = |status| {
+            Some(Known {
+                runner_id: None,
+                status,
+                archived: false,
+                superseded: true,
+            })
+        };
+        assert_eq!(
+            unassigned("r1", superseded(SessionStatus::Stopped), true),
+            Unassigned::Stop(StopReason::User)
+        );
+        // Messaged meanwhile, its resume starts elsewhere.
+        assert_eq!(
+            unassigned("r1", superseded(SessionStatus::Queued), true),
             Unassigned::Stop(StopReason::User)
         );
     }

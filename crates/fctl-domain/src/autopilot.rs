@@ -590,6 +590,13 @@ pub enum Fresh {
     Shift,
     /// Its context holds this many tokens, where it hands off or past it.
     Full(u64),
+    /// Its sandbox is on a runner that drains, which a resume would go
+    /// back to all the same ([`moves`]).
+    Drains,
+    /// Its sandbox is on a runner that can't take it back now, offline say,
+    /// or on none fctl still knows of, while another runner would resume
+    /// it in a new sandbox, without its conversation ([`moves`]).
+    Away,
 }
 
 /// Whether a wake goes to its session as it is, a message to it (`None`),
@@ -619,17 +626,71 @@ pub fn fresh(own: OwnSession, handoff_at: Option<u32>, asked: bool, now: Millis)
     }
 }
 
+/// Where its own session's sandbox is, as the fleet has it, for a wake
+/// that would set that session working again there ([`moves`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sandbox<'a> {
+    /// The runner that keeps it, as people call it: `None` when the fleet
+    /// knows of none (its runner was uninstalled or removed).
+    pub runner: Option<&'a str>,
+    /// That runner is online.
+    pub online: bool,
+    /// That runner drains: it takes no new work, though a resume would go
+    /// back to it.
+    pub draining: bool,
+    /// A resume would start the session on another runner, in a new
+    /// sandbox without its conversation: its runner can't take it back now
+    /// (it is offline, its driver isn't ready, or it no longer runs the
+    /// session) and another runner online would run it.
+    pub elsewhere: bool,
+}
+
+/// Whether its own session rests between turns in its sandbox: it waits
+/// for a message there, stops or stopped, so that a wake sets it working
+/// again on the runner that keeps its sandbox ([`moves`]).
+pub fn between_turns(status: SessionStatus) -> bool {
+    matches!(
+        status,
+        SessionStatus::Idle | SessionStatus::Stopping | SessionStatus::Stopped
+    )
+}
+
+/// Whether a wake that would carry on in its own session as it is
+/// ([`fresh`] said so) goes to a fresh session instead, for where that
+/// session's sandbox is. Only one between its turns ([`between_turns`])
+/// moves: off a runner that drains ([`Fresh::Drains`]), so that the
+/// runner empties, as the session there stops; and out of a sandbox its
+/// runner can't take it back to, when another runner would resume it
+/// without its conversation ([`Fresh::Away`]), as a fresh session starts
+/// from its briefing, plan and log instead. One waiting for a message is
+/// still up in its sandbox and takes the wake there, unless its runner
+/// drains. One at work, or paused on a usage limit, stays where it is: its
+/// runner may come back with it, and should it not, fctl stops it ten
+/// minutes later, and the next wake moves.
+pub fn moves(status: SessionStatus, sandbox: Sandbox<'_>) -> Option<Fresh> {
+    if !between_turns(status) {
+        return None;
+    }
+    if sandbox.draining {
+        return Some(Fresh::Drains);
+    }
+    (sandbox.elsewhere && status != SessionStatus::Idle).then_some(Fresh::Away)
+}
+
 /// Whether its next wake, at `wake_at`, goes to its own session as it is,
 /// which resumes it where its sandbox is, rather than to a fresh session
-/// that may start on any runner ([`fresh`]). `asked`: people asked for a
-/// fresh one. One at work is judged as its turn's end finds it: a wake
+/// that may start on any runner ([`fresh`], [`moves`]). `asked`: people
+/// asked for a fresh one; `draining`: the runner that keeps its sandbox
+/// drains. One at work is judged as its turn's end finds it: a wake
 /// people asked for waits for that ([`holds`]), and the first wake after
-/// it hands off when its shift is over or its context full.
+/// it hands off when its shift is over, its context full or its runner
+/// drains.
 pub fn wakes_in_own(
     own: OwnSession,
     handoff_at: Option<u32>,
     asked: bool,
     wake_at: Millis,
+    draining: bool,
 ) -> bool {
     let between = OwnSession {
         status: if at_work(own.status) {
@@ -639,7 +700,12 @@ pub fn wakes_in_own(
         },
         ..own
     };
+    let sandbox = Sandbox {
+        draining,
+        ..Sandbox::default()
+    };
     fresh(between, handoff_at, asked, wake_at).is_none()
+        && moves(between.status, sandbox).is_none()
         && (own.status.accepts_messages() || own.status.resumes_for_messages())
 }
 
@@ -698,10 +764,39 @@ pub fn takes_over_from(why: Fresh, from: &str, handoff_at: Option<u32>) -> Optio
                 crate::context::short(at)
             ))
         ),
+        Fresh::Drains => format!(
+            "You take over from your last session, {from}: the runner that kept its sandbox drains, to be emptied for maintenance or shut down, so fctl stopped it there and started you, on another runner."
+        ),
+        Fresh::Away => format!(
+            "You take over from your last session, {from}: the runner that kept its sandbox can't take it back (it is offline, or gone), so fctl started you rather than resume it on another runner without its conversation. Its runner may have gone in the middle of its work: `fctl logs {from} --last-turn` shows what it was doing."
+        ),
     };
     Some(format!(
         "{because} Go on from your plan, log and files, which it kept for you (`fctl autopilot files get --all` writes the files here), and `fctl autopilot brief`; read its transcript (`fctl logs {from}`) only for what they don't say, as it would fill your context again. Check what it promised people (in your plan, its log and its asks) against what is live now, and tell them of what shipped that they wait for: it may not have. Start again the background scripts your plan names that still matter: they stopped with its sandbox. Where your plan says fctl can't do something, check `fctl <command> --help`: fctl gains commands with its releases."
     ))
+}
+
+/// Why a wake went to a fresh session, for its line in the log, after
+/// "in a fresh session: ": the last one's context, or its runner, as the
+/// wake found its sandbox. `None` where what woke it says why (people
+/// asked for one, a retry) or nothing needs saying (its shift ended).
+pub fn fresh_why(why: Fresh, sandbox: Sandbox<'_>) -> Option<String> {
+    match why {
+        Fresh::Full(tokens) => Some(format!(
+            "the last one's context held {} tokens",
+            crate::context::short(u32::try_from(tokens).unwrap_or(u32::MAX))
+        )),
+        Fresh::Drains => Some(match sandbox.runner {
+            Some(name) => format!("the last one's runner, {name}, drains"),
+            None => "the last one's runner drains".to_owned(),
+        }),
+        Fresh::Away => Some(match sandbox.runner {
+            Some(name) if !sandbox.online => format!("the last one's runner, {name}, is offline"),
+            Some(name) => format!("the last one's runner, {name}, can't resume it"),
+            None => "the last one's runner is gone".to_owned(),
+        }),
+        Fresh::Failed | Fresh::Asked | Fresh::Shift => None,
+    }
 }
 
 /// `ms` in whole minutes.
@@ -3129,65 +3224,156 @@ mod tests {
             context_tokens,
         };
         let soon = now + HOUR_MS;
-        assert!(wakes_in_own(
-            own(SessionStatus::Stopped, None),
-            None,
-            false,
-            soon
-        ));
-        assert!(wakes_in_own(
-            own(SessionStatus::Idle, None),
-            None,
-            false,
-            soon
-        ));
-        assert!(wakes_in_own(
-            own(SessionStatus::Running, None),
-            None,
-            false,
-            soon
-        ));
+        let wakes = |o: OwnSession, handoff_at, asked, wake_at| {
+            wakes_in_own(o, handoff_at, asked, wake_at, false)
+        };
+        assert!(wakes(own(SessionStatus::Stopped, None), None, false, soon));
+        assert!(wakes(own(SessionStatus::Idle, None), None, false, soon));
+        assert!(wakes(own(SessionStatus::Running, None), None, false, soon));
         // By then its shift has ended, or people asked: a fresh one starts.
-        assert!(!wakes_in_own(
+        assert!(!wakes(
             own(SessionStatus::Stopped, None),
             None,
             false,
             now + 3 * HOUR_MS
         ));
-        assert!(!wakes_in_own(
-            own(SessionStatus::Stopped, None),
-            None,
-            true,
-            soon
-        ));
+        assert!(!wakes(own(SessionStatus::Stopped, None), None, true, soon));
         // At work, as its turn's end finds it.
         let at_work = SessionStatus::Running;
-        assert!(!wakes_in_own(own(at_work, None), None, true, soon));
-        assert!(!wakes_in_own(
-            own(at_work, None),
-            None,
-            false,
-            now + 3 * HOUR_MS
-        ));
-        assert!(!wakes_in_own(
+        assert!(!wakes(own(at_work, None), None, true, soon));
+        assert!(!wakes(own(at_work, None), None, false, now + 3 * HOUR_MS));
+        assert!(!wakes(
             own(at_work, Some(300_000)),
             Some(250_000),
             false,
             soon
         ));
         // Full, or failed.
-        assert!(!wakes_in_own(
+        assert!(!wakes(
             own(SessionStatus::Stopped, Some(300_000)),
             Some(250_000),
             false,
             soon
         ));
-        assert!(!wakes_in_own(
-            own(SessionStatus::Failed, None),
+        assert!(!wakes(own(SessionStatus::Failed, None), None, false, soon));
+        // On a runner that drains, only one paused mid-turn comes back
+        // there: the others' next wake starts a fresh session elsewhere,
+        // one at work once its turn has ended.
+        for status in [
+            SessionStatus::Stopped,
+            SessionStatus::Stopping,
+            SessionStatus::Idle,
+            SessionStatus::Running,
+            SessionStatus::Queued,
+        ] {
+            assert!(
+                !wakes_in_own(own(status, None), None, false, soon, true),
+                "{status:?}"
+            );
+        }
+        assert!(wakes_in_own(
+            own(SessionStatus::Paused, None),
             None,
             false,
-            soon
+            soon,
+            true
         ));
+    }
+
+    #[test]
+    fn a_wake_between_turns_moves_off_a_runner_that_drains_or_cant_resume_it() {
+        let kept = Sandbox {
+            runner: Some("studio-mac"),
+            online: true,
+            ..Sandbox::default()
+        };
+        let draining = Sandbox {
+            draining: true,
+            ..kept
+        };
+        let offline = Sandbox {
+            online: false,
+            elsewhere: true,
+            ..kept
+        };
+        let gone = Sandbox {
+            elsewhere: true,
+            ..Sandbox::default()
+        };
+        for status in [
+            SessionStatus::Idle,
+            SessionStatus::Stopping,
+            SessionStatus::Stopped,
+        ] {
+            assert!(between_turns(status), "{status:?}");
+            assert_eq!(moves(status, kept), None, "{status:?}");
+            assert_eq!(moves(status, draining), Some(Fresh::Drains), "{status:?}");
+        }
+        // A resume would start it elsewhere without its conversation: a
+        // fresh session takes over instead.
+        assert_eq!(moves(SessionStatus::Stopped, offline), Some(Fresh::Away));
+        assert_eq!(moves(SessionStatus::Stopping, offline), Some(Fresh::Away));
+        assert_eq!(moves(SessionStatus::Stopped, gone), Some(Fresh::Away));
+        // Its runner offline, but none other would run it: the resume
+        // waits for that runner, conversation and all.
+        let only_one = Sandbox {
+            elsewhere: false,
+            ..offline
+        };
+        assert_eq!(moves(SessionStatus::Stopped, only_one), None);
+        // Waiting for a message, it is still up in its sandbox, which
+        // takes the wake should its runner come back.
+        assert_eq!(moves(SessionStatus::Idle, offline), None);
+        // At work, paused mid-turn or failed, it stays where it is.
+        for status in [
+            SessionStatus::Queued,
+            SessionStatus::Provisioning,
+            SessionStatus::Preparing,
+            SessionStatus::Running,
+            SessionStatus::Paused,
+            SessionStatus::Failed,
+        ] {
+            assert!(!between_turns(status), "{status:?}");
+            assert_eq!(moves(status, draining), None, "{status:?}");
+            assert_eq!(moves(status, offline), None, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn a_wake_in_a_fresh_session_says_why_in_the_log() {
+        let kept = Sandbox {
+            runner: Some("studio-mac"),
+            online: true,
+            ..Sandbox::default()
+        };
+        assert_eq!(
+            fresh_why(Fresh::Full(412_000), kept).as_deref(),
+            Some("the last one's context held 412K tokens")
+        );
+        assert_eq!(
+            fresh_why(Fresh::Drains, kept).as_deref(),
+            Some("the last one's runner, studio-mac, drains")
+        );
+        let offline = Sandbox {
+            online: false,
+            ..kept
+        };
+        assert_eq!(
+            fresh_why(Fresh::Away, offline).as_deref(),
+            Some("the last one's runner, studio-mac, is offline")
+        );
+        assert_eq!(
+            fresh_why(Fresh::Away, kept).as_deref(),
+            Some("the last one's runner, studio-mac, can't resume it")
+        );
+        assert_eq!(
+            fresh_why(Fresh::Away, Sandbox::default()).as_deref(),
+            Some("the last one's runner is gone")
+        );
+        // What woke it says so, or nothing needs saying.
+        for why in [Fresh::Asked, Fresh::Failed, Fresh::Shift] {
+            assert_eq!(fresh_why(why, kept), None, "{why:?}");
+        }
     }
 
     #[test]
@@ -3307,6 +3493,21 @@ mod tests {
             "You take over from your last session, shop#12: people asked for a fresh session to take over, so fctl stopped it"
         )));
         assert_eq!(takes_over_from(Fresh::Failed, "shop#12", None), None);
+        // Its runner drains, or can't take it back: it may have gone
+        // mid-turn, and its sandbox's scripts went with it.
+        let drains = takes_over_from(Fresh::Drains, "shop#12", None);
+        assert!(drains.as_deref().is_some_and(|t| t.starts_with(
+            "You take over from your last session, shop#12: the runner that kept its sandbox drains, to be emptied for maintenance or shut down, so fctl stopped it there and started you, on another runner. Go on from your plan"
+        )));
+        let away = takes_over_from(Fresh::Away, "shop#12", None);
+        assert!(away.as_deref().is_some_and(|t| t.starts_with(
+            "You take over from your last session, shop#12: the runner that kept its sandbox can't take it back (it is offline, or gone), so fctl started you rather than resume it on another runner without its conversation. Its runner may have gone in the middle of its work: `fctl logs shop#12 --last-turn` shows what it was doing. Go on from your plan"
+        )));
+        for t in [drains, away] {
+            assert!(t.is_some_and(|t| t.contains(
+                "Start again the background scripts your plan names that still matter: they stopped with its sandbox."
+            )));
+        }
     }
 
     #[test]
