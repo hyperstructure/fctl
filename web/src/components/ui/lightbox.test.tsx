@@ -1,7 +1,7 @@
 import { act, type ReactNode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Lightbox, type LightboxFile, type LightboxItem, plainClick, Swipe } from "./lightbox";
+import { fitWidth, Lightbox, type LightboxFile, type LightboxItem, plainClick, Swipe } from "./lightbox";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -56,6 +56,23 @@ describe("Lightbox", () => {
     expect(dialog.querySelector("button")?.className).toMatch(
       /\bfixed top-\[calc\(0\.75rem\+var\(--safe-top\)\)\] right-3\b/,
     );
+  });
+
+  it("shows an image at the size its file says, not the browser's, which Safari can take from a thumbnail", () => {
+    const img = open().dialog.querySelector("img") as HTMLImageElement;
+    // Its room while it loads.
+    expect([img.getAttribute("width"), img.getAttribute("height")]).toEqual(["1440", "900"]);
+    expect(img.style.getPropertyValue("--fit-width")).toBe(fitWidth({ width: 1440, height: 900 }));
+    expect(img.className).toMatch(/\bw-\(--fit-width\)/);
+    expect(img.className).not.toMatch(/\bw-auto\b/);
+  });
+
+  it("leaves the size of an image whose file doesn't say it to the browser", () => {
+    const img = open({ name: "diagram.png" }).dialog.querySelector("img") as HTMLImageElement;
+    expect(img.hasAttribute("width")).toBe(false);
+    expect(img.hasAttribute("height")).toBe(false);
+    expect(img.hasAttribute("style")).toBe(false);
+    expect(img.className).toMatch(/\bw-auto\b/);
   });
 
   it("focuses itself as it opens, not the X, and shows no ring", () => {
@@ -595,6 +612,15 @@ describe("Lightbox zooming in", () => {
     expect(zoomOf(img)).toEqual(["4", "0px 0px"]);
   });
 
+  it("zooms an image in as far as its file's own size, whatever the browser takes it to be", () => {
+    // Its file is twice as wide as the browser says, as Safari can say after drawing a thumbnail of it.
+    const { dialog } = open({ ...shot, width: 2880, height: 1800 });
+    const img = layOut(dialog)();
+    pinch(dialog, "190,400 210,400", "120,400 280,400");
+    settled(img);
+    expect(zoomOf(img)).toEqual(["8", "0px 0px"]);
+  });
+
   it("moves a zoomed image about with one finger, not past its edges, and doesn't swipe", () => {
     const { dialog, track, shown } = browse(1);
     const img = layOut(dialog)();
@@ -1128,5 +1154,12 @@ describe("plainClick", () => {
     expect(plainClick(click({ shiftKey: true }))).toBe(false);
     expect(plainClick(click({ altKey: true }))).toBe(false);
     expect(plainClick(click({ button: 1 }))).toBe(false);
+  });
+});
+
+describe("fitWidth", () => {
+  it("is the image's own width, or as wide as the room's height lets it be, with its border", () => {
+    expect(fitWidth({ width: 1440, height: 900 })).toBe("min(1442px, (100dvh - 8rem - 2px) * 1.6 + 2px)");
+    expect(fitWidth({ width: 400, height: 800 })).toBe("min(402px, (100dvh - 8rem - 2px) * 0.5 + 2px)");
   });
 });

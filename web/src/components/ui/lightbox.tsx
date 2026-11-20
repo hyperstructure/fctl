@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
-import { type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { playable } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
@@ -40,6 +40,16 @@ export function plainClick(
   e: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
 ): boolean {
   return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
+/**
+ * How wide a lightbox shows an image `width` × `height` pixels, its 1 px
+ * border around it: a CSS pixel for each of its own, or as wide as fits the
+ * room's height (the screen less 8rem, as `Slide`'s `max-h` says). The
+ * room's width narrows it further, and its height follows its width.
+ */
+export function fitWidth({ width, height }: { width: number; height: number }): string {
+  return `min(${width + 2}px, (100dvh - 8rem - 2px) * ${width / height} + 2px)`;
 }
 
 /**
@@ -275,12 +285,13 @@ export function Lightbox({
       return img?.complete && img.naturalWidth ? img : undefined;
     };
     const viewOf = (img: HTMLImageElement) => (zoomed.current?.img === img ? zoomed.current.view : FITS);
-    // Where it fits, in the figure that fills the window. Offsets leave its zoom out.
+    // Where it fits, in the figure that fills the window. Offsets leave its
+    // zoom out. Its own width is its file's, where that is known (`Slide`).
     const measure = (img: HTMLImageElement) =>
       new Zoom(
         { width: d.clientWidth, height: d.clientHeight },
         { left: img.offsetLeft, top: img.offsetTop, width: img.offsetWidth, height: img.offsetHeight },
-        img.naturalWidth,
+        Number(img.getAttribute("width")) || img.naturalWidth,
       );
     const show = (img: HTMLImageElement, view: View) => {
       zoomed.current = { img, view };
@@ -730,9 +741,16 @@ function Slide({ item, offset, steps }: { item: LightboxItem; offset: number; st
   ]
     .filter(Boolean)
     .join(" · ");
+  // The image's size in pixels, where the file says it. Safari can take an
+  // image to be as small as a thumbnail of it: it decodes a large image no
+  // larger than it shows it, and may then lay out each <img> of it, the
+  // lightbox's too, at that decode's size in pixels, until the page loads
+  // again. An image whose size is known shows at that size instead
+  // (`fitWidth`), and takes its room while it loads.
+  const size = file.width && file.height ? { width: file.width, height: file.height } : undefined;
   // Room at the sides for the buttons, where a mouse uses them.
   const wide = cn("max-w-[calc(100vw-2rem)]", steps && "not-pointer-coarse:max-w-[calc(100vw-8rem)]");
-  // Room above for the X, and below for the caption.
+  // Room above for the X, and below for the caption (`fitWidth` too).
   const fit = cn(
     "max-h-[calc(100dvh-8rem)] rounded-lg border border-line-strong shadow-[0_30px_120px_rgb(0_0_0/0.55)]",
     wide,
@@ -761,9 +779,17 @@ function Slide({ item, offset, steps }: { item: LightboxItem; offset: number; st
         <img
           src={src}
           alt={file.name}
+          width={size?.width}
+          height={size?.height}
           decoding="async"
           onError={() => setFailed(true)}
-          className={cn(fit, "lightbox-picture h-auto w-auto bg-raised object-contain")}
+          style={size && ({ "--fit-width": fitWidth(size) } as CSSProperties)}
+          className={cn(
+            fit,
+            "lightbox-picture h-auto bg-raised object-contain",
+            // Of an unknown size, as large as the browser says it is, up to the room.
+            size ? "w-(--fit-width)" : "w-auto",
+          )}
         />
       )}
       {/* Over the picture, zoomed in. */}
