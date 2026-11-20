@@ -768,7 +768,7 @@ pub fn takes_over_from(why: Fresh, from: &str, handoff_at: Option<u32>) -> Optio
             "You take over from your last session, {from}: the runner that kept its sandbox drains, to be emptied for maintenance or shut down, so fctl stopped it there and started you rather than wake it there again."
         ),
         Fresh::Away => format!(
-            "You take over from your last session, {from}: the runner that kept its sandbox can't take it back (it is offline, or gone), so fctl started you rather than resume it on another runner without its conversation. Its runner may have gone in the middle of its work: `fctl logs {from} --last-turn` shows what it was doing."
+            "You take over from your last session, {from}: the runner that kept its sandbox can't take it back (it is offline or gone, or can't run it now), so fctl started you rather than resume it on another runner without its conversation. Its runner may have gone in the middle of its work: `fctl logs {from} --last-turn` shows what it was doing."
         ),
     };
     Some(format!(
@@ -3501,7 +3501,7 @@ mod tests {
         )));
         let away = takes_over_from(Fresh::Away, "shop#12", None);
         assert!(away.as_deref().is_some_and(|t| t.starts_with(
-            "You take over from your last session, shop#12: the runner that kept its sandbox can't take it back (it is offline, or gone), so fctl started you rather than resume it on another runner without its conversation. Its runner may have gone in the middle of its work: `fctl logs shop#12 --last-turn` shows what it was doing. Go on from your plan"
+            "You take over from your last session, shop#12: the runner that kept its sandbox can't take it back (it is offline or gone, or can't run it now), so fctl started you rather than resume it on another runner without its conversation. Its runner may have gone in the middle of its work: `fctl logs shop#12 --last-turn` shows what it was doing. Go on from your plan"
         )));
         for t in [drains, away] {
             assert!(t.is_some_and(|t| t.contains(
