@@ -765,7 +765,7 @@ pub fn takes_over_from(why: Fresh, from: &str, handoff_at: Option<u32>) -> Optio
             ))
         ),
         Fresh::Drains => format!(
-            "You take over from your last session, {from}: the runner that kept its sandbox drains, to be emptied for maintenance or shut down, so fctl stopped it there and started you, on another runner."
+            "You take over from your last session, {from}: the runner that kept its sandbox drains, to be emptied for maintenance or shut down, so fctl stopped it there and started you rather than wake it there again."
         ),
         Fresh::Away => format!(
             "You take over from your last session, {from}: the runner that kept its sandbox can't take it back (it is offline, or gone), so fctl started you rather than resume it on another runner without its conversation. Its runner may have gone in the middle of its work: `fctl logs {from} --last-turn` shows what it was doing."
@@ -3497,7 +3497,7 @@ mod tests {
         // mid-turn, and its sandbox's scripts went with it.
         let drains = takes_over_from(Fresh::Drains, "shop#12", None);
         assert!(drains.as_deref().is_some_and(|t| t.starts_with(
-            "You take over from your last session, shop#12: the runner that kept its sandbox drains, to be emptied for maintenance or shut down, so fctl stopped it there and started you, on another runner. Go on from your plan"
+            "You take over from your last session, shop#12: the runner that kept its sandbox drains, to be emptied for maintenance or shut down, so fctl stopped it there and started you rather than wake it there again. Go on from your plan"
         )));
         let away = takes_over_from(Fresh::Away, "shop#12", None);
         assert!(away.as_deref().is_some_and(|t| t.starts_with(
