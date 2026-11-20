@@ -58,9 +58,13 @@ function ImageLink({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-/** An image in the agent's answer, which a click shows at full size. */
+/** An image in the agent's answer, which a click shows at full size: at the size the page knows, if it does. */
 function ZoomImage({ src, alt }: { src: string; alt: string }) {
-  const { ref, open, lightbox } = useLightbox<HTMLButtonElement>({ file: { name: alt || "Image" }, src });
+  const size = useContext(ImageSizes).get(src);
+  const { ref, open, lightbox } = useLightbox<HTMLButtonElement>({
+    file: { name: alt || "Image", width: size?.width, height: size?.height },
+    src,
+  });
   return (
     <>
       <button
