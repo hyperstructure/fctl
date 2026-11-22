@@ -118,6 +118,20 @@ describe("an audit log entry in words", () => {
     expect(deleted(912)).toBe("deleted 912 stale notes from [Farm portal](project)'s memory");
     expect(deleted(1)).toBe("deleted 1 stale note from [Farm portal](project)'s memory");
     expect(deleted()).toBe("deleted the stale notes from [Farm portal](project)'s memory");
+    // fctl's hourly job deletes them as long as the project keeps them.
+    const byFctl = entry("memory.stale_deleted", "prj_farm", { project_id: "prj_farm", count: 4, days: 7 });
+    expect(auditActor(byFctl)).toBe("fctl");
+    expect(said(describeAudit(byFctl, names))).toBe(
+      "deleted 4 notes stale for 7 days from [Farm portal](project)'s memory",
+    );
+    expect(
+      said(
+        describeAudit(
+          entry("memory.stale_deleted", "prj_farm", { project_id: "prj_farm", count: 1, days: 1 }),
+          names,
+        ),
+      ),
+    ).toBe("deleted 1 note stale for a day from [Farm portal](project)'s memory");
     // An autopilot deletes them as its owner.
     const byPilot = entry(
       "memory.stale_deleted",

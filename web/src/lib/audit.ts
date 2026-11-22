@@ -206,12 +206,14 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
     case "memory.deleted":
       return ["deleted a note from ", ...projects("memory", str(d.project_id))];
     case "memory.stale_deleted": {
+      // fctl's hourly job says after how long the project lets them go: "4 notes stale for 7 days".
+      const after =
+        typeof d.days === "number" ? ` stale for ${d.days === 1 ? "a day" : `${d.days} days`}` : "";
+      const n = typeof d.count === "number" ? d.count : undefined;
       const notes =
-        typeof d.count === "number"
-          ? d.count === 1
-            ? "1 stale note"
-            : `${d.count} stale notes`
-          : "the stale notes";
+        n === undefined
+          ? `the stale notes${after}`
+          : `${n} ${after ? "" : "stale "}${n === 1 ? "note" : "notes"}${after}`;
       // An autopilot deletes them as its owner, who is the entry's actor.
       const by = e.actor && str(d.autopilot) ? "'s autopilot deleted" : "deleted";
       return [`${by} ${notes} from `, ...projects("memory", str(d.project_id))];
