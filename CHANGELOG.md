@@ -2,6 +2,22 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.37.1 (2026-11-22)
+
+### Features
+
+- **autopilot:** Delete stale memory notes once they crowd the memory ([#611](https://github.com/hyperstructure/fctl/pull/611))
+- **memory:** Delete stale notes after as many days as a project chooses ([#612](https://github.com/hyperstructure/fctl/pull/612))
+
+### Fixes
+
+- **web:** Show images at full size in the lightbox in Safari ([#607](https://github.com/hyperstructure/fctl/pull/607))
+
+### Documentation
+
+- Say OIDC where people look for identity tokens ([#608](https://github.com/hyperstructure/fctl/pull/608))
+- Show how to run sessions in an image on another base ([#610](https://github.com/hyperstructure/fctl/pull/610))
+
 ## 0.37.0 (2026-11-20)
 
 ### Features
