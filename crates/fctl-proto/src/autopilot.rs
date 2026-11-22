@@ -569,6 +569,8 @@ pub enum AutopilotEntryKind {
     Schedule,
     /// It created a project.
     Project,
+    /// It deleted the stale notes of a project's memory.
+    Memory,
     /// It changed its plan.
     Plan,
     /// It added a file to those it keeps across its sessions, or removed
@@ -600,6 +602,7 @@ impl AutopilotEntryKind {
             Self::Repository => "repository",
             Self::Schedule => "schedule",
             Self::Project => "project",
+            Self::Memory => "memory",
             Self::Plan => "plan",
             Self::File => "file",
             Self::Asked => "asked",
@@ -622,6 +625,7 @@ impl AutopilotEntryKind {
             Self::Repository,
             Self::Schedule,
             Self::Project,
+            Self::Memory,
             Self::Plan,
             Self::File,
             Self::Asked,
@@ -1016,6 +1020,7 @@ mod tests {
             AutopilotEntryKind::Woke,
             AutopilotEntryKind::Schedule,
             AutopilotEntryKind::Problem,
+            AutopilotEntryKind::Memory,
         ] {
             assert_eq!(AutopilotEntryKind::parse(k.as_str()), k);
         }

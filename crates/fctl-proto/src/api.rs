@@ -3161,6 +3161,17 @@ pub struct UpdateMemoryRequest {
     pub duplicate_of: Option<MemoryId>,
 }
 
+/// `DELETE /api/v1/projects/{id}/memories/stale` (editors, and its
+/// autopilot): how many of the project's stale notes went, and how many
+/// stay: those an autopilot leaves, stale for a day or less, and any
+/// marked stale meanwhile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DeletedStaleMemories {
+    pub deleted: u32,
+    pub kept: u32,
+}
+
 // ───────────────────────────── retrospectives ─────────────────────────────
 
 /// `GET /api/v1/projects/{id}/retrospectives` and

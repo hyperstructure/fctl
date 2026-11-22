@@ -2725,7 +2725,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    sessions, schedules, repositories, secrets' names and memory; start
    sessions, which are its crew (`autopilot_role = 'crew'`), as are the
    runs of schedules it asks for ([Schedules](#schedules)), and message,
-   interrupt, stop, resume or archive only those; keep the memory; and as
+   interrupt, stop, resume or archive only those; keep the memory, and
+   delete its notes stale for over a day ([Project memory](#project-memory));
+   and as
    far as its powers go, change projects' settings and review agents, set
    and remove the secrets it set itself (`project_secrets.autopilot`;
    those people set, or gave it, it neither replaces nor removes), add and
@@ -3805,7 +3807,8 @@ why and who marked it, and the note that took its place or that it repeats
    must give (not one someone else marked stale already); and `fctl memory
    duplicate` marks one stale as a duplicate of another, a current note
    that agents go on starting with, and links the two. Agents can't change
-   or delete notes. fctl reaches
+   or delete notes, but for an autopilot's own session, which deletes
+   stale ones (below). fctl reaches
    fctl-agent over the session socket, which hands the call to its host
    (`AgentToHost::Call`); the host sends it with its runner token (`POST
    /api/v1/runner/sessions/{id}/calls`, an `AgentCall`), and the control
@@ -3830,12 +3833,31 @@ why and who marked it, and the note that took its place or that it repeats
    editors and up add notes, in place of others too, change them, mark
    them stale (duplicates too) or current again and delete them (`POST
    /api/v1/projects/{id}/memories`, `PATCH` and `DELETE
-   /api/v1/memories/{id}`), which the workspace's audit log records. A
+   /api/v1/memories/{id}`), the stale ones all at once too (`DELETE
+   /api/v1/projects/{id}/memories/stale`, `fctl memory delete --stale`),
+   which the workspace's audit log records. A
    project keeps at most 1,000 notes, stale ones included. Session pages ask
    for the notes their agent wrote or marked stale (`?session=`), and the
    web app reads the memory again when a session of the project changes
    status, as when a turn ends. Deleting a note leaves the transcripts that
    showed it as they are.
+4. **What autopilots do.** An [autopilot](#autopilots) keeps its
+   projects' memory as their agents do, and deletes its stale notes
+   itself, without asking, once they crowd it
+   ([ADR 0091](adr/0091-autopilots-delete-stale-memory-notes-once-they-crowd-the-memory.md)):
+   stale notes count toward the 1,000 a project keeps though no agent
+   starts with them, and a full memory takes no new note from anyone.
+   Once a memory of its projects holds 900 notes (`memory::CROWDED`), its
+   brief says so, whichever parts it shows (`autopilots::crowded_memories`,
+   `fctl_domain::autopilot::memory_line`), with how many are stale and how
+   many of those it may delete. Its request to delete the stale notes
+   deletes only those stale for over a day
+   (`memory::stale_deleted_until`), so that people have that long to make
+   one marked stale by mistake current again, and no note goes in the
+   same breath as it goes stale; it deletes no single note. Its log says
+   how many went, as the audit log does (`memory.stale_deleted`, whose
+   `autopilot` says it was the autopilot). When the current notes crowd
+   the memory alone, its brief asks it to have a session tidy them.
 
 The **Project memory** setting (`project_memory`, on by default) decides
 whether agents keep it. Off, the spec has no memory, agents hear nothing

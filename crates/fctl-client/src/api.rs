@@ -999,6 +999,14 @@ impl Api {
         self.delete(&format!("/memories/{}", enc(id))).await
     }
 
+    /// Deletes a project's stale notes at once (editors; its autopilot,
+    /// those stale for over a day), and says how many went and how many
+    /// stale ones stay.
+    pub async fn delete_stale_memories(&self, project: &str) -> Result<DeletedStaleMemories> {
+        self.delete(&format!("/projects/{}/memories/stale", enc(project)))
+            .await
+    }
+
     /// A project's retrospectives, newest first: of one outcome when it is
     /// given, after the one `before` names for the next page.
     pub async fn project_retrospectives(

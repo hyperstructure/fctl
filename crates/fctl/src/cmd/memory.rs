@@ -90,12 +90,22 @@ pub enum MemoryCmd {
         /// Its new text (or pipe it in).
         text: Vec<String>,
     },
-    /// Delete notes (people who can edit the project).
-    #[command(visible_alias = "rm")]
+    /// Delete notes, or with --stale all the stale ones at once (people
+    /// who can edit the project; its autopilot, the notes stale for over a
+    /// day).
+    #[command(
+        visible_alias = "rm",
+        after_help = "Stale notes count toward the 1,000 a project keeps, though agents no longer start with them.\n\nExamples:\n  fctl memory delete mem_01JC3V…\n  fctl memory delete --stale -p my-app"
+    )]
     Delete {
         /// The notes' ids (mem_…).
-        #[arg(required = true)]
+        #[arg(required_unless_present = "stale", conflicts_with = "stale")]
         ids: Vec<String>,
+        /// Delete every stale note of the project instead. An autopilot
+        /// deletes those stale for over a day: people have that long to
+        /// make one marked stale by mistake current again.
+        #[arg(long)]
+        stale: bool,
     },
 }
 
@@ -146,8 +156,23 @@ impl Keeper {
         }
     }
 
-    /// The API, for what only people do: in a sandbox too, when a person
-    /// signed fctl in there.
+    /// The project: the one people name (or their default), or in an
+    /// autopilot's own sandbox its own (`FCTL_AUTOPILOT`).
+    fn project(&self) -> Result<String> {
+        match self {
+            Self::Person { project, .. } => super::sessions::project_or_default(project.clone()),
+            Self::Agent { .. } => match std::env::var(fctl_proto::agent::AUTOPILOT_ENV)
+                .ok()
+                .filter(|p| !p.is_empty())
+            {
+                Some(project) => Ok(project),
+                None => super::sessions::project_or_default(None),
+            },
+        }
+    }
+
+    /// The API, for what only people do, and an autopilot through its
+    /// session: in a sandbox too, when a person signed fctl in there.
     fn api(&self, what: &str) -> Result<Api> {
         match self {
             Self::Person { api, .. } => Ok(api.clone()),
@@ -460,7 +485,29 @@ pub async fn run(server: Option<&str>, args: MemoryArgs, json: bool) -> Result<(
             );
             print_text(&note.text);
         }
-        MemoryCmd::Delete { ids } => {
+        MemoryCmd::Delete { stale: true, .. } => {
+            let api = keeper.api("delete notes")?;
+            let done = api.delete_stale_memories(&keeper.project()?).await?;
+            if json {
+                return style::print_json(&done);
+            }
+            println!(
+                "{} Deleted {}",
+                style::accent("✓"),
+                stale_notes(done.deleted)
+            );
+            if done.kept > 0 {
+                let stay = if done.kept == 1 { "stays" } else { "stay" };
+                // An autopilot's sandbox reaches the API through its session.
+                let why = if api.is_relayed() {
+                    " until stale a day, so that people can make a note marked stale by mistake current again"
+                } else {
+                    ": marked stale meanwhile"
+                };
+                println!("{} {} {stay}{why}", style::dim("·"), stale_notes(done.kept));
+            }
+        }
+        MemoryCmd::Delete { ids, stale: false } => {
             let api = keeper.api("delete notes")?;
             for id in &ids {
                 let id = memory_id(id)?;
@@ -479,6 +526,14 @@ pub async fn run(server: Option<&str>, args: MemoryArgs, json: bool) -> Result<(
         }
     }
     Ok(())
+}
+
+/// "1 stale note", "912 stale notes".
+fn stale_notes(n: u32) -> String {
+    match n {
+        1 => "1 stale note".to_owned(),
+        n => format!("{n} stale notes"),
+    }
 }
 
 /// A note's text, indented under its heading.

@@ -3669,6 +3669,56 @@ pub async fn gate(ctx: &Ctx, method: &str, segs: &[&str], body: Option<&Value>) 
     }
 }
 
+// ───────────────────────────── its projects' memory ─────────────────────────────
+
+/// A project's memory that its autopilot hears of in its brief.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct CrowdedMemory {
+    pub slug: String,
+    #[serde(deserialize_with = "int")]
+    pub notes: i64,
+    #[serde(deserialize_with = "int", default)]
+    pub stale: i64,
+    #[serde(deserialize_with = "int", default)]
+    pub deletable: i64,
+}
+
+/// The memories of the autopilot's projects (its own, or its workspace's
+/// that aren't archived) that are crowded (`memory::crowded`), by slug,
+/// with how many of their notes are stale and how many of those it may
+/// delete at `now`.
+pub async fn crowded_memories(
+    db: &D1Database,
+    row: &AutopilotRow,
+    now: i64,
+) -> AppResult<Vec<CrowdedMemory>> {
+    use fctl_domain::memory;
+    let (place, key) = match row.scope() {
+        AutopilotScope::Project => ("m.project_id = ?3", &row.project_id),
+        AutopilotScope::Workspace => (
+            "p.workspace_id = ?3 AND p.archived_at IS NULL",
+            &row.workspace_id,
+        ),
+    };
+    q(
+        db,
+        &format!(
+            "SELECT p.slug, COUNT(*) AS notes, \
+             SUM(CASE WHEN m.stale_at IS NOT NULL THEN 1 ELSE 0 END) AS stale, \
+             SUM(CASE WHEN m.stale_at IS NOT NULL AND m.stale_at <= ?1 THEN 1 ELSE 0 END) AS deletable \
+             FROM memories m JOIN projects p ON p.id = m.project_id WHERE {place} \
+             GROUP BY m.project_id HAVING COUNT(*) >= ?2 ORDER BY p.slug"
+        ),
+        &[
+            n(memory::stale_deleted_until(now, true)),
+            n(i64::from(memory::CROWDED)),
+            s(key),
+        ],
+    )?
+    .all()
+    .await
+}
+
 // ───────────────────────────── for its session's spec ─────────────────────────────
 
 /// What the spec of an autopilot's own session says of it (`autopilot`:
@@ -3847,6 +3897,80 @@ mod tests {
         works_in(&db, None).await?;
         assert!(superseded(&db, "prj_web", "ses_2").await?);
         assert!(!superseded(&db, "prj_shop", "ses_1").await?);
+        Ok(())
+    }
+
+    /// Adds `count` notes to a project's memory, stale since `stale_at`
+    /// when it says so.
+    async fn notes(
+        db: &D1Database,
+        project: &str,
+        prefix: &str,
+        count: i64,
+        stale_at: Option<i64>,
+    ) -> AppResult<()> {
+        q(
+            db,
+            "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < ?1) \
+             INSERT INTO memories (id, project_id, text, created_at, stale_at) \
+             SELECT ?2 || i, ?3, 'A note', 0, ?4 FROM c",
+            &[n(count), s(prefix), s(project), crate::db::on(stale_at)],
+        )?
+        .run()
+        .await?;
+        Ok(())
+    }
+
+    /// Its brief tells of its projects' memories once they hold 900 notes,
+    /// with how many are stale and how many of those it may delete: those
+    /// stale for over a day. A workspace's autopilot hears of the
+    /// workspace's projects but those archived, and of no other workspace's.
+    #[wasm_bindgen_test]
+    async fn its_brief_counts_the_memories_that_crowd() -> AppResult<()> {
+        let db = testing::database();
+        let row = autopilot(&db).await?;
+        notes(&db, "prj_web", "mem_now_", 850, None).await?;
+        notes(&db, "prj_web", "mem_old_", 30, Some(NOW - 2 * DAY)).await?;
+        notes(&db, "prj_web", "mem_new_", 19, Some(NOW - HOUR)).await?;
+        assert_eq!(crowded_memories(&db, &row, NOW).await?, []);
+        notes(&db, "prj_web", "mem_more_", 1, None).await?;
+        let web = CrowdedMemory {
+            slug: "web".into(),
+            notes: 900,
+            stale: 49,
+            deletable: 30,
+        };
+        assert_eq!(crowded_memories(&db, &row, NOW).await?, [web]);
+
+        for sql in [
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_else', 'else', 'Else', 0, 0)",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_api', 'api', 'API', 'else', 'api', 'usr_ada', 0, 0, 'wsp_else')",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_docs', 'docs', 'Docs', 'acme', 'docs', 'usr_ada', 0, 0, 'wsp_acme')",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id, archived_at) \
+             VALUES ('prj_old', 'old', 'Old', 'acme', 'old', 'usr_ada', 0, 0, 'wsp_acme', 1)",
+            "UPDATE autopilots SET scope = 'workspace' WHERE project_id = 'prj_web'",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        for project in ["prj_api", "prj_docs", "prj_old"] {
+            notes(
+                &db,
+                project,
+                &format!("mem_{project}_"),
+                1_000,
+                Some(NOW - 3 * DAY),
+            )
+            .await?;
+        }
+        let wide = row_of(&db).await?;
+        let slugs: Vec<String> = crowded_memories(&db, &wide, NOW)
+            .await?
+            .into_iter()
+            .map(|m| format!("{} {} {} {}", m.slug, m.notes, m.stale, m.deletable))
+            .collect();
+        assert_eq!(slugs, ["docs 1000 1000 1000", "web 900 49 30"]);
         Ok(())
     }
 

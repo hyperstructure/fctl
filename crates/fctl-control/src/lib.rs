@@ -537,6 +537,9 @@ async fn dispatch(
         (Get, ["memories", id]) => api::memories::get(ctx, id).await,
         (Patch, ["memories", id]) => api::memories::update(ctx, req, id).await,
         (Delete, ["memories", id]) => api::memories::delete(ctx, id).await,
+        (Delete, ["projects", id, "memories", "stale"]) => {
+            api::memories::delete_stale(ctx, id).await
+        }
         (Get, ["projects", id, "review-agents"]) => api::reviews::get_settings(ctx, id).await,
         (Patch, ["projects", id, "review-agents"]) => {
             api::reviews::update_settings(ctx, req, id).await

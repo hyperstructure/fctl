@@ -17,6 +17,14 @@ pub const MAX_CHARS: usize = 2_000;
 pub const MAX_REASON_CHARS: usize = 500;
 /// The most notes a project keeps, stale ones included.
 pub const MAX_PER_PROJECT: u32 = 1_000;
+/// How many notes crowd a project's memory: from here on, its autopilot's
+/// brief says so, before fctl refuses new notes at [`MAX_PER_PROJECT`].
+pub const CROWDED: u32 = 900;
+/// How long a note stays stale before an autopilot deletes it, in
+/// milliseconds: people who follow along have a day to make a note an
+/// agent marked stale by mistake current again. People delete stale notes
+/// at once.
+pub const STALE_BEFORE_AUTOPILOT_DELETES: i64 = 24 * 60 * 60 * 1000;
 /// The most notes one note takes the place of: those it sums up.
 pub const MAX_REPLACED: usize = 20;
 /// How much of the notes' text an agent starts with, in bytes: about as
@@ -67,6 +75,23 @@ pub fn replaced(
         ));
     }
     Ok(ids)
+}
+
+/// Whether a project's memory holding `notes`, stale ones included, is
+/// crowded ([`CROWDED`]).
+pub fn crowded(notes: u32) -> bool {
+    notes >= CROWDED
+}
+
+/// The latest time a note may have gone stale for a deletion of a
+/// project's stale notes at `now` to take it: any time for people, a day
+/// before `now` for an autopilot ([`STALE_BEFORE_AUTOPILOT_DELETES`]).
+pub fn stale_deleted_until(now: i64, by_autopilot: bool) -> i64 {
+    if by_autopilot {
+        now.saturating_sub(STALE_BEFORE_AUTOPILOT_DELETES)
+    } else {
+        now
+    }
 }
 
 /// Why a duplicate is stale, unless someone says otherwise.
@@ -407,5 +432,23 @@ mod tests {
             avatar_url: None,
         });
         assert_eq!(source(&by_person), "Ada");
+    }
+
+    #[test]
+    fn an_autopilot_deletes_notes_stale_for_over_a_day() {
+        let now = 10 * STALE_BEFORE_AUTOPILOT_DELETES;
+        assert_eq!(stale_deleted_until(now, false), now);
+        assert_eq!(stale_deleted_until(now, true), now - 24 * 60 * 60 * 1000);
+        // Never before the epoch's start.
+        assert_eq!(stale_deleted_until(i64::MIN, true), i64::MIN);
+    }
+
+    #[test]
+    fn memory_crowds_before_it_fills() {
+        assert!(!crowded(0));
+        assert!(!crowded(CROWDED - 1));
+        assert!(crowded(CROWDED));
+        assert!(crowded(MAX_PER_PROJECT));
+        const { assert!(CROWDED < MAX_PER_PROJECT) };
     }
 }

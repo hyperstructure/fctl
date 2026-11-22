@@ -8,6 +8,7 @@ import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   ArrowRight,
+  BookMarked,
   BookOpenCheck,
   Check,
   ChevronDown,
@@ -2494,6 +2495,7 @@ const ENTRY_ICONS: Record<G.AutopilotEntryKind, ReactNode> = {
   repository: <BookOpenCheck />,
   schedule: <Repeat />,
   project: <FolderPlus />,
+  memory: <BookMarked />,
   plan: <ListChecks />,
   file: <FileText />,
   asked: <MessageCircleQuestion />,

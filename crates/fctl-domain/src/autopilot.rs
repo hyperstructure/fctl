@@ -1166,8 +1166,14 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
             ],
         )
         | ("PATCH", ["sessions", id]) => Ok(Gate::Crew((*id).to_owned())),
-        // The project's memory, as its agents keep it.
+        // The project's memory, as its agents keep it, and its stale
+        // notes, which it deletes as they crowd it: those stale for over a
+        // day (`memory::stale_deleted_until`). It deletes no single note.
         ("POST", ["projects", _, "memories"]) | ("PATCH", ["memories", _]) => Ok(Gate::Open),
+        ("DELETE", ["projects", _, "memories", "stale"]) => Ok(Gate::Open),
+        ("DELETE", ["memories", _]) => Err(ApiError::forbidden(
+            "An autopilot deletes no single note: it deletes the project's stale notes, those stale for over a day, all at once (`fctl memory delete --stale`). People delete the others.",
+        )),
         // What its powers allow.
         ("PATCH", ["projects", _] | ["projects", _, "review-agents"]) => {
             needs(Settings, Gate::Open)
@@ -1183,7 +1189,7 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
             needs(Projects, Gate::NewProject)
         }
         _ => Err(ApiError::forbidden(
-            "An autopilot can't do that: people do. It reads its projects, starts and steers its own sessions, and as far as its powers go changes settings, secrets, repositories and schedules, and creates projects; never people, roles, shares, tokens, runners, GitHub accounts, the workspace's settings, or deleting a project.",
+            "An autopilot can't do that: people do. It reads its projects, starts and steers its own sessions, keeps their memory, and as far as its powers go changes settings, secrets, repositories and schedules, and creates projects; never people, roles, shares, tokens, runners, GitHub accounts, the workspace's settings, or deleting a project.",
         )),
     }
 }
@@ -1350,6 +1356,16 @@ pub fn describe(
                 None => format!("Ran a schedule{in_it} now"),
             },
         ),
+        // Deleting no note changes nothing.
+        ("DELETE", ["projects", _, "memories", "stale"]) => {
+            let deleted = answer.get("deleted").and_then(Value::as_u64)?;
+            let notes = match deleted {
+                0 => return None,
+                1 => "1 stale note".to_owned(),
+                n => format!("{n} stale notes"),
+            };
+            (K::Memory, format!("Deleted {notes} from {whose} memory"))
+        }
         // The project it created goes with the entry, which links to it.
         ("POST", ["projects"]) => {
             let name = str_of(answer, "name").or_else(|| str_of(body, "name"));
@@ -1528,7 +1544,7 @@ fn work_lines(powers: &[AutopilotPower]) -> Vec<String> {
         "Sessions that change the same screen or component at once can each be right alone and break together (two that each add a chip to the same row). Give them one shared layout, and have the second wait until the first merges: fctl wakes you once the first's pull request has merged (as it merges, or as the first's turn ends if it is at work), and you tell the second to go on.".to_owned(),
         "With several pull requests to merge, list the files each changes (`gh pr view <n> --json files`) and write a merge order in your plan: those that share no file merge together, the rest one at a time, each once the last one's merge wakes you. Tell each session what to expect from those before it: files numbered in sequence that both took (a database migration, a decision record) and files that many change (a changelog, shared docs).".to_owned(),
         "For a big or uncertain piece of work, start with a spike: a session that tries it, reports a short proposal with real numbers (what it measured, what each way would cost), and carries on unless something blocks it. You get a checkpoint without stalling the work.".to_owned(),
-        format!("Put what every session should know (a trap, a rule, a command that works) where every session reads it, rather than in each task: {everyone}. When sessions keep making the same mistake, fix its cause with a session of its own (a script that does harm by default, a missing check) rather than warn each one again. Once the memory grows long, have a session tidy it, so that sessions start with what bears on their work: notes that overlap become one (`fctl memory add --replaces`), and those out of date go stale."),
+        format!("Put what every session should know (a trap, a rule, a command that works) where every session reads it, rather than in each task: {everyone}. When sessions keep making the same mistake, fix its cause with a session of its own (a script that does harm by default, a missing check) rather than warn each one again. Once the memory grows long, have a session tidy it, so that sessions start with what bears on their work: notes that overlap become one (`fctl memory add --replaces`), and those out of date go stale. Stale notes still count toward the {} a project keeps: once your brief says they crowd it, delete those stale for over a day yourself (`fctl memory delete --stale`), without asking anyone.", crate::triggers::thousands(crate::memory::MAX_PER_PROJECT)),
         "When people tell you a decision again, it didn't stick: put it where it lasts (the project's memory, and a decision record where the project keeps them), and check what sessions propose against it.".to_owned(),
         "A pass that ends with \"nothing to fix\" (a review, a design look) is rarely the last word: name one concrete thing you see, such as a panel that covers 40% of a phone's screen, and ask the session to look again from there. Sessions reach that verdict quickly, and find real improvements once they have something specific to start from.".to_owned(),
         "Before you take a session's word that its work is done, read its last turn (`fctl logs <project>#<n> --last-turn`) and its pull request. Sessions stop short: some end their turn after their first pull request or skip part of their own list, and one whose Claude Code was cut off twice, or that someone interrupted, waits without a word (fctl says it ended its turn without one, and why where it knows). Send such a one what is left, item by item. Check what a session claims before you act on it, such as a failure that is \"already on main\", against main's own checks.".to_owned(),
@@ -2009,6 +2025,88 @@ pub struct FileView<'a> {
     pub at: Millis,
 }
 
+/// A project's memory once it is crowded (`memory::crowded`), for its
+/// brief.
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryView<'a> {
+    pub project_slug: &'a str,
+    /// Its notes, stale ones included.
+    pub notes: u32,
+    pub stale: u32,
+    /// Its notes stale for over a day, which the autopilot deletes
+    /// (`memory::stale_deleted_until`).
+    pub deletable: u32,
+}
+
+/// What its brief says of a project's memory once it is crowded: how full
+/// it is, and what to do without asking anyone. Delete the stale notes it
+/// may, or once they have been stale a day, and when the current ones
+/// crowd it alone, have a session tidy them. `None` while it isn't
+/// crowded.
+pub fn memory_line(m: &MemoryView<'_>, scope: AutopilotScope) -> Option<String> {
+    use crate::memory::{MAX_PER_PROJECT, crowded};
+    use crate::triggers::thousands;
+    if !crowded(m.notes) {
+        return None;
+    }
+    let (whose, delete) = match scope {
+        AutopilotScope::Project => (
+            "The project's memory".to_owned(),
+            "`fctl memory delete --stale`".to_owned(),
+        ),
+        AutopilotScope::Workspace => (
+            format!("{}'s memory", m.project_slug),
+            format!("`fctl memory -p {} delete --stale`", m.project_slug),
+        ),
+    };
+    let notes = thousands(m.notes);
+    let mut s = if m.notes >= MAX_PER_PROJECT {
+        format!(
+            "{whose} is full: it holds {notes} notes, stale ones included, the most fctl keeps, so no session can add one."
+        )
+    } else {
+        format!(
+            "{whose} holds {notes} notes, stale ones included: at {} fctl refuses new ones.",
+            thousands(MAX_PER_PROJECT)
+        )
+    };
+    let stale = m.stale.min(m.notes);
+    let deletable = m.deletable.min(stale);
+    let mistakes = "so that people can make a note marked stale by mistake current again";
+    match (deletable, stale) {
+        (0, 0) => {}
+        (0, 1) => s.push_str(&format!(
+            " Its stale note went stale within the last day: delete it ({delete}) once it has been stale a day, without asking anyone. fctl keeps it until then, {mistakes}."
+        )),
+        (0, n) => s.push_str(&format!(
+            " Its {} stale notes went stale within the last day: delete them ({delete}) once they have been stale a day, without asking anyone. fctl keeps them until then, {mistakes}.",
+            thousands(n)
+        )),
+        (1, 1) => s.push_str(&format!(
+            " Its stale note, which no session starts with, has been stale for over a day: delete it yourself now, without asking anyone ({delete})."
+        )),
+        (d, n) if d == n => s.push_str(&format!(
+            " Its {} stale notes, which no session starts with, have been stale for over a day: delete them yourself now, without asking anyone ({delete}).",
+            thousands(n)
+        )),
+        (d, n) => s.push_str(&format!(
+            " {} of its {} stale notes, which no session starts with, {} been stale for over a day: delete {} yourself now, without asking anyone ({delete}). fctl keeps the others until they have been stale a day, {mistakes}.",
+            thousands(d),
+            thousands(n),
+            if d == 1 { "has" } else { "have" },
+            if d == 1 { "it" } else { "them" },
+        )),
+    }
+    let current = m.notes - stale;
+    if crowded(current) {
+        s.push_str(&format!(
+            " Its {} current notes crowd it alone: have a session tidy them, so that sessions start with what bears on their work: notes that overlap become one (`fctl memory add --replaces`), and those out of date go stale.",
+            thousands(current)
+        ));
+    }
+    Some(s)
+}
+
 /// An entry of its log, for its brief.
 #[derive(Clone, Debug)]
 pub struct EntryView<'a> {
@@ -2135,6 +2233,9 @@ pub struct Brief<'a> {
     pub others: &'a [OtherView<'a>],
     /// Its files, by name.
     pub files: &'a [FileView<'a>],
+    /// The memories of its projects that are crowded (`memory::crowded`),
+    /// which it hears of whatever parts it shows.
+    pub memories: &'a [MemoryView<'a>],
     pub log: &'a [EntryView<'a>],
     /// The projects it works in, by slug, for a workspace's autopilot.
     pub projects: &'a [String],
@@ -2187,6 +2288,15 @@ pub fn brief(b: &Brief<'_>) -> String {
         s.push_str(&powers);
     }
     s.push('\n');
+    for line in b
+        .memories
+        .iter()
+        .filter_map(|m| memory_line(m, b.place.scope))
+    {
+        s.push('\n');
+        s.push_str(&line);
+        s.push('\n');
+    }
     let shows = |part: BriefPart| b.parts.contains(&part);
     if shows(BriefPart::Direction) {
         s.push_str("\n## Direction\n\n");
@@ -2870,6 +2980,36 @@ mod tests {
         }
         // Published screenshots are people's to delete.
         assert!(allows(c, "DELETE", &["published", "tok"]).is_err());
+    }
+
+    #[test]
+    fn keeps_the_memory_and_deletes_its_stale_notes_alone() {
+        let c = project_pilot();
+        for (m, path) in [
+            ("POST", vec!["projects", "shop", "memories"]),
+            ("PATCH", vec!["memories", "mem_1"]),
+            ("DELETE", vec!["projects", "shop", "memories", "stale"]),
+        ] {
+            assert_eq!(allows(c, m, &path).ok(), Some(Gate::Open), "{m} {path:?}");
+        }
+        // Without any power, as its agents keep the memory.
+        let bare = Caller {
+            scope: AutopilotScope::Project,
+            powers: &[],
+        };
+        assert_eq!(
+            allows(bare, "DELETE", &["projects", "shop", "memories", "stale"]).ok(),
+            Some(Gate::Open)
+        );
+        // A single note, current or stale, is people's to delete.
+        let refused = allows(c, "DELETE", &["memories", "mem_1"])
+            .err()
+            .map(|e| e.message)
+            .unwrap_or_default();
+        assert!(
+            refused.contains("`fctl memory delete --stale`"),
+            "{refused}"
+        );
     }
 
     #[test]
@@ -3939,6 +4079,31 @@ mod tests {
     }
 
     #[test]
+    fn logs_the_stale_notes_it_deleted() {
+        let segs = ["projects", "shop", "memories", "stale"];
+        let line = |answer: Value, elsewhere: Option<&str>| {
+            describe("DELETE", &segs, &Value::Null, &answer, elsewhere, None)
+        };
+        assert_eq!(
+            line(serde_json::json!({"deleted": 912, "kept": 30}), None),
+            Some((
+                AutopilotEntryKind::Memory,
+                "Deleted 912 stale notes from the project's memory".to_owned()
+            ))
+        );
+        assert_eq!(
+            line(serde_json::json!({"deleted": 1, "kept": 0}), Some("blog")).map(|(_, l)| l),
+            Some("Deleted 1 stale note from blog's memory".to_owned())
+        );
+        // Deleting none changes nothing, nor does an answer without a count.
+        assert_eq!(
+            line(serde_json::json!({"deleted": 0, "kept": 4}), None),
+            None
+        );
+        assert_eq!(line(Value::Null, None), None);
+    }
+
+    #[test]
     fn names_another_project_it_changed() {
         let line = |method: &str, segs: &[&str], body: Value| {
             describe(method, segs, &body, &Value::Null, Some("blog"), None).map(|(_, l)| l)
@@ -4423,6 +4588,7 @@ mod tests {
             held: &held_views,
             others: &others,
             files: &files,
+            memories: &[],
             log: &[],
             projects: &[],
             wake_at: Some(now + 25 * MINUTE_MS),
@@ -4476,6 +4642,7 @@ mod tests {
             held: &[],
             others: &[],
             files: &[],
+            memories: &[],
             log: &[],
             projects: &[],
             wake_at: None,
@@ -4598,6 +4765,7 @@ mod tests {
             held: &[],
             others: &others,
             files: &files,
+            memories: &[],
             log: &[],
             projects: &[],
             wake_at: Some(now + 25 * MINUTE_MS),
@@ -4629,6 +4797,108 @@ mod tests {
         assert!(
             part.ends_with("- shop#43 “Gift cards”: working\n"),
             "{part}"
+        );
+    }
+
+    #[test]
+    fn tells_of_a_crowded_memory_whatever_parts_it_shows() {
+        let now = 2 * 86_400_000;
+        let full = [MemoryView {
+            project_slug: "shop",
+            notes: 1_000,
+            stale: 942,
+            deletable: 900,
+        }];
+        let alone = Brief {
+            place: place(),
+            rules: Rules {
+                powers: &[],
+                crew_max: 2,
+                check_in_minutes: 60,
+                handoff_at: None,
+            },
+            direction: "Ship the checkout.",
+            direction_by: None,
+            direction_at: now,
+            plan: None,
+            plan_at: None,
+            notes: &[],
+            asks: &[],
+            crew: &[],
+            held: &[],
+            others: &[],
+            files: &[],
+            memories: &full,
+            log: &[],
+            projects: &[],
+            wake_at: None,
+            now,
+            parts: &[BriefPart::Sessions],
+        };
+        let text = brief(&alone);
+        assert!(
+            text.contains(
+                "for Ada. At most 2 of your sessions work at once; fctl wakes you at least every hour.\n\nThe project's memory is full: it holds 1,000 notes, stale ones included, the most fctl keeps, so no session can add one. 900 of its 942 stale notes, which no session starts with, have been stale for over a day: delete them yourself now, without asking anyone (`fctl memory delete --stale`). fctl keeps the others until they have been stale a day, so that people can make a note marked stale by mistake current again.\n\n## Your sessions\n"
+            ),
+            "{text}"
+        );
+        // Not yet crowded: nothing.
+        let roomy = [MemoryView {
+            notes: 899,
+            ..full[0]
+        }];
+        let quiet = brief(&Brief {
+            memories: &roomy,
+            ..alone.clone()
+        });
+        assert!(!quiet.contains("memory"), "{quiet}");
+    }
+
+    #[test]
+    fn says_what_to_do_about_a_crowded_memory() {
+        let line = |notes, stale, deletable, scope| {
+            memory_line(
+                &MemoryView {
+                    project_slug: "blog",
+                    notes,
+                    stale,
+                    deletable,
+                },
+                scope,
+            )
+            .unwrap_or_default()
+        };
+        use AutopilotScope::{Project, Workspace};
+        assert_eq!(line(899, 899, 899, Project), "");
+        assert_eq!(
+            line(950, 120, 120, Project),
+            "The project's memory holds 950 notes, stale ones included: at 1,000 fctl refuses new ones. Its 120 stale notes, which no session starts with, have been stale for over a day: delete them yourself now, without asking anyone (`fctl memory delete --stale`)."
+        );
+        // A workspace's autopilot names the project, and the command too.
+        assert_eq!(
+            line(1_000, 1, 1, Workspace),
+            "blog's memory is full: it holds 1,000 notes, stale ones included, the most fctl keeps, so no session can add one. Its stale note, which no session starts with, has been stale for over a day: delete it yourself now, without asking anyone (`fctl memory -p blog delete --stale`). Its 999 current notes crowd it alone: have a session tidy them, so that sessions start with what bears on their work: notes that overlap become one (`fctl memory add --replaces`), and those out of date go stale."
+        );
+        // Stale within the day: once they have been a day.
+        assert_eq!(
+            line(910, 40, 0, Project),
+            "The project's memory holds 910 notes, stale ones included: at 1,000 fctl refuses new ones. Its 40 stale notes went stale within the last day: delete them (`fctl memory delete --stale`) once they have been stale a day, without asking anyone. fctl keeps them until then, so that people can make a note marked stale by mistake current again."
+        );
+        assert!(
+            line(910, 1, 0, Project)
+                .contains(" Its stale note went stale within the last day: delete it (")
+        );
+        assert!(line(910, 3, 1, Project).contains(" 1 of its 3 stale notes, which no session starts with, has been stale for over a day: delete it yourself now"));
+        // None stale: only a tidy frees room.
+        assert_eq!(
+            line(905, 0, 0, Project),
+            "The project's memory holds 905 notes, stale ones included: at 1,000 fctl refuses new ones. Its 905 current notes crowd it alone: have a session tidy them, so that sessions start with what bears on their work: notes that overlap become one (`fctl memory add --replaces`), and those out of date go stale."
+        );
+        // Counts that disagree (a note deleted between two counts) still
+        // read sensibly.
+        assert!(
+            line(900, 950, 990, Project)
+                .contains(" Its 900 stale notes, which no session starts with")
         );
     }
 

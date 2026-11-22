@@ -96,3 +96,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0088](0088-webhooks-post-only-while-their-keeper-manages-them.md) | Webhooks post only while their keeper manages them, and only where they may |
 | [0089](0089-hosts-stop-apple-sandboxes-whose-vms-stop-answering.md) | Hosts stop Apple sandboxes whose VMs stop answering |
 | [0090](0090-agents-prove-who-they-are-with-tokens-their-workspaces-issuer-signs.md) | Agents prove who they are with tokens their workspace's issuer signs |
+| [0091](0091-autopilots-delete-stale-memory-notes-once-they-crowd-the-memory.md) | Autopilots delete stale memory notes once they crowd the memory (experimental) |

@@ -205,6 +205,17 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
       return ["edited a note in ", ...projects("memory", str(d.project_id))];
     case "memory.deleted":
       return ["deleted a note from ", ...projects("memory", str(d.project_id))];
+    case "memory.stale_deleted": {
+      const notes =
+        typeof d.count === "number"
+          ? d.count === 1
+            ? "1 stale note"
+            : `${d.count} stale notes`
+          : "the stale notes";
+      // An autopilot deletes them as its owner, who is the entry's actor.
+      const by = e.actor && str(d.autopilot) ? "'s autopilot deleted" : "deleted";
+      return [`${by} ${notes} from `, ...projects("memory", str(d.project_id))];
+    }
     case "retrospective.deleted":
       return ["deleted a retrospective in ", project(str(d.project_id))];
     case "schedule.created":

@@ -322,7 +322,7 @@ pub fn describe_caps(c: Caps) -> String {
 }
 
 /// "1,000".
-fn thousands(n: u32) -> String {
+pub(crate) fn thousands(n: u32) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, d) in digits.chars().enumerate() {
