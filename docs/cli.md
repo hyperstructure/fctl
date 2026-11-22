@@ -597,6 +597,7 @@ fctl memory stale mem_01JC3V… --reason "We deploy every day now"   # agents no
 fctl memory duplicate mem_01JC3V… --of mem_01JC2Q…   # stale, linked to the note it repeats
 fctl memory restore mem_01JC3V…        # current again
 fctl memory rm mem_01JC3V…             # for good
+fctl memory rm --stale -p my-app       # every stale note at once, for good
 ```
 
 As agents finish a piece of work, they record a retrospective of it: how
@@ -640,7 +641,10 @@ Both are on in new projects and projects from before them; `fctl projects
 set --project-memory off` and `--retrospectives off` turn them off, and the
 notes and retrospectives stay for people to read. A project keeps at most
 1,000 notes of 2,000 characters, stale ones included, and a session at most
-50 retrospectives.
+50 retrospectives. Once the memory holds 900, a project's
+[autopilot](#autopilots) hears so in its brief, and deletes the notes
+stale for over a day itself (`fctl memory delete --stale`), without asking:
+people have that day to make a note marked stale by mistake current again.
 
 ### Review agents
 
@@ -870,7 +874,12 @@ with the session, message or ask. Its brief and `fctl autopilot files`
 mark the files its plan doesn't name, and a fresh session of its own
 hears to go through those as it takes over, as it does while it keeps
 more than 25 files, which `fctl autopilot files put` says too as it adds
-one.
+one. It keeps the project's memory as its sessions do (`fctl memory add`,
+`stale`, `duplicate`), and once a memory of its projects holds 900 of the
+1,000 notes a project keeps, its brief says so: it deletes the notes stale
+for over a day itself (`fctl memory delete --stale`), without asking, and
+has a session tidy the current ones when they crowd it alone. It deletes
+no single note, and no note stale for a day or less.
 
 ```sh
 fctl autopilot brief                           # where things stand, as it wakes
@@ -890,6 +899,7 @@ fctl autopilot ask --session crm#12 "Could you send crm#12 the logo files?" -o S
 fctl autopilot withdraw apa_01JC…              # found out itself
 fctl autopilot held                            # its messages that wait for room, in the order they go
 fctl autopilot held --take-back aph_01JC…      # before it goes
+fctl memory delete --stale                     # the notes stale for over a day, once its brief says they crowd the memory
 fctl autopilot wake --in 45m                   # when to wake next, 5m to 1d
 fctl autopilot pause --reason "The direction is done: all four features shipped."
 ```

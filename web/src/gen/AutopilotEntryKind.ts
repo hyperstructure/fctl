@@ -3,4 +3,4 @@
 /**
  * What an entry in an autopilot's log is about.
  */
-export type AutopilotEntryKind = "note" | "woke" | "session" | "steered" | "settings" | "secret" | "repository" | "schedule" | "project" | "plan" | "file" | "asked" | "answered" | "direction" | "state" | "problem" | "other";
+export type AutopilotEntryKind = "note" | "woke" | "session" | "steered" | "settings" | "secret" | "repository" | "schedule" | "project" | "memory" | "plan" | "file" | "asked" | "answered" | "direction" | "state" | "problem" | "other";

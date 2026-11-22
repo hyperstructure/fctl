@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   ArrowUpRight,
+  BookMarked,
   BookOpenCheck,
   ChevronDown,
   CircleAlert,
@@ -182,6 +183,7 @@ const ACTION_ICONS: Partial<Record<G.AutopilotEntryKind, ReactNode>> = {
   repository: <BookOpenCheck />,
   schedule: <Repeat />,
   project: <FolderPlus />,
+  memory: <BookMarked />,
   plan: <ListChecks />,
   problem: <CircleAlert />,
 };

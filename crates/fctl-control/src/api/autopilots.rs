@@ -635,6 +635,16 @@ async fn brief_of(
             at: f.updated_at,
         })
         .collect();
+    let crowded = engine::crowded_memories(db, row, ctx.now).await?;
+    let memory_views: Vec<ap::MemoryView> = crowded
+        .iter()
+        .map(|m| ap::MemoryView {
+            project_slug: &m.slug,
+            notes: u32::try_from(m.notes).unwrap_or(0),
+            stale: u32::try_from(m.stale).unwrap_or(0),
+            deletable: u32::try_from(m.deletable).unwrap_or(0),
+        })
+        .collect();
     let powers = row.powers();
     let direction_by = row.direction_by_name.clone();
     let shown = Shown {
@@ -674,6 +684,7 @@ async fn brief_of(
         held: &held_views,
         others: &other_views,
         files: &file_views,
+        memories: &memory_views,
         log: &log_views,
         projects: &projects,
         wake_at: row.wake_at,

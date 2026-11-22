@@ -12,7 +12,9 @@ use crate::db::{Query, batch, n, os, q, s};
 use crate::error::{AppResult, conflict, forbidden, not_found};
 use crate::http;
 use fctl_domain::{memory, perm};
-use fctl_proto::api::{AddMemoryRequest, MemoryList, Ok, UpdateMemoryRequest};
+use fctl_proto::api::{
+    AddMemoryRequest, DeletedStaleMemories, MemoryList, Ok, UpdateMemoryRequest,
+};
 use fctl_proto::runner::MemorySpec;
 use fctl_proto::session::{Memory, SessionRef, Staleness, UserRef};
 use fctl_proto::{MemoryId, ProjectId, SessionId, UserId};
@@ -195,7 +197,7 @@ fn insert(
 
 fn full() -> crate::error::AppError {
     conflict(&format!(
-        "This project's memory is full: it keeps at most {} notes, stale ones included. People who can edit it delete the ones it no longer needs under Memory.",
+        "This project's memory is full: it keeps at most {} notes, stale ones included. People who can edit it delete the notes it no longer needs (under Memory, or every stale one with fctl memory delete --stale), and a project's autopilot deletes those stale for over a day.",
         memory::MAX_PER_PROJECT
     ))
 }
@@ -582,6 +584,63 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     http::ok(&note)
 }
 
+/// Deletes a project's notes that went stale at `until` or before, and
+/// says how many went and how many stale ones stay.
+pub(crate) async fn delete_stale_notes(
+    db: &D1Database,
+    project_id: &str,
+    until: i64,
+) -> AppResult<DeletedStaleMemories> {
+    let deleted = q(
+        db,
+        "DELETE FROM memories WHERE project_id = ? AND stale_at IS NOT NULL AND stale_at <= ?",
+        &[s(project_id), n(until)],
+    )?
+    .run()
+    .await?;
+    #[derive(Deserialize)]
+    struct Kept {
+        #[serde(deserialize_with = "crate::db::int")]
+        kept: i64,
+    }
+    let kept = q(
+        db,
+        "SELECT COUNT(*) AS kept FROM memories WHERE project_id = ? AND stale_at IS NOT NULL",
+        &[s(project_id)],
+    )?
+    .first::<Kept>()
+    .await?
+    .map_or(0, |k| k.kept);
+    Ok(DeletedStaleMemories {
+        deleted: u32::try_from(deleted).unwrap_or(u32::MAX),
+        kept: u32::try_from(kept).unwrap_or(0),
+    })
+}
+
+/// `DELETE /api/v1/projects/{id}/memories/stale` (editors, and its
+/// autopilot): deletes the project's stale notes at once, which no agent
+/// starts with any more; an autopilot's request, only those stale for over
+/// a day (`memory::stale_deleted_until`). Says how many went and how many
+/// stale ones stay.
+pub async fn delete_stale(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+    let p = access::project(ctx, id).await?;
+    require_editor(&p)?;
+    let until = memory::stale_deleted_until(ctx.now, ctx.autopilot().is_some());
+    let done = delete_stale_notes(&ctx.db, &p.row.id, until).await?;
+    if done.deleted > 0 {
+        ctx.audit_in(
+            Some(p.workspace_id()),
+            "memory.stale_deleted",
+            Some(p.row.id.as_str()),
+            Some(serde_json::json!({
+                "project_id": p.row.id,
+                "count": done.deleted,
+            })),
+        );
+    }
+    http::ok(&done)
+}
+
 /// `DELETE /api/v1/memories/{id}` (editors).
 pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let (note, p) = editable(ctx, id).await?;
@@ -602,4 +661,95 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         })),
     );
     http::ok(&Ok { ok: true })
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+    const NOW: i64 = 1_790_000_000_000;
+
+    async fn note(
+        db: &D1Database,
+        id: &str,
+        project: &str,
+        stale_at: Option<i64>,
+    ) -> AppResult<()> {
+        q(
+            db,
+            "INSERT INTO memories (id, project_id, text, created_at, stale_at) VALUES (?, ?, 'A note', 0, ?)",
+            &[s(id), s(project), crate::db::on(stale_at)],
+        )?
+        .run()
+        .await?;
+        Ok(())
+    }
+
+    async fn ids(db: &D1Database) -> AppResult<Vec<String>> {
+        #[derive(Deserialize)]
+        struct Id {
+            id: String,
+        }
+        Ok(q(db, "SELECT id FROM memories ORDER BY id", &[])?
+            .all::<Id>()
+            .await?
+            .into_iter()
+            .map(|r| r.id)
+            .collect())
+    }
+
+    /// An autopilot deletes the notes stale for over a day, and leaves the
+    /// current ones, those stale since, and other projects' alone; people
+    /// then delete the rest of the stale ones.
+    #[wasm_bindgen_test]
+    async fn deletes_only_stale_notes_of_the_project() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0)",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_web', 'web', 'Web', 'acme', 'web', 'usr_ada', 0, 0, 'wsp_acme')",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_api', 'api', 'API', 'acme', 'api', 'usr_ada', 0, 0, 'wsp_acme')",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        note(&db, "mem_1_current", "prj_web", None).await?;
+        note(&db, "mem_2_week", "prj_web", Some(NOW - 7 * DAY)).await?;
+        note(&db, "mem_3_day", "prj_web", Some(NOW - DAY)).await?;
+        note(&db, "mem_4_hour", "prj_web", Some(NOW - DAY / 24)).await?;
+        note(&db, "mem_5_api", "prj_api", Some(NOW - 7 * DAY)).await?;
+        let by_autopilot = memory::stale_deleted_until(NOW, true);
+        assert_eq!(
+            delete_stale_notes(&db, "prj_web", by_autopilot).await?,
+            DeletedStaleMemories {
+                deleted: 2,
+                kept: 1
+            }
+        );
+        assert_eq!(
+            ids(&db).await?,
+            ["mem_1_current", "mem_4_hour", "mem_5_api"]
+        );
+        let by_person = memory::stale_deleted_until(NOW, false);
+        assert_eq!(
+            delete_stale_notes(&db, "prj_web", by_person).await?,
+            DeletedStaleMemories {
+                deleted: 1,
+                kept: 0
+            }
+        );
+        assert_eq!(
+            delete_stale_notes(&db, "prj_web", by_person).await?,
+            DeletedStaleMemories {
+                deleted: 0,
+                kept: 0
+            }
+        );
+        assert_eq!(ids(&db).await?, ["mem_1_current", "mem_5_api"]);
+        Ok(())
+    }
 }

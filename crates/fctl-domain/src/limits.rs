@@ -260,6 +260,7 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
         ("DELETE", ["projects", _, "repos", _, _]) => Full,
         ("POST", ["sessions", _, "shares"]) | ("DELETE", ["sessions", _, "shares", _]) => Full,
         ("DELETE", ["memories", _] | ["retrospectives", _] | ["published", ..]) => Full,
+        ("DELETE", ["projects", _, "memories", "stale"]) => Full,
         _ => return Err(refused(access)),
     };
     if access >= needs {
@@ -633,6 +634,7 @@ mod tests {
             ("DELETE", "projects/web/repos/acme/lib"),
             ("POST", "sessions/ses_1/shares"),
             ("DELETE", "memories/mem_1"),
+            ("DELETE", "projects/web/memories/stale"),
             ("DELETE", "retrospectives/ret_1"),
             ("PATCH", "projects/web/review-agents"),
             ("POST", "projects/web/schedules"),

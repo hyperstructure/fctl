@@ -205,6 +205,13 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
       return ["edited a note in ", ...projects("memory", str(d.project_id))];
     case "memory.deleted":
       return ["deleted a note from ", ...projects("memory", str(d.project_id))];
+    case "memory.stale_deleted":
+      return [
+        typeof d.count === "number"
+          ? `deleted ${d.count === 1 ? "1 stale note" : `${d.count} stale notes`} from `
+          : "deleted the stale notes from ",
+        ...projects("memory", str(d.project_id)),
+      ];
     case "retrospective.deleted":
       return ["deleted a retrospective in ", project(str(d.project_id))];
     case "schedule.created":

@@ -119,6 +119,7 @@ export type { DeclineAutopilotAskRequest } from "./DeclineAutopilotAskRequest";
 export type { DeleteAccountRequest } from "./DeleteAccountRequest";
 export type { DeleteWorkspaceRequest } from "./DeleteWorkspaceRequest";
 export type { DeletedProject } from "./DeletedProject";
+export type { DeletedStaleMemories } from "./DeletedStaleMemories";
 export type { Delivery } from "./Delivery";
 export type { DeliveryId } from "./DeliveryId";
 export type { DeviceDecisionRequest } from "./DeviceDecisionRequest";

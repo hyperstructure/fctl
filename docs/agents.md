@@ -694,7 +694,11 @@ send it no files: what one makes for another goes on its branch.
 
 It never manages people, roles, shares, tokens, runners, GitHub accounts or
 the workspace's settings, deletes projects, or replaces the secrets people
-set, and steers only the sessions it started. At most as many of those work
+set, and steers only the sessions it started. It keeps the project's
+memory as every session does, and deletes notes only once they are stale:
+when its brief says the memory is crowded (900 of the 1,000 notes a
+project keeps, stale ones included), it deletes those stale for over a
+day with `fctl memory delete --stale`, without asking. At most as many of those work
 at once as people allow: those queued, starting, working, paused on a
 usage limit or still stopping count, as does one it just messaged, and
 those that ended their turn, stopped or failed don't, nor does one that
