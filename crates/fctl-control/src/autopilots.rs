@@ -3700,7 +3700,7 @@ pub async fn crowded_memories(
             &row.workspace_id,
         ),
     };
-    Ok(q(
+    q(
         db,
         &format!(
             "SELECT p.slug, COUNT(*) AS notes, \
@@ -3716,7 +3716,7 @@ pub async fn crowded_memories(
         ],
     )?
     .all()
-    .await?)
+    .await
 }
 
 // ───────────────────────────── for its session's spec ─────────────────────────────

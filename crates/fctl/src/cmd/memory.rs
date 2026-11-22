@@ -497,13 +497,14 @@ pub async fn run(server: Option<&str>, args: MemoryArgs, json: bool) -> Result<(
                 stale_notes(done.deleted)
             );
             if done.kept > 0 {
+                let stay = if done.kept == 1 { "stays" } else { "stay" };
                 // An autopilot's sandbox reaches the API through its session.
                 let why = if api.is_relayed() {
-                    "until they have been stale a day, so that people can make one marked stale by mistake current again"
+                    " until stale a day, so that people can make a note marked stale by mistake current again"
                 } else {
-                    "that went stale meanwhile"
+                    ": marked stale meanwhile"
                 };
-                println!("{} {} stay, {why}", style::dim("·"), stale_notes(done.kept));
+                println!("{} {} {stay}{why}", style::dim("·"), stale_notes(done.kept));
             }
         }
         MemoryCmd::Delete { ids, stale: false } => {
