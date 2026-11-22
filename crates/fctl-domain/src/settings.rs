@@ -74,7 +74,10 @@ pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
 /// without having shown it: for `claude_ai_connectors`, `credit_people`,
 /// `credit_claude`, `project_memory` and `retrospectives`, on; for
 /// `publish_screenshots` and `package_caches`, off; for `screenshot_days`,
-/// 30 days (send `null` to choose the default); for `github_access`, push,
+/// 30 days (send `null` to choose the default); for `stale_note_days`,
+/// keeping stale notes until someone deletes them, which would bring back
+/// the notes the project lets go of (send `null` to keep them); for
+/// `github_access`, push,
 /// which would let agents push again; for `pull_request_descriptions`,
 /// balanced; for `pull_request_instructions`, fctl's defaults (send `null`
 /// to choose them); for each of `follow_ups`, off; for `tickets`, GitHub
@@ -121,6 +124,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("screenshot_days").is_none() {
         settings.screenshot_days = stored.screenshot_days;
+    }
+    if sent.get("stale_note_days").is_none() {
+        settings.stale_note_days = stored.stale_note_days;
     }
     if sent.get("compact_window").is_none() {
         settings.compact_window = stored.compact_window;
@@ -457,6 +463,28 @@ mod tests {
         );
         assert!(!s.publish_screenshots);
         assert_eq!(s.screenshot_days, None);
+    }
+
+    #[test]
+    fn updates_without_how_long_stale_notes_stay_keep_it() {
+        let stored = ProjectSettings {
+            stale_note_days: Some(7),
+            ..Default::default()
+        };
+        // An older client would keep stale notes for good.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "project_memory": true }));
+        assert_eq!(s.stale_note_days, Some(7));
+        // Sent, it counts, and `null` keeps them until someone deletes them.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "stale_note_days": null }));
+        assert_eq!(s.stale_note_days, None);
+        let mut s = ProjectSettings {
+            stale_note_days: Some(1),
+            ..Default::default()
+        };
+        keep_unsent(&mut s, &stored, &json!({ "stale_note_days": 1 }));
+        assert_eq!(s.stale_note_days, Some(1));
     }
 
     #[test]

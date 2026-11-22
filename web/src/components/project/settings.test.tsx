@@ -334,6 +334,60 @@ describe("a project's Settings", () => {
     }
   });
 
+  it("saves how long stale notes stay: a number of days, or never, sent as null", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = open("agents", project({ settings: { ...settings, stale_note_days: 45 } }));
+      const field = () => {
+        const l = [...s.container.querySelectorAll("label")].find(
+          (e) => e.textContent === "Delete stale notes",
+        );
+        return s.container.querySelector(`[id="${l?.htmlFor}"]`) as HTMLElement;
+      };
+      const options = () => [
+        ...s.container.querySelectorAll<HTMLElement>('[role="listbox"] [role="option"]'),
+      ];
+      const choose = (text: string) => {
+        act(() => field().click());
+        const option = [...s.container.querySelectorAll<HTMLElement>('[role="option"]')].find(
+          (o) => o.textContent === text,
+        );
+        act(() => option?.click());
+        act(() => vi.advanceTimersByTime(1000));
+      };
+      const save = async () => {
+        await act(async () => s.button("Save").click());
+        await act(async () => vi.advanceTimersByTime(1000));
+        const saved = queryClient.getQueryData<G.Project>(keys.project("shop"));
+        if (saved) s.show(saved);
+      };
+      // A number set from the CLI shows among those offered, in order.
+      act(() => field().click());
+      expect(options().map((o) => o.textContent)).toEqual([
+        "Never: they stay until someone deletes them",
+        "After a day stale",
+        "After 3 days stale",
+        "After 7 days stale",
+        "After 14 days stale",
+        "After 30 days stale",
+        "After 45 days stale",
+        "After 90 days stale",
+        "After 365 days stale",
+      ]);
+      act(() => field().click());
+      choose("After 7 days stale");
+      await save();
+      expect(updates.at(-1)?.body.settings?.stale_note_days).toBe(7);
+      expect(updates.at(-1)?.body.settings?.instructions).toBe("Run the tests first.");
+      choose("Never: they stay until someone deletes them");
+      await save();
+      // Sent as null, which the control plane reads as never rather than as unsent.
+      expect(updates.at(-1)?.body.settings).toHaveProperty("stale_note_days", null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops the changes Cancel throws away", () => {
     const s = open("agents");
     act(() => s.toggle("Project memory").click());

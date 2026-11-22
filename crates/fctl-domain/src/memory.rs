@@ -25,6 +25,11 @@ pub const CROWDED: u32 = 900;
 /// agent marked stale by mistake current again. People delete stale notes
 /// at once.
 pub const STALE_BEFORE_AUTOPILOT_DELETES: i64 = 24 * 60 * 60 * 1000;
+/// The fewest and most days a project may keep a stale note before fctl
+/// deletes it (`ProjectSettings::stale_note_days`).
+pub const MIN_STALE_DAYS: u32 = 1;
+pub const MAX_STALE_DAYS: u32 = 365;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// The most notes one note takes the place of: those it sums up.
 pub const MAX_REPLACED: usize = 20;
 /// How much of the notes' text an agent starts with, in bytes: about as
@@ -91,6 +96,27 @@ pub fn stale_deleted_until(now: i64, by_autopilot: bool) -> i64 {
         now.saturating_sub(STALE_BEFORE_AUTOPILOT_DELETES)
     } else {
         now
+    }
+}
+
+/// Whether a project may keep its stale notes `days` days.
+pub fn valid_stale_days(days: u32) -> bool {
+    (MIN_STALE_DAYS..=MAX_STALE_DAYS).contains(&days)
+}
+
+/// The latest time a note may have gone stale for fctl to delete it at
+/// `now`, in a project that keeps its stale notes `days` days (within
+/// [`MIN_STALE_DAYS`] and [`MAX_STALE_DAYS`]).
+pub fn stale_expired_until(now: i64, days: u32) -> i64 {
+    let days = i64::from(days.clamp(MIN_STALE_DAYS, MAX_STALE_DAYS));
+    now.saturating_sub(days * DAY_MS)
+}
+
+/// How long a project keeps its stale notes, in words: "a day", "7 days".
+pub fn stale_days_words(days: u32) -> String {
+    match days {
+        1 => "a day".to_owned(),
+        n => format!("{n} days"),
     }
 }
 
@@ -441,6 +467,22 @@ mod tests {
         assert_eq!(stale_deleted_until(now, true), now - 24 * 60 * 60 * 1000);
         // Never before the epoch's start.
         assert_eq!(stale_deleted_until(i64::MIN, true), i64::MIN);
+    }
+
+    #[test]
+    fn a_project_keeps_stale_notes_as_many_days_as_it_chooses() {
+        let now = 400 * DAY_MS;
+        assert_eq!(stale_expired_until(now, 1), now - DAY_MS);
+        assert_eq!(stale_expired_until(now, 7), now - 7 * DAY_MS);
+        // Out of range, within it.
+        assert_eq!(stale_expired_until(now, 0), now - DAY_MS);
+        assert_eq!(stale_expired_until(now, 10_000), now - 365 * DAY_MS);
+        assert_eq!(stale_expired_until(i64::MIN, 7), i64::MIN);
+        assert!(!valid_stale_days(0));
+        assert!(valid_stale_days(1) && valid_stale_days(365));
+        assert!(!valid_stale_days(366));
+        assert_eq!(stale_days_words(1), "a day");
+        assert_eq!(stale_days_words(30), "30 days");
     }
 
     #[test]

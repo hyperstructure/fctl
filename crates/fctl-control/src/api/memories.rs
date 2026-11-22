@@ -617,6 +617,69 @@ pub(crate) async fn delete_stale_notes(
     })
 }
 
+/// Deletes the notes that stayed stale as long as their project keeps them
+/// (`ProjectSettings::stale_note_days`), from the hourly housekeeping, and
+/// records how many went in each project's workspace's audit log, as fctl's
+/// own doing. Returns how many went in all; a project that fails is left
+/// for the next run.
+pub(crate) async fn expire_stale(db: &D1Database, now: i64) -> AppResult<u32> {
+    #[derive(Deserialize)]
+    struct Keeps {
+        id: String,
+        workspace_id: Option<String>,
+        #[serde(deserialize_with = "crate::db::int")]
+        days: i64,
+    }
+    let projects: Vec<Keeps> = q(
+        db,
+        "SELECT p.id, p.workspace_id, CAST(json_extract(p.settings, '$.stale_note_days') AS INTEGER) AS days \
+         FROM projects p WHERE json_extract(p.settings, '$.stale_note_days') IS NOT NULL \
+         AND EXISTS (SELECT 1 FROM memories m WHERE m.project_id = p.id AND m.stale_at IS NOT NULL)",
+        &[],
+    )?
+    .all()
+    .await?;
+    let mut all = 0;
+    for p in projects {
+        let days = u32::try_from(p.days).unwrap_or(memory::MIN_STALE_DAYS);
+        let until = memory::stale_expired_until(now, days);
+        let done = match delete_stale_notes(db, &p.id, until).await {
+            Ok(done) => done,
+            Err(e) => {
+                worker::console_error!("deleting {}'s stale notes: {}", p.id, e.0.message);
+                continue;
+            }
+        };
+        if done.deleted == 0 {
+            continue;
+        }
+        all += done.deleted;
+        let entry = q(
+            db,
+            "INSERT INTO audit_log (id, ts, actor_id, action, target, data, ip, workspace_id) \
+             VALUES (?, ?, NULL, 'memory.stale_deleted', ?, ?, NULL, ?)",
+            &[
+                s(&fctl_domain::ids::new_id("aud", now)),
+                n(now),
+                s(&p.id),
+                s(&serde_json::json!({
+                    "project_id": p.id,
+                    "count": done.deleted,
+                    "days": days.clamp(memory::MIN_STALE_DAYS, memory::MAX_STALE_DAYS),
+                })
+                .to_string()),
+                os(p.workspace_id.as_deref()),
+            ],
+        )?
+        .run()
+        .await;
+        if let Err(e) = entry {
+            worker::console_error!("auditing {}'s stale notes: {}", p.id, e.0.message);
+        }
+    }
+    Ok(all)
+}
+
 /// `DELETE /api/v1/projects/{id}/memories/stale` (editors, and its
 /// autopilot): deletes the project's stale notes at once, which no agent
 /// starts with any more; an autopilot's request, only those stale for over
@@ -705,6 +768,83 @@ mod tests {
             .into_iter()
             .map(|r| r.id)
             .collect())
+    }
+
+    /// fctl deletes each project's notes stale longer than it keeps them,
+    /// leaves those of projects that keep them for good, and records how
+    /// many went in the project's workspace's audit log, as its own doing.
+    #[wasm_bindgen_test]
+    async fn deletes_notes_stale_longer_than_their_project_keeps_them() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0)",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id, settings) \
+             VALUES ('prj_web', 'web', 'Web', 'acme', 'web', 'usr_ada', 0, 0, 'wsp_acme', '{\"stale_note_days\":7}')",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id, settings) \
+             VALUES ('prj_docs', 'docs', 'Docs', 'acme', 'docs', 'usr_ada', 0, 0, 'wsp_acme', '{\"stale_note_days\":1}')",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id, settings) \
+             VALUES ('prj_api', 'api', 'API', 'acme', 'api', 'usr_ada', 0, 0, 'wsp_acme', '{\"stale_note_days\":null}')",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        note(&db, "mem_web_current", "prj_web", None).await?;
+        note(&db, "mem_web_8_days", "prj_web", Some(NOW - 8 * DAY)).await?;
+        note(&db, "mem_web_6_days", "prj_web", Some(NOW - 6 * DAY)).await?;
+        note(&db, "mem_docs_2_days", "prj_docs", Some(NOW - 2 * DAY)).await?;
+        note(&db, "mem_docs_hour", "prj_docs", Some(NOW - DAY / 24)).await?;
+        note(&db, "mem_api_year", "prj_api", Some(NOW - 365 * DAY)).await?;
+        assert_eq!(expire_stale(&db, NOW).await?, 2);
+        assert_eq!(
+            ids(&db).await?,
+            [
+                "mem_api_year",
+                "mem_docs_hour",
+                "mem_web_6_days",
+                "mem_web_current"
+            ]
+        );
+        #[derive(Deserialize)]
+        struct Entry {
+            actor_id: Option<String>,
+            target: String,
+            data: String,
+            workspace_id: String,
+        }
+        let entries: Vec<Entry> = q(
+            &db,
+            "SELECT actor_id, target, data, workspace_id FROM audit_log \
+             WHERE action = 'memory.stale_deleted' ORDER BY target",
+            &[],
+        )?
+        .all()
+        .await?;
+        let said: Vec<String> = entries
+            .iter()
+            .map(|e| {
+                format!(
+                    "{:?} {} {} {}",
+                    e.actor_id, e.target, e.workspace_id, e.data
+                )
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                r#"None prj_docs wsp_acme {"count":1,"days":1,"project_id":"prj_docs"}"#,
+                r#"None prj_web wsp_acme {"count":1,"days":7,"project_id":"prj_web"}"#,
+            ]
+        );
+        // Nothing more to delete: nothing more to say.
+        assert_eq!(expire_stale(&db, NOW).await?, 0);
+        assert_eq!(
+            q(&db, "SELECT COUNT(*) AS n FROM audit_log", &[])?
+                .first::<crate::db::Count>()
+                .await?
+                .map_or(0, |c| c.n),
+            2
+        );
+        Ok(())
     }
 
     /// An autopilot deletes the notes stale for over a day, and leaves the

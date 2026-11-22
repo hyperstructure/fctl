@@ -701,6 +701,14 @@ pub struct ProjectSettings {
     /// wrong stale. On by default. Off, agents hear nothing of it, and the
     /// notes stay for people to read and delete.
     pub project_memory: bool,
+    /// Days a stale note of the project's memory stays before fctl deletes
+    /// it, 1 to 365. Absent: it stays until someone deletes it. Always
+    /// sent, as `null` for that, so that a client that sends back the
+    /// settings it read keeps it (an update that leaves it out keeps the
+    /// stored value too: `fctl_domain::settings::keep_unsent`).
+    #[serialize_always]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub stale_note_days: Option<u32>,
     /// Agents record a retrospective when they finish a piece of work
     /// (`fctl retro`): what they worked on, how, what got in the way and
     /// what a future agent should know. On by default. Off, agents hear
@@ -1088,6 +1096,7 @@ impl Default for ProjectSettings {
             credit_claude: true,
             publish_screenshots: false,
             screenshot_days: None,
+            stale_note_days: None,
             project_memory: true,
             retrospectives: true,
             github_access: None,
@@ -1810,6 +1819,15 @@ mod tests {
         assert!(on.publish_screenshots);
         assert_eq!(on.screenshot_days, Some(7));
         assert!(serde_json::to_value(&old)?.get("screenshot_days").is_none());
+        // Stale notes stayed until someone deleted them; the setting goes
+        // out as null for that, so that what a client sends back keeps it.
+        assert_eq!(old.stale_note_days, None);
+        assert_eq!(
+            serde_json::to_value(&old)?.get("stale_note_days"),
+            Some(&serde_json::Value::Null)
+        );
+        let kept: ProjectSettings = serde_json::from_str(r#"{"stale_note_days":7}"#)?;
+        assert_eq!(kept.stale_note_days, Some(7));
         let off: ProjectSettings =
             serde_json::from_str(r#"{"credit_people":false,"credit_claude":false}"#)?;
         assert!(!off.credit_people && !off.credit_claude);

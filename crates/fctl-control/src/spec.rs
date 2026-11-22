@@ -615,6 +615,7 @@ async fn review_spec(
         publish_screenshots: false,
         screenshot_days: None,
         project_memory: false,
+        stale_note_days: None,
         retrospectives: false,
         github_access: Some(GithubAccess::Read),
         follow_ups: Default::default(),

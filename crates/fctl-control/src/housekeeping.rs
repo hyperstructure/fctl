@@ -2,7 +2,8 @@
 //! the files of deleted projects, expired sign-in records, invitations and
 //! what GitHub sign-ins offered to connect,
 //! early access requests that are done or old, the links of expired
-//! published screenshots and old audit entries. Runs
+//! published screenshots, memory notes stale as long as their project
+//! keeps them, and old audit entries. Runs
 //! from the Worker's hourly cron trigger; deleting a project or a workspace
 //! also purges its sessions and files right away. It also looks up the
 //! pull requests sessions list that GitHub hasn't told about for a while
@@ -263,6 +264,12 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     .run()
     .await?;
     deleted += settle(&db).await?;
+    // Stale notes as long as their projects keep them.
+    match crate::api::memories::expire_stale(&db, now).await {
+        Ok(0) => {}
+        Ok(notes) => worker::console_log!("housekeeping: deleted {notes} stale memory notes"),
+        Err(e) => worker::console_error!("deleting stale memory notes: {}", e.0.message),
+    }
     match runners(env, &db, now).await {
         Ok(0) => {}
         Ok(removed) => worker::console_log!("housekeeping: removed {removed} runners"),

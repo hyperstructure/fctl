@@ -478,6 +478,8 @@ const agentSettings = (s: G.ProjectSettings) => ({
   remote_control: s.remote_control,
   claude_ai_connectors: s.claude_ai_connectors,
   project_memory: s.project_memory,
+  /** `null` keeps stale notes until someone deletes them, and goes out as `null`, which says so. */
+  stale_note_days: s.stale_note_days ?? null,
   retrospectives: s.retrospectives,
 });
 
@@ -687,6 +689,22 @@ function Agents({ project }: { project: G.Project }) {
                 onChange={(v) => set({ retrospectives: v })}
               />
             </SwitchRows>
+            <Field
+              label="Delete stale notes"
+              hint="Agents no longer start with a stale note, but it counts toward the 1,000 notes a project keeps. fctl deletes it once it has been stale this long, within the hour."
+              error={err("settings.stale_note_days")}
+              className="mt-5"
+            >
+              {(id) => (
+                <Select
+                  id={id}
+                  value={s.stale_note_days == null ? NEVER : String(s.stale_note_days)}
+                  onChange={(v) => set({ stale_note_days: v === NEVER ? null : Number(v) })}
+                  options={staleOptions(s.stale_note_days)}
+                  className="w-full"
+                />
+              )}
+            </Field>
           </Section>
         </Parts>
         <PageFoot
@@ -695,7 +713,13 @@ function Agents({ project }: { project: G.Project }) {
           dirty={dirty}
           save={save}
           hint="Sessions that start from now on take it."
-          fields={["settings.instructions", "effort", "model", "settings.compact_window"]}
+          fields={[
+            "settings.instructions",
+            "effort",
+            "model",
+            "settings.compact_window",
+            "settings.stale_note_days",
+          ]}
           onReset={reset}
         />
       </form>
@@ -1265,6 +1289,22 @@ const NO_FOLLOW_UPS: G.FollowUps = { comments: false, checks: false, closed: fal
 /** A word that addresses agents on GitHub, as people write it. */
 function Address({ children }: { children: string }) {
   return <code className="font-mono text-[11.5px] text-ink-2">{children}</code>;
+}
+
+/** The choice that keeps stale notes until someone deletes them. */
+const NEVER = "never";
+/** How long stale notes may stay, offered, besides never. */
+const STALE_DAY_CHOICES = [1, 3, 7, 14, 30, 90, 365];
+
+/** How long stale notes may stay, with a project's own choice among them (any of 1 to 365 days, from the CLI or API). */
+function staleOptions(current?: number | null): SelectOption[] {
+  const days = [...new Set([...STALE_DAY_CHOICES, ...(current == null ? [] : [current])])].sort(
+    (a, b) => a - b,
+  );
+  return [
+    { value: NEVER, label: "Never: they stay until someone deletes them" },
+    ...days.map((d) => ({ value: String(d), label: `After ${d === 1 ? "a day" : `${d} days`} stale` })),
+  ];
 }
 
 /** How long screenshot links may work, with a project's own choice among them. */

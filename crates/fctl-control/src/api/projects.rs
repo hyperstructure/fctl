@@ -148,6 +148,18 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
             &format!("Use {} – {} days", published::MIN_DAYS, published::MAX_DAYS),
         ));
     }
+    if let Some(d) = s.stale_note_days
+        && !fctl_domain::memory::valid_stale_days(d)
+    {
+        return Err(validation(
+            "settings.stale_note_days",
+            &format!(
+                "Use {} – {} days",
+                fctl_domain::memory::MIN_STALE_DAYS,
+                fctl_domain::memory::MAX_STALE_DAYS
+            ),
+        ));
+    }
     let mut env = std::collections::BTreeMap::new();
     for (k, v) in &s.env {
         let k = validate::env_name("settings.env", k)?;
