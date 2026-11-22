@@ -628,14 +628,20 @@ pub async fn delete_stale(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let until = memory::stale_deleted_until(ctx.now, ctx.autopilot().is_some());
     let done = delete_stale_notes(&ctx.db, &p.row.id, until).await?;
     if done.deleted > 0 {
+        // An autopilot acts as its owner, the entry's actor: the entry says
+        // it was the autopilot, as one for a session it starts does.
+        let mut details = serde_json::json!({
+            "project_id": p.row.id,
+            "count": done.deleted,
+        });
+        if let (Some(d), Some(pilot)) = (details.as_object_mut(), ctx.autopilot()) {
+            d.insert("autopilot".into(), pilot.project_id.clone().into());
+        }
         ctx.audit_in(
             Some(p.workspace_id()),
             "memory.stale_deleted",
             Some(p.row.id.as_str()),
-            Some(serde_json::json!({
-                "project_id": p.row.id,
-                "count": done.deleted,
-            })),
+            Some(details),
         );
     }
     http::ok(&done)

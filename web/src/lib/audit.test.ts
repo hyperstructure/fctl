@@ -118,6 +118,16 @@ describe("an audit log entry in words", () => {
     expect(deleted(912)).toBe("deleted 912 stale notes from [Farm portal](project)'s memory");
     expect(deleted(1)).toBe("deleted 1 stale note from [Farm portal](project)'s memory");
     expect(deleted()).toBe("deleted the stale notes from [Farm portal](project)'s memory");
+    // An autopilot deletes them as its owner.
+    const byPilot = entry(
+      "memory.stale_deleted",
+      "prj_farm",
+      { project_id: "prj_farm", count: 3, autopilot: "prj_farm" },
+      "Asha Patel",
+    );
+    expect(said(describeAudit(byPilot, names))).toBe(
+      "'s autopilot deleted 3 stale notes from [Farm portal](project)'s memory",
+    );
   });
 
   it("shows the key and target of an action it doesn't know, as the log did before", () => {

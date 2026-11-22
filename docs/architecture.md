@@ -3854,9 +3854,10 @@ why and who marked it, and the note that took its place or that it repeats
    deletes only those stale for over a day
    (`memory::stale_deleted_until`), so that people have that long to make
    one marked stale by mistake current again, and no note goes in the
-   same breath as it goes stale; it deletes no single note. Its log says how many went, as the audit log does
-   (`memory.stale_deleted`). When the current notes crowd the memory
-   alone, its brief asks it to have a session tidy them.
+   same breath as it goes stale; it deletes no single note. Its log says
+   how many went, as the audit log does (`memory.stale_deleted`, whose
+   `autopilot` says it was the autopilot). When the current notes crowd
+   the memory alone, its brief asks it to have a session tidy them.
 
 The **Project memory** setting (`project_memory`, on by default) decides
 whether agents keep it. Off, the spec has no memory, agents hear nothing

@@ -53,7 +53,7 @@ asking.
 - What ADR 0034 kept visible until a person cleaned up now lasts at least
   a day in a crowded memory. The text of a deleted note stays in the
   transcripts that showed it, and the audit log keeps how many went and
-  when, as the person the autopilot acts for.
+  when, and that the autopilot deleted them.
 - An autopilot, or a prompt injection that steers it, can delete what
   people meant to keep for the record by marking it stale. It could
   already mark every note stale; now, a day later, those can go for good.
