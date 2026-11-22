@@ -97,3 +97,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0089](0089-hosts-stop-apple-sandboxes-whose-vms-stop-answering.md) | Hosts stop Apple sandboxes whose VMs stop answering |
 | [0090](0090-agents-prove-who-they-are-with-tokens-their-workspaces-issuer-signs.md) | Agents prove who they are with tokens their workspace's issuer signs |
 | [0091](0091-autopilots-delete-stale-memory-notes-once-they-crowd-the-memory.md) | Autopilots delete stale memory notes once they crowd the memory (experimental) |
+| [0092](0092-projects-choose-how-long-stale-memory-notes-stay.md) | Projects choose how long stale memory notes stay |

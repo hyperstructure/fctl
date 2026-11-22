@@ -141,6 +141,14 @@ screenshot_days?: number,
  */
 project_memory: boolean, 
 /**
+ * Days a stale note of the project's memory stays before fctl deletes
+ * it, 1 to 365. Absent: it stays until someone deletes it. Always
+ * sent, as `null` for that, so that a client that sends back the
+ * settings it read keeps it (an update that leaves it out keeps the
+ * stored value too: `fctl_domain::settings::keep_unsent`).
+ */
+stale_note_days?: number | null, 
+/**
  * Agents record a retrospective when they finish a piece of work
  * (`fctl retro`): what they worked on, how, what got in the way and
  * what a future agent should know. On by default. Off, agents hear

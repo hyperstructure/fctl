@@ -452,7 +452,10 @@ requests and issues: `null` for fctl's defaults, `""` for nothing),
 `github_access`, `follow_ups` (`comments`, `checks`, `conflicts`,
 `closed`), `tickets`, `remote_control`, `claude_ai_connectors`,
 `credit_people`, `credit_claude`, `publish_screenshots`,
-`screenshot_days`, `project_memory`, `retrospectives`, `id_tokens`
+`screenshot_days`, `project_memory`, `stale_note_days` (days a stale
+memory note stays before fctl deletes it, 1 to 365; `null`, as it's
+always sent, keeps them until someone deletes them), `retrospectives`,
+`id_tokens`
 (agents mint identity tokens: on unless `false`) and `cloud_access`
 (`{"aws": {"role_arn", "region", "session_tags"}, "gcp": {"provider",
 "service_account"}, "azure": {"tenant_id", "client_id"}}`, each left out

@@ -193,8 +193,8 @@ pub enum ProjectsCmd {
     /// (maintainers). Sessions take a change of settings when they next
     /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "compact_window", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory", "id_tokens", "aws_role", "aws_region", "aws_session_tags", "gcp_provider", "gcp_service_account", "azure_tenant", "azure_client"])),
-        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --compact-window 400k        # Claude compacts as its context nears 400K tokens\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "compact_window", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "stale_note_days", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory", "id_tokens", "aws_role", "aws_region", "aws_session_tags", "gcp_provider", "gcp_service_account", "azure_tenant", "azure_client"])),
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --compact-window 400k        # Claude compacts as its context nears 400K tokens\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set --stale-note-days 7         # fctl deletes notes a week after they go stale (never: kept)\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -281,6 +281,10 @@ pub enum ProjectsCmd {
         /// Off, its notes stay for people to read.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         project_memory: Option<bool>,
+        /// Days a stale memory note stays before fctl deletes it, 1 to 365,
+        /// or never (by default: until someone deletes it).
+        #[arg(long, value_name = "DAYS|never", value_parser = stale_note_days_arg)]
+        stale_note_days: Option<OrNever>,
         /// Ask agents for a retrospective of each piece of work they finish
         /// (`fctl retro`): what they worked on, how, what got in the way
         /// and what a future agent should know (on by default).
@@ -593,6 +597,17 @@ fn learning(s: &ProjectSettings) -> &'static str {
         (true, false) => "keep the project's memory and record no retrospectives",
         (false, true) => "keep no memory and record retrospectives",
         (false, false) => "keep no memory and record no retrospectives",
+    }
+}
+
+/// How long a project keeps its stale memory notes, in words.
+fn stale_notes(s: &ProjectSettings) -> String {
+    match s.stale_note_days {
+        Some(days) => format!(
+            "fctl deletes stale notes once they have been stale {}",
+            fctl_domain::memory::stale_days_words(days)
+        ),
+        None => "stale notes stay until someone deletes them".to_owned(),
     }
 }
 
@@ -950,6 +965,24 @@ fn memory_arg(s: &str) -> std::result::Result<OrDefault, String> {
     fctl_domain::size::parse_memory_mb(s).map(|m| OrDefault(Some(m)))
 }
 
+/// A number of days, or `never`.
+#[derive(Clone, Copy, Debug)]
+pub struct OrNever(Option<u32>);
+
+/// `--stale-note-days`: 1 to 365 days, or `never`.
+fn stale_note_days_arg(s: &str) -> std::result::Result<OrNever, String> {
+    use fctl_domain::memory::{MAX_STALE_DAYS, MIN_STALE_DAYS, valid_stale_days};
+    if s.trim().eq_ignore_ascii_case("never") {
+        return Ok(OrNever(None));
+    }
+    match s.trim().parse::<u32>() {
+        Ok(days) if valid_stale_days(days) => Ok(OrNever(Some(days))),
+        _ => Err(format!(
+            "use {MIN_STALE_DAYS} to {MAX_STALE_DAYS} days, or never"
+        )),
+    }
+}
+
 /// `--compact-window`: a number of tokens like 400k, or `default`.
 fn compact_window_arg(s: &str) -> std::result::Result<OrDefault, String> {
     use fctl_domain::context;
@@ -1266,6 +1299,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::terminal_safe(&script_summary(text))
                 );
             }
+            println!("memory:  {}", stale_notes(&p.settings));
             println!("model:   {}", model(&p.settings));
             println!("context: {}", fctl_domain::context::describe(&p.settings));
             println!("claude:  {}", claude_apps(&p.settings));
@@ -1347,6 +1381,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             publish_screenshots,
             screenshot_days,
             project_memory,
+            stale_note_days,
             retrospectives,
             github,
             pr_descriptions,
@@ -1488,6 +1523,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(on) = project_memory {
                 settings.project_memory = on;
+            }
+            if let Some(OrNever(days)) = stale_note_days {
+                settings.stale_note_days = days;
             }
             if let Some(on) = retrospectives {
                 settings.retrospectives = on;
@@ -1739,6 +1777,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     learning(&p.settings)
+                );
+            }
+            if stale_note_days.is_some() {
+                println!(
+                    "{} In {}'s memory, {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    stale_notes(&p.settings)
                 );
             }
             if github.is_some() {

@@ -1209,8 +1209,9 @@ deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, early access requests whose
 address has an account or that are a year old, the links of expired
 published screenshots, abandoned Claude logins, what autopilots asked 90
-days after they heard the answer or took it back, and audit
-log entries older than a year. It removes the runners that waited a week
+days after they heard the answer or took it back, memory notes stale as
+long as their project keeps them ([Project memory](#project-memory)), and
+audit log entries older than a year. It removes the runners that waited a week
 for approval or stayed offline longer than their enrollment token lets
 them, and revoked or expired enrollment tokens 90 days on, once no runner
 they enrolled is left ([Enrollment tokens](#enrollment-tokens)). It also looks up pull requests that GitHub
@@ -3840,7 +3841,12 @@ why and who marked it, and the note that took its place or that it repeats
    for the notes their agent wrote or marked stale (`?session=`), and the
    web app reads the memory again when a session of the project changes
    status, as when a turn ends. Deleting a note leaves the transcripts that
-   showed it as they are.
+   showed it as they are. A project may have fctl delete its notes once
+   they have been stale a number of days, 1 to 365 (`stale_note_days`;
+   none by default, when they stay until someone deletes them;
+   [ADR 0092](adr/0092-projects-choose-how-long-stale-memory-notes-stay.md)):
+   the hourly job deletes them (`memories::expire_stale`) and records how
+   many in the workspace's audit log, as fctl's own doing.
 4. **What autopilots do.** An [autopilot](#autopilots) keeps its
    projects' memory as their agents do, and deletes its stale notes
    itself, without asking, once they crowd it

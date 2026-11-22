@@ -390,6 +390,7 @@ fctl projects set -p my-app --package-caches on    # sessions on a runner share 
 fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
+fctl projects set -p my-app --stale-note-days 7   # fctl deletes notes a week after they go stale (never: kept)
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
 fctl projects set -p my-app --github triage       # its agents label tickets and comment on them at most
 fctl projects set -p my-app --pr-descriptions brief   # pull requests described in a few sentences (balanced by default, or full)
@@ -641,10 +642,14 @@ Both are on in new projects and projects from before them; `fctl projects
 set --project-memory off` and `--retrospectives off` turn them off, and the
 notes and retrospectives stay for people to read. A project keeps at most
 1,000 notes of 2,000 characters, stale ones included, and a session at most
-50 retrospectives. Once the memory holds 900, a project's
-[autopilot](#autopilots) hears so in its brief, and deletes the notes
-stale for over a day itself (`fctl memory delete --stale`), without asking:
-people have that day to make a note marked stale by mistake current again.
+50 retrospectives. `fctl projects set --stale-note-days 7` has fctl delete
+notes once they have been stale a week (1 to 365 days; `never`, as new
+projects start, keeps them until someone deletes them), within the hour,
+and the workspace's audit log says how many went. Once the memory holds
+900, a project's [autopilot](#autopilots) hears so in its brief, and
+deletes the notes stale for over a day itself (`fctl memory delete
+--stale`), without asking: people have that day to make a note marked
+stale by mistake current again.
 
 ### Review agents
 
