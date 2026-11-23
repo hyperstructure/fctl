@@ -116,7 +116,8 @@ pub enum RunnersCmd {
 
 --cloudwatch puts WaitingSessions, BusySlots and WantedRunners into
 CloudWatch with the AWS CLI (`aws cloudwatch put-metric-data`), under the
-namespace fctl with the pool's name as the Pool dimension: once, or every
+namespace fctl with the pool's name as the Pool dimension (its id where
+the name isn't ASCII, which CloudWatch takes only): once, or every
 --every with --watch.")]
     Demand {
         /// The workspace (its slug or id; default from `fctl workspaces
@@ -890,7 +891,8 @@ impl Show {
 }
 
 /// Puts a pool's WaitingSessions, BusySlots and WantedRunners into
-/// CloudWatch, with its name as the Pool dimension, with the AWS CLI.
+/// CloudWatch, with its name as the Pool dimension ([`cloudwatch_pool`]),
+/// with the AWS CLI.
 fn put_metrics(namespace: &str, p: &PoolDemand) -> Result<()> {
     let data = cloudwatch_data(p);
     let out = std::process::Command::new("aws")
@@ -913,9 +915,21 @@ fn put_metrics(namespace: &str, p: &PoolDemand) -> Result<()> {
     Ok(())
 }
 
+/// A pool's Pool dimension in CloudWatch: its name, or its id where
+/// CloudWatch wouldn't take the name, which it takes only as printable
+/// ASCII, not all spaces, of at most 1,024 characters: a pool named "Büro"
+/// is `et_…` there.
+fn cloudwatch_pool<'a>(id: &'a str, name: &'a str) -> &'a str {
+    let takes = !name.trim().is_empty()
+        && name.len() <= 1024
+        && name.chars().all(|c| c.is_ascii() && !c.is_ascii_control());
+    if takes { name } else { id }
+}
+
 /// The metric data `aws cloudwatch put-metric-data` takes for a pool.
 fn cloudwatch_data(p: &PoolDemand) -> serde_json::Value {
-    let dims = serde_json::json!([{ "Name": "Pool", "Value": p.pool.name }]);
+    let pool = cloudwatch_pool(p.pool.id.as_str(), &p.pool.name);
+    let dims = serde_json::json!([{ "Name": "Pool", "Value": pool }]);
     let metric = |name: &str, value: u32| {
         serde_json::json!({
             "MetricName": name,
@@ -1256,6 +1270,16 @@ fn confirm(question: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloudwatch_takes_a_pools_name_only_in_ascii() {
+        use super::cloudwatch_pool;
+        assert_eq!(cloudwatch_pool("et_1", "AWS large"), "AWS large");
+        for name in ["Büro", "東京", "", "   ", "tab\there"] {
+            assert_eq!(cloudwatch_pool("et_1", name), "et_1", "{name:?}");
+        }
+        assert_eq!(cloudwatch_pool("et_1", &"a".repeat(1025)), "et_1");
+    }
 
     #[test]
     fn durations_parse_for_enrollment_tokens() {

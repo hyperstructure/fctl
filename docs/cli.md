@@ -1528,10 +1528,10 @@ FCTL_SERVER=https://app.fctl.sh FCTL_ENROLL_TOKEN=fctl_et_… fctl runners deman
 `--remove-offline-after`) gives a session to the busiest runner that
 still has room, so that the others empty out and an autoscaler can take
 them away; `spread` gives it to the least busy. `--labels ""` takes a
-pool's or a project's labels away. A project's sessions run only on
-runners with all its labels: a pool's, or ones a host sets in its
-`host.toml` (`labels = ["gpu"]`, lowercase). One that waits says which
-pool it waits for and why.
+pool's labels away, and `fctl projects set --runners ""` a project's. A
+project's sessions run only on runners with all its labels: a pool's, or
+ones a host sets in its `host.toml` (`labels = ["gpu"]`, lowercase). One
+that waits says which pool it waits for and why.
 
 `fctl runners demand` shows each pool's runners (online, busy, starting,
 draining, waiting for approval, offline), its slots, the sessions that
@@ -1541,7 +1541,8 @@ than its `--max-runners`. With no runner online, it counts with what its
 runners said last, so that an autoscaler starts a pool from none.
 `--cloudwatch` puts `WaitingSessions`, `BusySlots` and `WantedRunners`
 into CloudWatch with the AWS CLI (`--namespace`, `fctl` by default), with
-the pool's name as the `Pool` dimension: once, or every minute with
+the pool's name as the `Pool` dimension (its id where the name isn't
+ASCII, which CloudWatch takes only): once, or every minute with
 `--watch` (`--every`). Admins see every pool of the workspace, members
 their own; a service account reads them too.
 
