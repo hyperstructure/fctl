@@ -288,6 +288,13 @@ curl -fsSL https://fctl.sh/install | sh
 FCTL_SERVER=https://app.fctl.sh FCTL_ENROLL_TOKEN=fctl_et_… fctl host install
 ```
 
+On a cloud machine, Docker and Firecracker sandboxes don't reach the
+cloud's instance metadata service, which hands out its user data, the
+boot script's token with it, and its role's credentials
+([Security](security.md#sandboxes)). Still, where you can, have the boot
+script read the token from your cloud's secret store, and give the
+machine's role nothing else.
+
 The machine becomes a runner of the workspace, with a token of its own:
 the enrollment token is for enrolling, nothing else. The runner belongs to
 the workspace rather than to a person, runs everyone's sessions there and

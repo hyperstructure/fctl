@@ -281,6 +281,19 @@ describe("what admin tokens do, in words", () => {
     );
   });
 
+  it("says a Google account linked by a first sign-in was linked that way", () => {
+    expect(said(describeAudit(entry("identity.linked", "usr_ada", { provider: "google" }, "Ada")))).toBe(
+      "linked their Google sign-in",
+    );
+    expect(
+      said(
+        describeAudit(
+          entry("identity.linked", "usr_ada", { provider: "google", via: "first_sign_in" }, "Ada"),
+        ),
+      ),
+    ).toBe("linked their Google sign-in as they first signed in");
+  });
+
   it("names the admin tokens admins make and revoke", () => {
     const made = entry("admin_token.created", "adt_1", { name: "Okta provisioning" }, "Kofi Mensah");
     expect(said(describeAudit(made))).toBe("created the admin token Okta provisioning");

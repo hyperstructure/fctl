@@ -4,7 +4,7 @@
 //! and each VM's network is its own. The host makes the link: it connects
 //! to the VM's port, and passt takes over its connection.
 
-use super::netlink;
+use crate::netlink;
 use fctl_proto::vm::{ADDRESS, GATEWAY, MTU, NET_PORT, PREFIX};
 use std::net::Ipv4Addr;
 use std::sync::Arc;

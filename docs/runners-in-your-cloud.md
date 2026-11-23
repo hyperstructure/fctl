@@ -195,11 +195,15 @@ fctl="runuser -u fctl -- env XDG_RUNTIME_DIR=/run/user/$(id -u fctl) /home/fctl/
 timeout "$1" $fctl host uninstall --wait || $fctl host uninstall --force
 ```
 
-`runner/fctl-firewall`, with `runner/fctl-firewall.service` that runs it
-before Docker starts, keeps sandboxes from the clouds' metadata services
-(`169.254.169.254` on all three, and Azure's `168.63.129.16`), where
-they would find the machine's own credentials. Google Cloud and Azure
-serve DNS from those addresses too, so it stays open:
+Hosts after fctl 0.37.1 keep Docker and Firecracker sandboxes off the
+cloud's metadata service (`169.254.169.254`) themselves, where they would
+find the machine's own credentials and its boot script
+([Security](security.md#sandboxes)). `runner/fctl-firewall`, with
+`runner/fctl-firewall.service` that runs it before Docker starts, adds a
+fence of the machine's own: it also keeps containers off Azure's
+WireServer (`168.63.129.16`), which the host leaves alone, and keeps an
+older host's sandboxes off both. Google Cloud and Azure serve DNS from
+those addresses, so that stays open:
 
 ```sh
 #!/bin/sh

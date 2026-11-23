@@ -613,14 +613,16 @@ create`, `show`, `set`, `add` and `remove`
 ([The CLI](cli.md#provisioning-people-with-an-admin-token)).
 
 - **Signing in.** A new account has no password until someone sets one:
-  `password` as you create it, or the link `POST
-  /api/v1/admin/users/{user}/reset-link` makes, which works for an hour
-  (emailed to them where the instance sends [email](#email-optional)).
-  [Google sign-in](#google-sign-in-optional) doesn't take the account
-  until its person has signed in and linked Google under **Settings →
-  Security**: fctl refuses a Google sign-in for an address whose account
-  hasn't linked Google. The allowlist admits the address from then on,
-  as an invitation's, and they join the workspaces it was invited to.
+  `password` as you create it, or the link
+  `POST /api/v1/admin/users/{user}/reset-link` makes, which works for an
+  hour (emailed to them where the instance sends [email](#email-optional)).
+  Where the instance has
+  [Google sign-in](#google-sign-in-optional) and Google hosts the address
+  (a Google Workspace account's, or Gmail), the person can sign in with
+  Google instead: while the account has no way in at all (no password,
+  passkey or linked Google account), its first Google sign-in links
+  Google to it. The allowlist admits the address from then on, as an
+  invitation's, and they join the workspaces it was invited to.
 - **Leaving.** Disable an account first (`{"status": "disabled"}`): that
   signs them out and stops the sessions that run on their Claude
   subscription. Deleting it then works as deleting their own would: the
@@ -1138,7 +1140,9 @@ cargo xtask deploy acme
 ```
 
 People can then link Google under **Settings**, and allowlisted people can
-sign up with it.
+sign up with it. An account with no way to sign in yet, as an admin
+token makes one, links Google at its first Google sign-in
+([Provision people with admin tokens](#provision-people-with-admin-tokens)).
 
 ## Email (optional)
 

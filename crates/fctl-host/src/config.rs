@@ -24,6 +24,7 @@
 //! claude_token_file = "/run/secrets/claude-token"
 //! auto_update = true      # update fctl to the version the control plane runs
 //! agent_as_root = true    # fctl-agent as root in sandboxes, out of the agent's reach
+//! allow_cloud_metadata = false  # sandboxes reach the cloud's instance metadata service
 //!
 //! [firecracker]            # the firecracker driver
 //! firecracker = "/usr/local/bin/firecracker"  # unset: the release fctl pins, downloaded
@@ -138,6 +139,15 @@ pub struct HostConfig {
     /// either way, and sandboxes that already ran it as root keep doing so.
     /// The process driver runs it as the host's user.
     pub agent_as_root: bool,
+    /// Let sandboxes reach the cloud's instance metadata service
+    /// (`169.254.169.254` and the others in [`fctl_domain::metadata`]),
+    /// which hands out the machine's own credentials and its user data.
+    /// Off: Docker sandboxes get routes that make those addresses
+    /// unreachable, which they can't take out, and no raw sockets to send
+    /// around them; Firecracker VMs' frames to them are dropped on the host.
+    /// Apple container and Lima VMs, and the process driver, aren't kept
+    /// off them either way.
+    pub allow_cloud_metadata: bool,
     /// The `firecracker` driver's settings.
     #[serde(skip_serializing_if = "FirecrackerConfig::is_default")]
     pub firecracker: FirecrackerConfig,
@@ -220,6 +230,7 @@ impl Default for HostConfig {
             claude_token_file: None,
             auto_update: true,
             agent_as_root: true,
+            allow_cloud_metadata: false,
             firecracker: FirecrackerConfig::default(),
         }
     }
@@ -561,6 +572,14 @@ mod tests {
         assert!(HostConfig::default().agent_as_root);
         assert!(HostConfig::from_toml("capacity = 2\n")?.agent_as_root);
         assert!(!HostConfig::from_toml("agent_as_root = false\n")?.agent_as_root);
+        Ok(())
+    }
+
+    #[test]
+    fn sandboxes_are_kept_off_cloud_metadata_unless_the_host_says_not() -> Result<()> {
+        assert!(!HostConfig::default().allow_cloud_metadata);
+        assert!(!HostConfig::from_toml("capacity = 2\n")?.allow_cloud_metadata);
+        assert!(HostConfig::from_toml("allow_cloud_metadata = true\n")?.allow_cloud_metadata);
         Ok(())
     }
 

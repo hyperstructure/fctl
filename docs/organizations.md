@@ -72,9 +72,10 @@ fctl workspaces set --base-role editor -w acme # every member of acme starts ses
 People sign in with a password, with passkeys and two-factor codes, or
 with Google where the instance has
 [Google sign-in](self-hosting.md#google-sign-in-optional). fctl doesn't
-sign people in through SAML or another OpenID Connect provider: give
-people whose accounts your directory makes a password with a reset link,
-as below.
+sign people in through SAML or another OpenID Connect provider: people
+whose accounts your directory makes sign in with Google where it hosts
+their addresses, or with a password they choose from a reset link, as
+below.
 
 ## People from your directory
 
@@ -113,14 +114,16 @@ doesn't speak SCIM: an identity provider reaches these endpoints through
 its workflow automation, or a job of yours reads your directory and calls
 them.
 
-- **Signing in.** A new account has no password, and Google doesn't
-  sign it in yet: fctl takes a Google sign-in only for an account that
-  linked Google itself, so that a Google account can't take over one.
-  Its person signs in first with the link `fctl admin reset-link
-  ada@acme.dev` makes (`POST /api/v1/admin/users/{user}/reset-link`),
-  which sets a password, works for an hour, and goes to them by email
-  where the instance sends [email](self-hosting.md#email-optional). Then
-  they link Google under **Settings → Security**, if they like.
+- **Signing in.** A new account has no password: its person signs in
+  with Google where the instance has it and Google hosts their address
+  (your Google Workspace, or Gmail), and that first sign-in links Google
+  to their account. Otherwise they set a password with the link `fctl
+  admin reset-link ada@acme.dev` makes (`POST
+  /api/v1/admin/users/{user}/reset-link`), which works for an hour and
+  which fctl emails them where the instance sends
+  [email](self-hosting.md#email-optional). Once an
+  account has a way in, a Google account links to it only from its
+  Settings, as anyone's does.
 - **Leaving.** Disabling an account signs its person out everywhere and
   stops the sessions that run on their subscription. Deleting it then
   works as deleting their own would: the workspaces only they are in go
@@ -192,17 +195,21 @@ takes the primary instance owner.
    `fctl admin users` then says who has it. Until someone sets one up,
    they can only do that, in the browser or with `fctl account two-factor
    enable`.
-5. **Sign each person in for the first time** with a link, when they're
-   about to start: it works for an hour.
+5. **Sign each person in for the first time.** Where the instance has
+   [Google sign-in](self-hosting.md#google-sign-in-optional) and Google
+   hosts your people's addresses (your Google Workspace), Ada presses
+   **Sign in with Google**: as the account has no way in yet, that first
+   sign-in links Google to it. Otherwise, make Ada a link when Ada is
+   about to start, as it works for an hour:
 
    ```sh
    fctl admin reset-link ada@acme.dev
    ```
 
    With email, fctl sends it to Ada and doesn't show it; without, it
-   prints it for you to pass on. Ada chooses a password and sets up a
-   second factor, then may link Google under **Settings → Security**:
-   from then on, **Sign in with Google** works too.
+   prints it for you to pass on. Ada chooses a password, and may link
+   Google later under **Settings → Security**. Either way, Ada then sets
+   up a second factor (step 4).
 6. **Close accounts the day people leave**, from the same sync:
 
    ```sh
@@ -216,9 +223,12 @@ takes the primary instance owner.
 
 What can go wrong:
 
+- **"Google can't vouch for this address, as it doesn't host it…"**
+  Ada's address isn't a Google Workspace or Gmail one, so Google doesn't
+  sign Ada in: send a link (step 5).
 - **"An account with this email exists. Sign in with your password, then
-  link Google in Settings."** Someone pressed **Sign in with Google**
-  before signing in with a password: send them a link (step 5).
+  link Google in Settings."** The account has a way in already, a
+  password your sync set, say: Ada signs in that way, then links Google.
 - **"This email is not allowed on this instance. Ask an admin for
   access."** Someone your sync hasn't made an account for tried to sign
   up with Google. That's the setup working: their account comes from
