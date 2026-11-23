@@ -145,12 +145,18 @@ impl Default for HttpClient {
 
 impl HttpClient {
     pub fn new(timeout: Duration) -> Self {
+        Self::with_tls(timeout, &crate::tls_config())
+    }
+
+    /// A client that trusts what `tls` does: a cluster's own authority,
+    /// say ([`crate::tls_config_trusting`]).
+    pub fn with_tls(timeout: Duration, tls: &rustls::ClientConfig) -> Self {
         let mut http = HttpConnector::new();
         http.enforce_http(false);
         http.set_connect_timeout(Some(Duration::from_secs(10)));
         http.set_keepalive(Some(Duration::from_secs(60)));
         let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config((*crate::tls_config()).clone())
+            .with_tls_config(tls.clone())
             .https_or_http()
             .enable_http1()
             .enable_http2()

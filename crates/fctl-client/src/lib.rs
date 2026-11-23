@@ -45,6 +45,27 @@ pub fn tls_config() -> Arc<rustls::ClientConfig> {
         .clone()
 }
 
+/// A TLS configuration that trusts only the certificates in `pem`: a
+/// Kubernetes cluster's API server, which its own authority signs.
+pub fn tls_config_trusting(pem: &[u8]) -> Result<Arc<rustls::ClientConfig>, String> {
+    use rustls_pki_types::pem::PemObject;
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in rustls_pki_types::CertificateDer::pem_slice_iter(pem) {
+        let cert = cert.map_err(|e| format!("reading the certificate: {e}"))?;
+        roots
+            .add(cert)
+            .map_err(|e| format!("trusting the certificate: {e}"))?;
+    }
+    if roots.is_empty() {
+        return Err("no certificate in it".into());
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map(|b| Arc::new(b.with_root_certificates(roots).with_no_client_auth()))
+        .map_err(|e| e.to_string())
+}
+
 /// `fctl/<version> (<os>; <arch>)`
 pub fn user_agent() -> String {
     format!(
