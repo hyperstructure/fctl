@@ -8,6 +8,7 @@ import type { RunnerId } from "./RunnerId";
 import type { RunnerPool } from "./RunnerPool";
 import type { RunnerStatus } from "./RunnerStatus";
 import type { SandboxLimits } from "./SandboxLimits";
+import type { SnapshotStore } from "./SnapshotStore";
 import type { UserRef } from "./UserRef";
 import type { WorkspaceId } from "./WorkspaceId";
 import type { WorkspaceRef } from "./WorkspaceRef";
@@ -96,6 +97,15 @@ personal?: Array<WorkspaceId>,
  * keep one, and from control planes before it.
  */
 claude_token?: RunnerClaudeToken, 
+/**
+ * The bucket its host keeps its sessions' snapshots in, with why its
+ * last upload or download failed while it does
+ * ([`HostHello::snapshot_store`]). Absent where they go to the control
+ * plane.
+ *
+ * [`HostHello::snapshot_store`]: crate::runner::HostHello::snapshot_store
+ */
+snapshot_store?: SnapshotStore, 
 /**
  * Whether its host updates its fctl to the control plane's version by
  * itself ([`HostHello::auto_update`]). Absent from older hosts and

@@ -121,6 +121,12 @@ pub enum HostCmd {
         /// an autoscaling group's terminate call, or `systemctl poweroff`.
         #[arg(long, value_name = "COMMAND")]
         retire_command: Option<String>,
+        /// Keep sessions' snapshots in this bucket of your organization's
+        /// own (s3://bucket/prefix), with the machine's own credentials,
+        /// rather than in the control plane ("none": in the control plane).
+        /// host.toml's [snapshots] takes the rest: region, endpoint, keys.
+        #[arg(long, value_name = "S3_URL|none", value_parser = snapshot_bucket_arg)]
+        snapshot_bucket: Option<SnapshotBucket>,
     },
     /// Run the host service in the foreground (what the service runs).
     Run,
@@ -253,6 +259,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             agent_as_root,
             retire_when_idle,
             retire_command,
+            snapshot_bucket,
         } => {
             const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token or --enroll";
             // Docker that refuses this user stops it before anything else.
@@ -308,6 +315,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             if let Some(c) = retire_command {
                 cfg.retire_command = Some(c.trim().to_owned()).filter(|c| !c.is_empty());
+            }
+            if let Some(SnapshotBucket(url)) = snapshot_bucket {
+                cfg.snapshots.url = url;
             }
             if let Some(problem) = cfg.image_problems().first() {
                 bail!("{problem}");
@@ -1784,6 +1794,18 @@ fn duration_words(d: std::time::Duration) -> String {
     }
 }
 
+/// `--snapshot-bucket`: a bucket's URL, or none for the control plane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotBucket(Option<String>);
+
+fn snapshot_bucket_arg(s: &str) -> std::result::Result<SnapshotBucket, String> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("none") {
+        return Ok(SnapshotBucket(None));
+    }
+    fctl_domain::snapshots::Bucket::parse(s).map(|b| SnapshotBucket(Some(b.url())))
+}
+
 /// `--retire-when-idle`: minutes, or 0 for never.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetireAfter(u32);
@@ -2284,6 +2306,16 @@ mod tests {
         let d = wait_until_stopped(&api, stopping, true, Duration::from_secs(10)).await;
         assert!(d.sessions.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn a_snapshot_bucket_is_an_s3_url_or_none() {
+        assert_eq!(
+            snapshot_bucket_arg(" s3://acme-fctl/sessions/ "),
+            Ok(SnapshotBucket(Some("s3://acme-fctl/sessions".into())))
+        );
+        assert_eq!(snapshot_bucket_arg("NONE"), Ok(SnapshotBucket(None)));
+        assert!(snapshot_bucket_arg("acme-fctl").is_err());
     }
 
     #[test]

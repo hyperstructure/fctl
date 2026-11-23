@@ -33,6 +33,10 @@
 //! [kubernetes]             # a host in a Kubernetes pod
 //! pod_deletion_cost = true # keep the pod's deletion cost at its number of sessions
 //!
+//! [snapshots]              # sessions' snapshots in a bucket of the organization's own
+//! url = "s3://acme-fctl/sessions"
+//! region = "eu-north-1"    # unset: AWS_REGION, the machine's own on EC2, else us-east-1
+//!
 //! [firecracker]            # the firecracker driver
 //! firecracker = "/usr/local/bin/firecracker"  # unset: the release fctl pins, downloaded
 //! kernel = "/var/lib/fctl/vmlinux"            # a file, or an image with /vmlinux (unset: the published one)
@@ -171,6 +175,41 @@ pub struct HostConfig {
     /// The `firecracker` driver's settings.
     #[serde(skip_serializing_if = "FirecrackerConfig::is_default")]
     pub firecracker: FirecrackerConfig,
+    /// Where it keeps its sessions' snapshots, when in a bucket of the
+    /// organization's own rather than the control plane.
+    #[serde(skip_serializing_if = "SnapshotsConfig::is_default")]
+    pub snapshots: SnapshotsConfig,
+}
+
+/// A bucket of the organization's own that the host keeps its sessions'
+/// snapshots in: `[snapshots]` in `host.toml` (`crate::s3`). Unset, they
+/// go to the control plane.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotsConfig {
+    /// `s3://bucket/prefix`: the host keeps its sessions' snapshots there,
+    /// and the control plane only where each is.
+    pub url: Option<String>,
+    /// An S3-compatible service's endpoint (Cloudflare R2's, Google Cloud
+    /// Storage's `https://storage.googleapis.com`, a MinIO's). Unset: AWS S3.
+    pub endpoint: Option<String>,
+    /// The bucket's region. Unset: `AWS_REGION`, the machine's own on EC2,
+    /// else `us-east-1`.
+    pub region: Option<String>,
+    /// Keys of its own, for a service without roles: the access key's id,
+    /// and a file that holds its secret. Unset: the machine's (the
+    /// `AWS_*` variables, a web identity or a container's credentials on
+    /// EKS and ECS, the instance's role on EC2).
+    pub access_key_id: Option<String>,
+    pub secret_access_key_file: Option<PathBuf>,
+    /// The largest snapshot it keeps there, in MiB: 2048 unless set.
+    pub max_mb: Option<u32>,
+}
+
+impl SnapshotsConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 /// A host in a Kubernetes pod: `[kubernetes]` in `host.toml`.
@@ -280,6 +319,7 @@ impl Default for HostConfig {
             retire_command: None,
             kubernetes: KubernetesConfig::default(),
             firecracker: FirecrackerConfig::default(),
+            snapshots: SnapshotsConfig::default(),
         }
     }
 }

@@ -20,6 +20,7 @@ pub mod liveness;
 pub mod login;
 pub mod refresh;
 pub mod retire;
+pub mod s3;
 pub mod service;
 pub mod session;
 pub mod snapshots;

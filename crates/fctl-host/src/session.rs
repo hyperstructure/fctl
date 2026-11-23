@@ -69,6 +69,9 @@ pub struct HostCtx {
     /// Where its certificate authority is kept: [`claude_relay::FILE`] in
     /// the directory of `host.toml`.
     pub claude_relay_ca: PathBuf,
+    /// A bucket of the organization's own that it keeps its sessions'
+    /// snapshots in (`[snapshots]` in host.toml), if it has one.
+    pub snapshot_store: Option<Arc<crate::s3::Store>>,
 }
 
 impl HostCtx {
@@ -92,6 +95,7 @@ impl HostCtx {
             disk: tokio::sync::watch::channel(None).0,
             claude_relay: Mutex::new(None),
             claude_relay_ca: crate::config::config_dir().join(claude_relay::FILE),
+            snapshot_store: None,
         }
     }
 
@@ -1188,6 +1192,14 @@ async fn run(
         Start::New(spec) => (spec.session_id.clone(), Some(spec)),
         Start::Recover(id) => (id, None),
     };
+    // A bucket of the host's own keeps snapshots up to its own limit, not
+    // the control plane's.
+    if let (Some(store), Some(snapshot)) = (
+        &ctx.snapshot_store,
+        spec.as_mut().and_then(|s| s.snapshot.as_mut()),
+    ) {
+        snapshot.max_bytes = store.max_bytes;
+    }
     // The Claude tokens its agent has: the one it starts with, those it
     // gets later, and the one this host keeps (a session found running
     // after a restart may have it), kept out of what the agent sends.
@@ -1667,7 +1679,12 @@ async fn run(
                                     }
                                     match saved {
                                         Some(saved) => {
-                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved));
+                                            let previous = spec
+                                                .as_ref()
+                                                .and_then(|s| s.snapshot.as_ref())
+                                                .and_then(|s| s.restore.as_ref())
+                                                .and_then(|r| r.location.clone());
+                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved, ctx.snapshot_store.clone(), previous));
                                         }
                                         None => spool = Some(s),
                                     }
@@ -1683,7 +1700,7 @@ async fn run(
                             .filter(|r| r.id == id)
                             .cloned();
                         match wanted {
-                            Some(r) => crate::snapshots::fetch(api.clone(), session_id.clone(), r, snapshot_tx.clone()),
+                            Some(r) => crate::snapshots::fetch(api.clone(), session_id.clone(), r, ctx.snapshot_store.clone(), ctx.cfg.data_dir(), snapshot_tx.clone()),
                             None => l.send(HostToAgent::SnapshotMissing {
                                 id,
                                 why: "this runner's host doesn't know it: it restarted since the session started here".into(),

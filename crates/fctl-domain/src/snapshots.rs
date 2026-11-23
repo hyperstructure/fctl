@@ -274,6 +274,117 @@ pub fn expires_at(saved_at: i64, days: Option<u32>) -> i64 {
     saved_at + i64::from(days.unwrap_or(DEFAULT_DAYS)) * DAY_MS
 }
 
+// ───────────────────────────── buckets of one's own ─────────────────────────────
+
+/// Where a host keeps its sessions' snapshots in a bucket of its
+/// organization's own (`[snapshots] url` in host.toml), in place of the
+/// control plane: `s3://acme-fctl/sessions`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bucket {
+    pub name: String,
+    /// Where under the bucket, without a `/` at either end: `""` for its
+    /// top.
+    pub prefix: String,
+}
+
+impl Bucket {
+    /// `s3://bucket` or `s3://bucket/prefix`: a bucket's name as S3 takes
+    /// one (3 to 63 lowercase letters, digits, dots and hyphens, starting
+    /// and ending with a letter or digit), and a prefix of letters, digits
+    /// and `-_./` without `..`.
+    pub fn parse(url: &str) -> Result<Self, String> {
+        let rest = url
+            .trim()
+            .strip_prefix("s3://")
+            .ok_or_else(|| format!("{url:?} isn't an s3://bucket/prefix URL"))?;
+        let (name, prefix) = rest.split_once('/').unwrap_or((rest, ""));
+        let prefix = prefix.trim_matches('/');
+        let named = (3..=63).contains(&name.len())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+            && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && name.ends_with(|c: char| c.is_ascii_alphanumeric());
+        if !named {
+            return Err(format!("{name:?} isn't a bucket's name"));
+        }
+        let fine = prefix.len() <= 512
+            && !prefix
+                .split('/')
+                .any(|p| (p.is_empty() && !prefix.is_empty()) || p == "..")
+            && prefix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
+        if !fine {
+            return Err(format!("{prefix:?} isn't a prefix in a bucket"));
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            prefix: prefix.to_owned(),
+        })
+    }
+
+    /// Its URL: `s3://bucket/prefix`.
+    pub fn url(&self) -> String {
+        if self.prefix.is_empty() {
+            format!("s3://{}", self.name)
+        } else {
+            format!("s3://{}/{}", self.name, self.prefix)
+        }
+    }
+
+    /// The key snapshot `snapshot` of session `session` goes under.
+    pub fn key(&self, session: &str, snapshot: &str) -> String {
+        if self.prefix.is_empty() {
+            format!("{session}/{snapshot}")
+        } else {
+            format!("{}/{session}/{snapshot}", self.prefix)
+        }
+    }
+
+    /// Where the object `key` is, as the control plane keeps it:
+    /// `s3://bucket/key`.
+    pub fn location(&self, key: &str) -> String {
+        format!("s3://{}/{key}", self.name)
+    }
+
+    /// The key of `location` when it is in this bucket, under its prefix:
+    /// what this host can read and delete.
+    pub fn key_of(&self, location: &str) -> Option<String> {
+        let key = location.strip_prefix(&format!("s3://{}/", self.name))?;
+        let under = self.prefix.is_empty()
+            || key
+                .strip_prefix(&self.prefix)
+                .is_some_and(|rest| rest.starts_with('/'));
+        (under && !key.split('/').any(|p| p == ".." || p.is_empty())).then(|| key.to_owned())
+    }
+}
+
+/// The bucket `location` (`s3://bucket/key`) is in.
+pub fn bucket_of(location: &str) -> Option<&str> {
+    location
+        .strip_prefix("s3://")
+        .and_then(|rest| rest.split_once('/'))
+        .map(|(name, _)| name)
+}
+
+/// Whether `location` is one the control plane keeps for a snapshot in a
+/// bucket: `s3://bucket/key`, at most 1,024 characters.
+pub fn valid_location(location: &str) -> bool {
+    location.len() <= 1024
+        && location
+            .strip_prefix("s3://")
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(name, key)| {
+                Bucket::parse(&format!("s3://{name}")).is_ok()
+                    && !key.is_empty()
+                    && !key.split('/').any(|p| p == ".." || p.is_empty())
+                    && key
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
+            })
+}
+
 // ───────────────────────────── what the transcript says ─────────────────────────────
 
 /// `12 MB`, `840 KB`.
@@ -320,6 +431,58 @@ mod tests {
     use super::*;
 
     const KEY: [u8; 32] = [7; 32];
+
+    /// A host's bucket, the keys its snapshots go under, and the
+    /// locations the control plane keeps.
+    #[test]
+    fn buckets_name_where_snapshots_go() {
+        let b = Bucket::parse("s3://acme-fctl/sessions/").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            (b.name.as_str(), b.prefix.as_str()),
+            ("acme-fctl", "sessions")
+        );
+        assert_eq!(b.url(), "s3://acme-fctl/sessions");
+        let key = b.key("ses_1", "snp_2");
+        assert_eq!(key, "sessions/ses_1/snp_2");
+        let at = b.location(&key);
+        assert_eq!(at, "s3://acme-fctl/sessions/ses_1/snp_2");
+        assert!(valid_location(&at));
+        assert_eq!(bucket_of(&at), Some("acme-fctl"));
+        assert_eq!(bucket_of("acme-fctl"), None);
+        assert_eq!(b.key_of(&at).as_deref(), Some("sessions/ses_1/snp_2"));
+        // Another bucket's, or outside the prefix: not this host's.
+        assert_eq!(b.key_of("s3://acme-other/sessions/ses_1/snp_2"), None);
+        assert_eq!(b.key_of("s3://acme-fctl/sessionsx/ses_1/snp_2"), None);
+        assert_eq!(b.key_of("s3://acme-fctl/sessions/../x"), None);
+        let top = Bucket::parse("s3://acme-fctl").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            (top.url(), top.key("s", "n")),
+            ("s3://acme-fctl".to_owned(), "s/n".to_owned())
+        );
+        assert_eq!(top.key_of("s3://acme-fctl/s/n").as_deref(), Some("s/n"));
+        for bad in [
+            "acme-fctl",
+            "s3://",
+            "s3://AB",
+            "s3://a",
+            "s3://-acme",
+            "s3://acme_fctl",
+            "s3://acme-fctl/a/../b",
+            "s3://acme-fctl/a b",
+            "s3://acme-fctl/a//b",
+        ] {
+            assert!(Bucket::parse(bad).is_err(), "{bad}");
+        }
+        for bad in [
+            "s3://acme-fctl",
+            "s3://acme-fctl/",
+            "https://acme-fctl/k",
+            "s3://acme-fctl/a/../b",
+            "s3://acme-fctl/a?b",
+        ] {
+            assert!(!valid_location(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn a_snapshot_opens_with_its_key_alone_and_whole() -> Result<(), Error> {

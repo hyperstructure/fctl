@@ -200,6 +200,20 @@ impl HttpClient {
         self.finish(url, req).await
     }
 
+    /// Sends a request with `headers` besides the usual ones, which they
+    /// replace (a signed `Authorization`, say), and `body`: status, headers
+    /// and body, whatever the status.
+    pub async fn send_with(
+        &self,
+        method: Method,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+    ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
+        let req = request(method, url, None, body, None, &self.headers(headers))?;
+        self.finish(url, req).await
+    }
+
     /// A GET with `headers` besides the usual ones, which they replace (an
     /// `Accept` of their own, say).
     pub async fn get_with(

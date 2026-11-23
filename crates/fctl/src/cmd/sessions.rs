@@ -719,8 +719,15 @@ fn snapshot_line(s: &fctl_proto::session::SessionSnapshot) -> String {
             format!("; kept until {}", iso.get(..10).unwrap_or(&iso))
         })
         .unwrap_or_default();
+    // In a bucket of its runner's own: which.
+    let bucket = s
+        .location
+        .as_deref()
+        .and_then(fctl_domain::snapshots::bucket_of)
+        .map(|b| format!(" in the bucket {b}"))
+        .unwrap_or_default();
     format!(
-        "{what}, {}{left}, saved {}{on}{until}",
+        "{what}, {}{left}, saved {}{on}{bucket}{until}",
         fctl_domain::snapshots::size_words(s.size),
         style::ago(s.saved_at)
     )

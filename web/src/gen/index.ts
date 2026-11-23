@@ -397,6 +397,7 @@ export type { SnapshotCommit } from "./SnapshotCommit";
 export type { SnapshotRef } from "./SnapshotRef";
 export type { SnapshotSaved } from "./SnapshotSaved";
 export type { SnapshotSpec } from "./SnapshotSpec";
+export type { SnapshotStore } from "./SnapshotStore";
 export type { Staleness } from "./Staleness";
 export type { StartAuthenticatorRequest } from "./StartAuthenticatorRequest";
 export type { StartReviewRequest } from "./StartReviewRequest";

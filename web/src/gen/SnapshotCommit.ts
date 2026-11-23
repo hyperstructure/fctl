@@ -7,4 +7,14 @@ import type { SnapshotSaved } from "./SnapshotSaved";
  * …/snapshots/{snapshot}/parts/{n}`): the snapshot becomes the session's,
  * in place of the one before.
  */
-export type SnapshotCommit = { saved: SnapshotSaved, parts: number, };
+export type SnapshotCommit = { saved: SnapshotSaved, 
+/**
+ * Its parts in the control plane: 0 when it is in a bucket.
+ */
+parts: number, 
+/**
+ * Where it is when the host kept it in a bucket of its own
+ * (`s3://bucket/key`), with no part uploaded: the control plane keeps
+ * only that, its size and its checksum.
+ */
+location?: string, };

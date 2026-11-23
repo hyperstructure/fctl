@@ -2469,6 +2469,13 @@ pub struct Runner {
     /// while it keeps none. Absent for other people, from hosts too old to
     /// keep one, and from control planes before it.
     pub claude_token: Option<RunnerClaudeToken>,
+    /// The bucket its host keeps its sessions' snapshots in, with why its
+    /// last upload or download failed while it does
+    /// ([`HostHello::snapshot_store`]). Absent where they go to the control
+    /// plane.
+    ///
+    /// [`HostHello::snapshot_store`]: crate::runner::HostHello::snapshot_store
+    pub snapshot_store: Option<crate::runner::SnapshotStore>,
     /// Whether its host updates its fctl to the control plane's version by
     /// itself ([`HostHello::auto_update`]). Absent from older hosts and
     /// control planes.
@@ -2763,11 +2770,17 @@ pub struct CreatedEnrollmentToken {
 /// runner token, once every part is uploaded (`PUT
 /// …/snapshots/{snapshot}/parts/{n}`): the snapshot becomes the session's,
 /// in place of the one before.
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct SnapshotCommit {
     pub saved: crate::agent::SnapshotSaved,
+    /// Its parts in the control plane: 0 when it is in a bucket.
     pub parts: u32,
+    /// Where it is when the host kept it in a bucket of its own
+    /// (`s3://bucket/key`), with no part uploaded: the control plane keeps
+    /// only that, its size and its checksum.
+    pub location: Option<String>,
 }
 
 /// A runner that drains.

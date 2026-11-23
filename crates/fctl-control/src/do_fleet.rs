@@ -270,8 +270,10 @@ struct Candidate {
     serves: Serves,
     /// Its pool packs sessions onto the busiest runner with room.
     packed: bool,
-    /// Its host restores session snapshots ([`FEATURE_SNAPSHOTS`]).
+    /// Its host restores session snapshots ([`FEATURE_SNAPSHOTS`]), and the
+    /// bucket it keeps them in, if it has one of its own.
     snapshots: bool,
+    snapshot_bucket: Option<String>,
 }
 
 /// Whose sessions a runner runs, and the pool it is in, as D1 had it at
@@ -1213,6 +1215,7 @@ impl FleetObject {
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
                 let drivers_changed = self.note_drivers(&rs.id, hb.drivers).await;
+                self.note_snapshot_store(&rs.id, hb.snapshot_store).await;
                 let (told, tell) = fctl_domain::disk::heard(
                     &disk.told,
                     &rs.name,
@@ -1489,6 +1492,25 @@ impl FleetObject {
                 return false;
             }
             hello.claude_token = Some(token);
+            true
+        })
+        .await
+    }
+
+    /// Keeps what a heartbeat says of the bucket the runner's host keeps
+    /// its sessions' snapshots in (an upload failed, or worked again) in
+    /// the runner's hello, here and in D1. Older hosts say nothing.
+    async fn note_snapshot_store(
+        &self,
+        runner_id: &str,
+        store: Option<fctl_proto::runner::SnapshotStore>,
+    ) -> bool {
+        let Some(store) = store else { return false };
+        self.change_hello(runner_id, |hello| {
+            if hello.snapshot_store.as_ref() == Some(&store) {
+                return false;
+            }
+            hello.snapshot_store = Some(store);
             true
         })
         .await
@@ -2644,6 +2666,11 @@ impl FleetObject {
                     unready,
                     claude_token: hello.claude_token,
                     snapshots: hello.features.iter().any(|f| f == FEATURE_SNAPSHOTS),
+                    snapshot_bucket: hello
+                        .snapshot_store
+                        .as_ref()
+                        .and_then(|s| fctl_domain::snapshots::Bucket::parse(&s.url).ok())
+                        .map(|b| b.name),
                     serves,
                 })
             })
@@ -3041,9 +3068,18 @@ impl FleetObject {
         // sandbox first, which has more (`crate::snapshots`). Where none
         // can, it waits, or starts, as any other.
         if want.snapshot {
+            // One in a bucket of its runner's own, a runner with that bucket.
+            let bucket = want
+                .snapshot_location
+                .as_deref()
+                .and_then(fctl_domain::snapshots::bucket_of);
             let restoring: Vec<&Candidate> = candidates
                 .iter()
-                .filter(|c| c.snapshots || home == Some(c.id.as_str()))
+                .filter(|c| {
+                    home == Some(c.id.as_str())
+                        || (c.snapshots
+                            && bucket.is_none_or(|b| c.snapshot_bucket.as_deref() == Some(b)))
+                })
                 .collect();
             if let Ok(picked) = pick_from(&restoring, want, labels, home, false) {
                 return Ok(picked);

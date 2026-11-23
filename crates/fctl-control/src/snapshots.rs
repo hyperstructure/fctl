@@ -47,6 +47,8 @@ pub struct Row {
     #[serde(deserialize_with = "opt_int", default)]
     pub saved_at: Option<i64>,
     pub runner_name: Option<String>,
+    /// Where it is when its runner kept it in a bucket of its own.
+    pub location: Option<String>,
     /// Its workspace keeps snapshots, this many days (NULL: the default).
     #[serde(deserialize_with = "int_bool", default)]
     pub workspace_keeps: bool,
@@ -56,7 +58,7 @@ pub struct Row {
 
 const ROW_SELECT: &str = "SELECT ss.key_enc, ss.snapshot_id, ss.size, ss.sha256, ss.parts, \
     ss.claude_version, ss.agent_seq, ss.conversation, ss.changes, ss.left_out, ss.saved_at, ss.runner_name, \
-    w.snapshots AS workspace_keeps, w.snapshot_days AS days \
+    ss.location, w.snapshots AS workspace_keeps, w.snapshot_days AS days \
     FROM session_snapshots ss JOIN sessions se ON se.id = ss.session_id \
     JOIN projects p ON p.id = se.project_id JOIN workspaces w ON w.id = p.workspace_id";
 
@@ -104,6 +106,7 @@ impl Row {
             saved_on: self.runner_name.clone(),
             conversation: self.conversation,
             changes: self.changes,
+            location: self.location.clone(),
         })
     }
 
@@ -118,6 +121,7 @@ impl Row {
             changes: self.changes,
             left_out: self.left_out(),
             expires_at: Some(domain::expires_at(saved_at, self.days())),
+            location: self.location.clone(),
         })
     }
 }
@@ -231,7 +235,7 @@ pub async fn keep(
         db,
         "UPDATE session_snapshots SET snapshot_id = ?, size = ?, sha256 = ?, parts = ?, claude_version = ?, \
          agent_seq = ?, conversation = ?, changes = ?, left_out = ?, saved_at = ?, runner_id = ?, runner_name = ?, \
-         expire_tried_at = NULL, uploading_since = NULL WHERE session_id = ?",
+         location = ?, expire_tried_at = NULL, uploading_since = NULL WHERE session_id = ?",
         &[
             s(snapshot_id),
             n(i64::try_from(saved.size).unwrap_or(i64::MAX)),
@@ -247,6 +251,7 @@ pub async fn keep(
             n(now),
             s(runner.0),
             s(runner.1),
+            os(commit.location.as_deref()),
             s(session_id),
         ],
     )?
@@ -366,7 +371,7 @@ pub async fn forget(db: &D1Database, session_id: &str, snapshot_id: &str) -> App
     q(
         db,
         "UPDATE session_snapshots SET snapshot_id = NULL, size = NULL, sha256 = NULL, parts = NULL, \
-         left_out = NULL, expire_tried_at = NULL WHERE session_id = ? AND snapshot_id = ?",
+         left_out = NULL, location = NULL, expire_tried_at = NULL WHERE session_id = ? AND snapshot_id = ?",
         &[s(session_id), s(snapshot_id)],
     )?
     .run()
@@ -460,6 +465,7 @@ mod tests {
                 left_out: vec!["images".into()],
             },
             parts,
+            location: None,
         }
     }
 
@@ -617,6 +623,40 @@ mod tests {
         forget(&db, "ses_1", "snp_one").await?;
         assert!(info(&db, "ses_1", NOW + DAY).await?.is_some());
         forget(&db, "ses_1", "snp_two").await?;
+        assert!(info(&db, "ses_1", NOW + DAY).await?.is_none());
+        // One its runner kept in a bucket of its own: only where it is,
+        // which a resume's spec, the session's details and FleetDO all see.
+        let at = "s3://acme-fctl/sessions/ses_1/snp_three";
+        keep(
+            &db,
+            "ses_1",
+            "snp_three",
+            &SnapshotCommit {
+                parts: 0,
+                location: Some(at.into()),
+                ..commit(900_000_000, 0)
+            },
+            ("rnr_3", "aws-8"),
+            NOW + DAY,
+        )
+        .await?;
+        let with = spec(&db, &keys, &settings, "ses_1", false, NOW + DAY)
+            .await?
+            .ok_or_else(|| internal("no spec"))?;
+        let restore = with.restore.ok_or_else(|| internal("nothing to restore"))?;
+        assert_eq!(restore.location.as_deref(), Some(at));
+        let shown = info(&db, "ses_1", NOW + DAY)
+            .await?
+            .ok_or_else(|| internal("no info"))?;
+        assert_eq!(shown.location.as_deref(), Some(at));
+        let wants = crate::spec::session_wants(&db, &["ses_1"], NOW + DAY).await?;
+        assert_eq!(
+            wants
+                .get("ses_1")
+                .and_then(|w| w.snapshot_location.as_deref()),
+            Some(at)
+        );
+        forget(&db, "ses_1", "snp_three").await?;
         assert!(info(&db, "ses_1", NOW + DAY).await?.is_none());
         Ok(())
     }

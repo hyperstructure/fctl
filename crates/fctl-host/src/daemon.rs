@@ -259,7 +259,15 @@ impl Daemon {
         let _ = std::fs::remove_dir_all(data.join("builds"));
         let _ = std::fs::remove_dir_all(data.join("snapshots"));
         let driver = Driver::select(&cfg.driver, &cfg).await?;
-        let ctx = Arc::new(HostCtx::new(cfg, driver, token));
+        // A bucket it can't read the URL of stops it: snapshots meant for it
+        // never go to the control plane by mistake.
+        let store = crate::s3::Store::open(&cfg.snapshots).await?.map(Arc::new);
+        if let Some(s) = &store {
+            tracing::info!("keeping sessions' snapshots in {}", s.bucket.url());
+        }
+        let mut ctx = HostCtx::new(cfg, driver, token);
+        ctx.snapshot_store = store;
+        let ctx = Arc::new(ctx);
         ctx.refresh_facts().await;
         tracing::info!(
             "fctl host {VERSION} on {} using the {} driver, capacity {}, sandboxes {}",
@@ -1493,6 +1501,7 @@ impl Daemon {
             ],
             claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
             auto_update: Some(self.updates.is_some()),
+            snapshot_store: self.ctx.snapshot_store.as_ref().map(|s| s.report()),
         }
     }
 
@@ -1523,6 +1532,7 @@ impl Daemon {
             // Its owner may have saved or removed it since.
             claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
             drivers: changed.then_some(drivers),
+            snapshot_store: self.ctx.snapshot_store.as_ref().map(|s| s.report()),
         }
     }
 
