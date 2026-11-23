@@ -260,12 +260,15 @@ pub async fn keep(
     Ok(())
 }
 
-/// Deletes the snapshots that their sessions' workspaces no longer keep:
-/// older than their days, or kept by a workspace, or an instance, that
-/// stopped keeping them. Their parts go from their SessionDO first. At
-/// most 200 a run; how many went.
-pub async fn expire(env: &worker::Env, db: &D1Database, now: i64) -> AppResult<usize> {
-    let settings = crate::instance::settings(db).await?;
+/// The snapshots their sessions' workspaces no longer keep, at `now`, as
+/// `(session, snapshot)`: older than their days, or kept by a workspace,
+/// or an instance (`instance_keeps`), that stopped keeping them. At most
+/// 200.
+pub async fn due(
+    db: &D1Database,
+    instance_keeps: bool,
+    now: i64,
+) -> AppResult<Vec<(String, String)>> {
     #[derive(Deserialize)]
     struct Due {
         session_id: String,
@@ -279,39 +282,208 @@ pub async fn expire(env: &worker::Env, db: &D1Database, now: i64) -> AppResult<u
          AND (?1 = 0 OR w.snapshots = 0 OR ss.saved_at <= ?2 - COALESCE(w.snapshot_days, ?3) * 86400000) \
          LIMIT 200",
         &[
-            crate::db::b(settings.snapshots),
+            crate::db::b(instance_keeps),
             n(now),
             n(i64::from(domain::DEFAULT_DAYS)),
         ],
     )?
     .all()
     .await?;
+    Ok(due
+        .into_iter()
+        .map(|d| (d.session_id, d.snapshot_id))
+        .collect())
+}
+
+/// Forgets snapshot `snapshot_id` as the session's, unless another is
+/// the session's by now.
+pub async fn forget(db: &D1Database, session_id: &str, snapshot_id: &str) -> AppResult<()> {
+    q(
+        db,
+        "UPDATE session_snapshots SET snapshot_id = NULL, size = NULL, sha256 = NULL, parts = NULL, \
+         left_out = NULL WHERE session_id = ? AND snapshot_id = ?",
+        &[s(session_id), s(snapshot_id)],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Deletes the snapshots that their sessions' workspaces no longer keep
+/// ([`due`]): their parts go from their SessionDO first. How many went.
+pub async fn expire(env: &worker::Env, db: &D1Database, now: i64) -> AppResult<usize> {
+    let settings = crate::instance::settings(db).await?;
     let mut gone = 0;
-    for d in due {
-        let stub = internal::session_stub(env, &d.session_id)?;
+    for (session_id, snapshot_id) in due(db, settings.snapshots, now).await? {
+        let stub = internal::session_stub(env, &session_id)?;
         let deleted: AppResult<serde_json::Value> = internal::post(
             &stub,
             "/snapshot/delete",
             &SnapshotParts {
-                id: d.snapshot_id.clone(),
+                id: snapshot_id.clone(),
                 parts: 0,
                 size: 0,
             },
         )
         .await;
         if let Err(e) = deleted {
-            worker::console_error!("deleting {}'s snapshot: {}", d.session_id, e.0.message);
+            worker::console_error!("deleting {session_id}'s snapshot: {}", e.0.message);
             continue;
         }
-        q(
-            db,
-            "UPDATE session_snapshots SET snapshot_id = NULL, size = NULL, sha256 = NULL, parts = NULL, \
-             left_out = NULL WHERE session_id = ? AND snapshot_id = ?",
-            &[s(&d.session_id), s(&d.snapshot_id)],
-        )?
-        .run()
-        .await?;
+        forget(db, &session_id, &snapshot_id).await?;
         gone += 1;
     }
     Ok(gone)
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use fctl_proto::api::SnapshotCommit;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const NOW: i64 = 1_790_000_000_000;
+    const DAY: i64 = 86_400_000;
+
+    async fn acme(db: &D1Database) -> AppResult<()> {
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at, snapshots) VALUES ('wsp_off', 'off', 'Off', 0, 0, 0)",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at, workspace_id) VALUES ('prj_web', 'web', 'Web', 'usr_ada', 0, 0, 'wsp_acme')",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at, workspace_id) VALUES ('prj_off', 'off', 'Off', 'usr_ada', 0, 0, 'wsp_off')",
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, claude_session_id, created_at, updated_at) \
+             VALUES ('ses_1', 'prj_web', 1, 'One', 'Go', 'stopped', 'usr_ada', 'c1', 0, 0)",
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, claude_session_id, created_at, updated_at) \
+             VALUES ('ses_off', 'prj_off', 1, 'Off', 'Go', 'stopped', 'usr_ada', 'c2', 0, 0)",
+        ] {
+            q(db, sql, &[])?.run().await?;
+        }
+        Ok(())
+    }
+
+    fn commit(size: u64, parts: u32) -> SnapshotCommit {
+        SnapshotCommit {
+            saved: SnapshotSaved {
+                size,
+                sha256: "ab".repeat(32),
+                claude_version: Some("2.1.140".into()),
+                agent_seq: 42,
+                conversation: true,
+                changes: true,
+                left_out: vec!["images".into()],
+            },
+            parts,
+        }
+    }
+
+    /// A session's first spec makes its key, which later ones keep; once a
+    /// snapshot is kept, specs restore it and the session's details show
+    /// it, until its workspace's days are over, when it is due.
+    #[wasm_bindgen_test]
+    async fn a_sessions_snapshot_is_kept_restored_and_expires() -> AppResult<()> {
+        let db = testing::database();
+        acme(&db).await?;
+        let keys = Keys::derive(&[5; 32]);
+        let settings = InstanceSettings::default();
+        let first = spec(&db, &keys, &settings, "ses_1", false, NOW)
+            .await?
+            .ok_or_else(|| internal("no spec"))?;
+        assert!(first.save && first.restore.is_none());
+        assert_eq!(first.max_bytes, 200 * 1024 * 1024);
+        let again = spec(&db, &keys, &settings, "ses_1", false, NOW)
+            .await?
+            .ok_or_else(|| internal("no spec"))?;
+        assert_eq!(first.key, again.key);
+        // None for review agents, or where the workspace or instance keeps none.
+        assert!(
+            spec(&db, &keys, &settings, "ses_1", true, NOW)
+                .await?
+                .is_none()
+        );
+        assert!(
+            spec(&db, &keys, &settings, "ses_off", false, NOW)
+                .await?
+                .is_none()
+        );
+        let off = InstanceSettings {
+            snapshots: false,
+            ..InstanceSettings::default()
+        };
+        assert!(spec(&db, &keys, &off, "ses_1", false, NOW).await?.is_none());
+        assert!(refusal(&db, &off, "ses_1", 10).await?.is_some());
+        assert!(refusal(&db, &settings, "ses_off", 10).await?.is_some());
+        assert!(
+            refusal(&db, &settings, "ses_1", 201 * 1024 * 1024)
+                .await?
+                .is_some()
+        );
+        assert_eq!(refusal(&db, &settings, "ses_1", 10).await?, None);
+        // Kept, saved on studio.
+        keep(
+            &db,
+            "ses_1",
+            "snp_one",
+            &commit(12_000_000, 3),
+            ("rnr_1", "studio"),
+            NOW,
+        )
+        .await?;
+        let with = spec(&db, &keys, &settings, "ses_1", false, NOW + DAY)
+            .await?
+            .ok_or_else(|| internal("no spec"))?;
+        let restore = with.restore.ok_or_else(|| internal("nothing to restore"))?;
+        assert_eq!(
+            (
+                restore.id.as_str(),
+                restore.size,
+                restore.parts,
+                restore.agent_seq
+            ),
+            ("snp_one", 12_000_000, 3, 42)
+        );
+        assert_eq!(restore.saved_on.as_deref(), Some("studio"));
+        let shown = info(&db, "ses_1", NOW + DAY)
+            .await?
+            .ok_or_else(|| internal("no info"))?;
+        assert_eq!(shown.left_out, ["images"]);
+        assert_eq!(shown.expires_at, Some(NOW + 30 * DAY));
+        // Not due yet; due once the workspace's days are over, or it stops
+        // keeping them, or the instance does.
+        assert!(due(&db, true, NOW + DAY).await?.is_empty());
+        assert_eq!(
+            due(&db, true, NOW + 30 * DAY).await?,
+            [("ses_1".to_owned(), "snp_one".to_owned())]
+        );
+        assert_eq!(due(&db, false, NOW + DAY).await?.len(), 1);
+        q(
+            &db,
+            "UPDATE workspaces SET snapshot_days = 3 WHERE id = 'wsp_acme'",
+            &[],
+        )?
+        .run()
+        .await?;
+        assert_eq!(due(&db, true, NOW + 3 * DAY).await?.len(), 1);
+        // Past its days, a spec restores nothing even before the job runs.
+        let late = spec(&db, &keys, &settings, "ses_1", false, NOW + 3 * DAY)
+            .await?
+            .ok_or_else(|| internal("no spec"))?;
+        assert!(late.restore.is_none());
+        // A newer snapshot isn't forgotten for an older one.
+        keep(
+            &db,
+            "ses_1",
+            "snp_two",
+            &commit(1_000, 1),
+            ("rnr_2", "aws-7"),
+            NOW + DAY,
+        )
+        .await?;
+        forget(&db, "ses_1", "snp_one").await?;
+        assert!(info(&db, "ses_1", NOW + DAY).await?.is_some());
+        forget(&db, "ses_1", "snp_two").await?;
+        assert!(info(&db, "ses_1", NOW + DAY).await?.is_none());
+        Ok(())
+    }
 }
