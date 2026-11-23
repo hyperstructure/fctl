@@ -37,6 +37,7 @@ pub mod limits;
 pub mod linear;
 pub mod memory;
 pub mod merge_checks;
+pub mod metadata;
 pub mod models;
 pub mod naming;
 pub mod notify;

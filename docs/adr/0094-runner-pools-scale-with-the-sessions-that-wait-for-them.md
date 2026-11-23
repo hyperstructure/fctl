@@ -1,4 +1,4 @@
-# 0093: Runner pools scale with the sessions that wait for them
+# 0094: Runner pools scale with the sessions that wait for them
 
 2026-11-23 · accepted
 

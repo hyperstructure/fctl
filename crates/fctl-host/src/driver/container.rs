@@ -38,6 +38,9 @@ pub struct ContainerDriver {
     bin: String,
     /// Whether it starts fctl-agent as root (`agent_as_root` in host.toml).
     agent_as_root: bool,
+    /// Whether its sandboxes may reach cloud metadata services
+    /// (`allow_cloud_metadata` in host.toml; [`Self::keep_off_metadata`]).
+    cloud_metadata: bool,
     /// The pulls under way, by image: another pull of the same image waits
     /// for one rather than download it beside it.
     pulls: Mutex<HashMap<String, Arc<Pulling>>>,
@@ -212,6 +215,7 @@ impl ContainerDriver {
             flavor: Flavor::Apple,
             bin: std::env::var("FCTL_CONTAINER_BIN").unwrap_or_else(|_| "container".into()),
             agent_as_root: true,
+            cloud_metadata: false,
             pulls: Mutex::default(),
             pace: Pace::default(),
             stuck: Stuck::default(),
@@ -223,6 +227,7 @@ impl ContainerDriver {
             flavor: Flavor::Docker,
             bin: std::env::var("FCTL_DOCKER_BIN").unwrap_or_else(|_| "docker".into()),
             agent_as_root: true,
+            cloud_metadata: false,
             pulls: Mutex::default(),
             pace: Pace::default(),
             stuck: Stuck::default(),
@@ -238,6 +243,15 @@ impl ContainerDriver {
         }
     }
 
+    /// The driver, letting its sandboxes reach cloud metadata services
+    /// (`on`) or keeping them off them (the default).
+    pub fn allow_cloud_metadata(self, on: bool) -> Self {
+        Self {
+            cloud_metadata: on,
+            ..self
+        }
+    }
+
     /// A driver whose CLI is `bin`, a stand-in.
     #[cfg(test)]
     pub(crate) fn with_bin(flavor: Flavor, bin: String) -> Self {
@@ -245,6 +259,7 @@ impl ContainerDriver {
             flavor,
             bin,
             agent_as_root: true,
+            cloud_metadata: false,
             pulls: Mutex::default(),
             pace: Pace::default(),
             stuck: Stuck::default(),
@@ -906,6 +921,13 @@ impl ContainerDriver {
         if let Some(network) = self.sandbox_network().await {
             args.extend(["--network", network]);
         }
+        // No raw sockets, which would send frames around the routes that
+        // keep the sandbox off cloud metadata services
+        // ([`Self::keep_off_metadata`]). `ping` uses ICMP sockets, which
+        // Docker lets containers have.
+        if self.flavor == Flavor::Docker && !self.cloud_metadata {
+            args.extend(["--cap-drop", "NET_RAW"]);
+        }
         let cache = spec.cache.as_ref().map(cache_mount);
         if let Some(mount) = &cache {
             args.extend(["--mount", mount.as_str()]);
@@ -1003,6 +1025,113 @@ impl ContainerDriver {
                 None
             }
         }
+    }
+
+    /// Keeps the running Docker sandbox `sb` off cloud metadata services
+    /// ([`fctl_domain::metadata`]), which hand out the machine's own
+    /// credentials. A helper container joins the sandbox's network
+    /// namespace alone, with `NET_ADMIN` alone, and runs a copy of the
+    /// host's own fctl-agent, `agent`, which makes those addresses
+    /// unreachable there. Nothing of the sandbox's runs with that
+    /// capability, not even the helper's image, which is the sandbox's own
+    /// for being here: the sandbox, which has neither it nor `NET_RAW`
+    /// ([`Self::start_new`]), can neither take the routes out nor send
+    /// around them. Run again on a sandbox kept off them, it changes
+    /// nothing. A sandbox made with raw sockets, which its session's next
+    /// run replaces ([`Self::retire_raw_sandbox`]), gets the routes all the
+    /// same, and an error that says it can send around them. Apple's VMs, and
+    /// hosts that let sandboxes reach them, are left as they are.
+    pub async fn keep_off_metadata(&self, sb: &Sandbox, agent: &Path) -> Result<()> {
+        if self.flavor != Flavor::Docker || self.cloud_metadata {
+            return Ok(());
+        }
+        let image = self
+            .run(&["inspect", "--format", "{{.Image}}", &sb.name])
+            .await
+            .context("finding the sandbox's image")?;
+        let helper = format!("{}-guard", sb.name);
+        let network = format!("container:{}", sb.name);
+        let _ = self.run(&["rm", "-f", &helper]).await;
+        let made = self
+            .run(&[
+                "create",
+                "--name",
+                &helper,
+                "--label",
+                "sh.fctl.guard=1",
+                "--pull",
+                "never",
+                "--network",
+                &network,
+                "--cap-drop",
+                "ALL",
+                "--cap-add",
+                "NET_ADMIN",
+                "--user",
+                "0",
+                "--no-healthcheck",
+                "--entrypoint",
+                "/fctl-agent",
+                image.trim(),
+                "keep-off-metadata",
+            ])
+            .await;
+        let ran = match made {
+            Ok(_) => {
+                let to = format!("{helper}:/fctl-agent");
+                match self.run(&["cp", &agent.display().to_string(), &to]).await {
+                    Ok(_) => self.run(&["start", "-a", &helper]).await,
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        };
+        let _ = self.run(&["rm", "-f", &helper]).await;
+        ran?;
+        if self.keeps_raw_sockets(&sb.name).await? {
+            anyhow::bail!(
+                "{} was made with raw sockets, with which its root could still reach the cloud's metadata service around the routes, until the session next starts in a new sandbox",
+                sb.name
+            );
+        }
+        Ok(())
+    }
+
+    /// Removes the Docker sandbox `name` where it has raw sockets, which
+    /// send frames around the routes that keep it off cloud metadata
+    /// services: one made before hosts kept sandboxes off them, or while
+    /// this one let them reach them. Docker can't take a capability from a
+    /// container, so the session's run makes a new one, from the image it
+    /// would make any from (its project's build, say). True when it did.
+    /// Only as a run starts, when nothing of the session's runs in it.
+    pub async fn retire_raw_sandbox(&self, name: &str) -> Result<bool> {
+        if self.flavor != Flavor::Docker || self.cloud_metadata {
+            return Ok(false);
+        }
+        if self.state(name).await?.is_none() || !self.keeps_raw_sockets(name).await? {
+            return Ok(false);
+        }
+        self.run(&["rm", "-f", name])
+            .await
+            .with_context(|| format!("removing {name}"))?;
+        self.stuck.forget(name);
+        Ok(true)
+    }
+
+    /// Whether the Docker sandbox `name` has raw sockets: it was made
+    /// without dropping `NET_RAW` ([`Self::start_new`]), whose packet
+    /// sockets send frames around its routes.
+    async fn keeps_raw_sockets(&self, name: &str) -> Result<bool> {
+        let dropped = self
+            .run(&["inspect", "--format", "{{json .HostConfig.CapDrop}}", name])
+            .await
+            .context("reading the sandbox's capabilities")?;
+        let dropped: Option<Vec<String>> = serde_json::from_str(dropped.trim())
+            .with_context(|| format!("reading the sandbox's capabilities from {dropped:?}"))?;
+        Ok(!dropped.unwrap_or_default().iter().any(|cap| {
+            let cap = cap.to_ascii_uppercase();
+            ["NET_RAW", "CAP_NET_RAW", "ALL"].contains(&cap.as_str())
+        }))
     }
 
     /// Gives the user of the new Docker sandbox `name` the package caches
@@ -2439,6 +2568,18 @@ mod tests {
     const VERSION_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:0.3.0";
     const LATEST_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:latest";
 
+    /// The ID of the build `name` is on a stand-in, as `docker inspect`
+    /// gives a container's image.
+    fn cli_image(name: &'static str) -> impl Fn(&FakeCli) -> Result<String> {
+        move |cli: &FakeCli| {
+            cli.images()?
+                .into_iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, id)| id)
+                .context("no such image")
+        }
+    }
+
     fn spec(image: &str, fallback: Option<&str>) -> SandboxSpec {
         SandboxSpec {
             name: "fctl-ses-1".into(),
@@ -2687,6 +2828,174 @@ mod tests {
         // A later session tries again.
         cli.break_pulls(0)?;
         driver.ensure(&other, &|_| {}).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_sandboxes_are_kept_off_cloud_metadata() -> Result<()> {
+        let default = spec(VERSION_IMAGE, None);
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ensure(Flavor::Docker, &default).await?;
+        // No raw sockets, which would send around the routes.
+        let run = cli.calls().into_iter().find(|c| c.starts_with("run -d "));
+        assert!(
+            run.as_deref()
+                .is_some_and(|r| r.contains(" --cap-drop NET_RAW ")),
+            "{run:?}"
+        );
+
+        let driver = cli.driver(Flavor::Docker);
+        let sb = Sandbox {
+            name: default.name.clone(),
+            root: None,
+        };
+        let agent = cli.dir.path().join("fctl-agent");
+        driver.keep_off_metadata(&sb, &agent).await?;
+        let calls = cli.calls();
+        let helper = "fctl-ses-1-guard";
+        // A helper in the sandbox's network namespace alone, with
+        // NET_ADMIN alone, runs the host's fctl-agent copied into it, from
+        // the sandbox's own image (by its ID), and goes.
+        let create = calls.iter().find(|c| c.starts_with("create ")).cloned();
+        let image = std::fs::read_to_string(cli.dir.path().join("containers/fctl-ses-1"))?;
+        assert_eq!(
+            create.as_deref(),
+            Some(
+                format!(
+                    "create --name {helper} --label sh.fctl.guard=1 --pull never --network container:fctl-ses-1 --cap-drop ALL --cap-add NET_ADMIN --user 0 --no-healthcheck --entrypoint /fctl-agent {} keep-off-metadata",
+                    image.trim()
+                )
+                .as_str()
+            ),
+            "{calls:?}"
+        );
+        let after_create: Vec<&String> = calls
+            .iter()
+            .skip_while(|c| !c.starts_with("create "))
+            .collect();
+        assert_eq!(
+            after_create,
+            [
+                &create.clone().unwrap_or_default(),
+                &format!("cp {} {helper}:/fctl-agent", agent.display()),
+                &format!("start -a {helper}"),
+                &format!("rm -f {helper}"),
+                &"inspect --format {{json .HostConfig.CapDrop}} fctl-ses-1".to_owned(),
+            ],
+            "{calls:?}"
+        );
+        // Nothing of the sandbox's runs with a capability it lacks.
+        assert!(
+            !calls.iter().any(|c| c.contains("--privileged")),
+            "{calls:?}"
+        );
+
+        // When the helper fails, it goes all the same, and the error says so.
+        cli.fail_guards()?;
+        assert!(driver.keep_off_metadata(&sb, &agent).await.is_err());
+        assert_eq!(
+            cli.calls().last().map(String::as_str),
+            Some(format!("rm -f {helper}").as_str())
+        );
+
+        // A host that lets its sandboxes reach them leaves them as they were.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let driver = cli.driver(Flavor::Docker).allow_cloud_metadata(true);
+        driver.ensure(&default, &|_| {}).await?;
+        driver.keep_off_metadata(&sb, &agent).await?;
+        let calls = cli.calls();
+        assert!(!calls.iter().any(|c| c.contains("NET_RAW")), "{calls:?}");
+        assert!(!calls.iter().any(|c| c.starts_with("create ")), "{calls:?}");
+
+        // Apple's VMs aren't Docker's.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let driver = cli.driver(Flavor::Apple);
+        driver.ensure(&default, &|_| {}).await?;
+        driver.keep_off_metadata(&sb, &agent).await?;
+        let calls = cli.calls();
+        assert!(!calls.iter().any(|c| c.contains("NET_RAW")), "{calls:?}");
+        assert!(!calls.iter().any(|c| c.starts_with("create ")), "{calls:?}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_sandboxes_with_raw_sockets_go_as_their_session_starts() -> Result<()> {
+        let default = spec(VERSION_IMAGE, None);
+        let image = cli_image(VERSION_IMAGE);
+        // One made before, with raw sockets, which stopped: it goes as a run
+        // starts, before anything goes by its being here, so that the run
+        // makes a new one as it would any (its project's build, say).
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.uses(&default.name, &image(&cli)?)?;
+        cli.stopped(&default.name)?;
+        let driver = cli.driver(Flavor::Docker);
+        assert!(driver.retire_raw_sandbox(&default.name).await?);
+        assert!(cli.calls().contains(&"rm -f fctl-ses-1".to_owned()));
+        assert!(!driver.exists(&default.name).await?);
+        cli.ensure(Flavor::Docker, &default).await?;
+        let made = cli.calls().into_iter().find(|c| c.starts_with("run -d "));
+        assert!(
+            made.as_deref()
+                .is_some_and(|r| r.contains(" --cap-drop NET_RAW ")),
+            "{made:?}"
+        );
+        // One made since, which stopped, stays, and starts again as it was.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ensure(Flavor::Docker, &default).await?;
+        cli.stopped(&default.name)?;
+        assert!(
+            !cli.driver(Flavor::Docker)
+                .retire_raw_sandbox(&default.name)
+                .await?
+        );
+        cli.ensure(Flavor::Docker, &default).await?;
+        let calls = cli.calls();
+        assert!(calls.contains(&"start fctl-ses-1".to_owned()), "{calls:?}");
+        assert!(!calls.contains(&"rm -f fctl-ses-1".to_owned()), "{calls:?}");
+        // No sandbox, nothing to remove; and a host that lets sandboxes
+        // reach metadata keeps those with raw sockets.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        assert!(
+            !cli.driver(Flavor::Docker)
+                .retire_raw_sandbox(&default.name)
+                .await?
+        );
+        cli.uses(&default.name, &image(&cli)?)?;
+        cli.stopped(&default.name)?;
+        let driver = cli.driver(Flavor::Docker).allow_cloud_metadata(true);
+        assert!(!driver.retire_raw_sandbox(&default.name).await?);
+        assert!(!cli.calls().contains(&"rm -f fctl-ses-1".to_owned()));
+        // Nor does ensure remove anything, whatever the image it is given.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.uses(&default.name, &image(&cli)?)?;
+        cli.stopped(&default.name)?;
+        cli.ensure(Flavor::Docker, &default).await?;
+        assert!(!cli.calls().contains(&"rm -f fctl-ses-1".to_owned()));
+
+        // One that runs with raw sockets gets the routes all the same, and
+        // an error that says it can still send around them.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.uses(&default.name, &image(&cli)?)?;
+        let sb = Sandbox {
+            name: default.name.clone(),
+            root: None,
+        };
+        let e = cli
+            .driver(Flavor::Docker)
+            .keep_off_metadata(&sb, &cli.dir.path().join("fctl-agent"))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"));
+        assert!(
+            e.as_deref().is_some_and(|e| e.contains("raw sockets")),
+            "{e:?}"
+        );
+        assert!(
+            cli.calls()
+                .contains(&"start -a fctl-ses-1-guard".to_owned()),
+            "{:?}",
+            cli.calls()
+        );
         Ok(())
     }
 

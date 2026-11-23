@@ -1,11 +1,14 @@
-//! The two routing requests the VM's network needs, over rtnetlink: a link
-//! up (the loopback) and a default route. Images have no `ip` to run.
+//! The routing requests fctl-agent makes over rtnetlink, since images have
+//! no `ip` to run: a Firecracker VM's link up (the loopback) and default
+//! route, and the routes that keep a sandbox off cloud metadata services
+//! (`crate::metadata`).
 
 use nix::sys::socket::{
     AddressFamily, MsgFlags, NetlinkAddr, SockFlag, SockProtocol, SockType, bind, recv, send,
     socket,
 };
 use std::io;
+use std::net::IpAddr;
 use std::os::fd::AsRawFd;
 
 const RTM_NEWLINK: u16 = 16;
@@ -17,10 +20,13 @@ const NLM_F_REPLACE: u16 = 0x100;
 const NLM_F_CREATE: u16 = 0x400;
 const IFF_UP: u32 = 0x1;
 const AF_INET: u8 = 2;
+const AF_INET6: u8 = 10;
 const RT_TABLE_MAIN: u8 = 254;
 const RTPROT_BOOT: u8 = 3;
 const RT_SCOPE_UNIVERSE: u8 = 0;
 const RTN_UNICAST: u8 = 1;
+const RTN_UNREACHABLE: u8 = 7;
+const RTA_DST: u16 = 1;
 const RTA_OIF: u16 = 4;
 const RTA_GATEWAY: u16 = 5;
 
@@ -77,6 +83,30 @@ pub fn default_route_message(index: u32, gateway: [u8; 4]) -> Vec<u8> {
     body.extend_from_slice(&0u32.to_ne_bytes());
     body.extend(attribute(RTA_GATEWAY, &gateway));
     body.extend(attribute(RTA_OIF, &index.to_ne_bytes()));
+    message(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, &body)
+}
+
+/// A route that makes `dst` unreachable (`ip route add unreachable`), in
+/// place of any route to it: a connection there fails at once, with "No
+/// route to host".
+pub fn unreachable_route_message(dst: IpAddr) -> Vec<u8> {
+    let (family, address) = match dst {
+        IpAddr::V4(ip) => (AF_INET, ip.octets().to_vec()),
+        IpAddr::V6(ip) => (AF_INET6, ip.octets().to_vec()),
+    };
+    let prefix = u8::try_from(address.len() * 8).unwrap_or(u8::MAX);
+    let mut body = vec![
+        family,
+        prefix,
+        0,
+        0,
+        RT_TABLE_MAIN,
+        RTPROT_BOOT,
+        RT_SCOPE_UNIVERSE,
+        RTN_UNREACHABLE,
+    ];
+    body.extend_from_slice(&0u32.to_ne_bytes());
+    body.extend(attribute(RTA_DST, &address));
     message(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, &body)
 }
 
@@ -147,6 +177,32 @@ mod tests {
         assert_eq!(&m[32..36], &[10, 0, 2, 2]);
         assert_eq!(&m[38..40], &RTA_OIF.to_ne_bytes());
         assert_eq!(u32_at(&m, 40), 2);
+    }
+
+    #[test]
+    fn makes_an_address_unreachable() {
+        let m =
+            unreachable_route_message("169.254.169.254".parse().unwrap_or(IpAddr::from([0; 4])));
+        // Header, rtmsg, then RTA_DST of 8 bytes.
+        assert_eq!(m.len(), 16 + 12 + 8);
+        assert_eq!(u32_at(&m, 0) as usize, m.len());
+        assert_eq!(&m[4..6], &RTM_NEWROUTE.to_ne_bytes());
+        assert_eq!(
+            &m[6..8],
+            &(NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_REPLACE).to_ne_bytes()
+        );
+        // IPv4, a /32, the main table, unreachable.
+        assert_eq!(&m[16..24], &[AF_INET, 32, 0, 0, 254, 3, 0, RTN_UNREACHABLE]);
+        assert_eq!(&m[28..30], &8u16.to_ne_bytes());
+        assert_eq!(&m[30..32], &RTA_DST.to_ne_bytes());
+        assert_eq!(&m[32..36], &[169, 254, 169, 254]);
+
+        let m = unreachable_route_message("fd00:ec2::254".parse().unwrap_or(IpAddr::from([0; 16])));
+        assert_eq!(m.len(), 16 + 12 + 20);
+        assert_eq!(&m[16..18], &[AF_INET6, 128]);
+        assert_eq!(&m[28..30], &20u16.to_ne_bytes());
+        assert_eq!(&m[32..34], &[0xfd, 0x00]);
+        assert_eq!(&m[46..48], &[0x02, 0x54]);
     }
 
     #[test]

@@ -96,6 +96,20 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   [passkey](#passkeys). With [two-factor sign-in](#two-factor-sign-in), a
   code from an authenticator app follows the password. An account has one
   or more [email addresses](#email-addresses), and any of them signs in.
+- **Google links to an account that exists only from its Settings**, in
+  a browser that signed in within 15 minutes: linking by address would
+  let a Google account take over an account someone signs in to. The one
+  exception is an account with no way in at all (no password, passkey or
+  linked identity), as an admin token makes one (`api::provision`):
+  nobody has signed in to it, so its first Google sign-in links Google to
+  it, when the account is active and Google vouches for the address
+  (`fctl_domain::google::vouches_for`: Gmail, or a Workspace account's).
+  One statement checks again that it has no way in as it links
+  (`api::google::link_first`), the audit log records `identity.linked`
+  with `via: first_sign_in`, and fctl emails the account. Any other
+  account the address belongs to sends the person back to the sign-in
+  page, which names how that account signs in (`google_link_required`,
+  `google_link_passkey`, `google_link_other`).
 - **Access is an allowlist.** Admins add exact emails or `*@domain` patterns.
   Signing up requires a matching entry; removing an exact entry disables that
   user. Inviting an address adds its entry, which revoking the invitation
@@ -1135,7 +1149,7 @@ The runners an enrollment token enrolled are a pool: an organization keeps
 one pool of large machines for one project and one in another region for
 another, and has each grow and shrink with the sessions that wait for it
 (`fctl_domain::pools`, `crate::pools`,
-[ADR 0093](adr/0093-runner-pools-scale-with-the-sessions-that-wait-for-them.md)).
+[ADR 0094](adr/0094-runner-pools-scale-with-the-sessions-that-wait-for-them.md)).
 
 1. **Labels.** A token has labels (`enrollment_tokens.labels`; `fctl
    runners enrollment-tokens create "AWS large" --labels aws,large`, or the
@@ -4769,6 +4783,28 @@ and `fctl ticket` reads and writes the project's tickets
 ([Ticket trackers](#ticket-trackers)), with no fctl credentials in the
 sandbox.
 
+Docker sandboxes don't reach cloud metadata services
+(`fctl_domain::metadata`), which hand out the machine's own credentials,
+unless the host lets them (`allow_cloud_metadata`, [ADR
+0093](adr/0093-hosts-keep-sandboxes-off-cloud-metadata-services.md)). They
+run without `NET_RAW`, and before fctl-agent starts in one, the host runs
+a helper container in its network namespace alone, with `NET_ADMIN` alone,
+from the sandbox's image by its ID, which runs a copy of the host's own
+fctl-agent (`fctl-agent keep-off-metadata`) to add routes that make those
+addresses unreachable there, and goes
+(`ContainerDriver::keep_off_metadata`). Nothing of the sandbox's runs with
+`NET_ADMIN`, so not even its root takes the routes out, and without raw
+sockets nothing sends around them. A run whose sandbox can't be kept off
+them doesn't start, and says why. A sandbox made with raw sockets (before
+this, or while the host let sandboxes reach them) is removed as a run of
+its session starts, before the host chooses the run's image
+(`ContainerDriver::retire_raw_sandbox`), and the run goes on in a new one,
+from its project's build where it has one; one that runs as the host
+restarts gets the routes as the host starts fctl-agent in it again, and
+its session hears that its root could still go around them until its next
+run. Firecracker's VMs are kept off them by their network's filter
+([Firecracker](#firecracker)).
+
 A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
 records when each one stopped (`stopped.json` in its data directory) and
@@ -4969,17 +5005,31 @@ need them too.
   applies (`accept` fails). The host has no bridge, TAP device or firewall
   rule for it. A VM reaches the internet and the host's network as a
   Docker container does, but neither other VMs nor the host's loopback,
-  and nothing reaches it from outside. It asks the host's nameservers, as
-  a Docker container does: those in `/etc/resolv.conf` but for any on the
-  loopback, and where only those are left (systemd-resolved's
+  and nothing reaches it from outside. Nor cloud metadata services
+  (`fctl_domain::metadata`), unless the host lets sandboxes reach them
+  (`allow_cloud_metadata`): the connection goes to passt through
+  `fctl-agent net-filter`, the host's own fctl-agent, which the host
+  starts between them (`Vm::link_network`) and which drops the VM's frames
+  to those addresses, answering IPv4 ones with an ICMP "administratively
+  prohibited" as from the gateway, so that a connection there fails at
+  once ("No route to host"). DNS goes through, as Google Cloud's metadata
+  server is its machines' nameserver, which the VM asks as the host does;
+  frames whose type says IP but that don't read as IP, and tagged ones, go
+  nowhere (`fctl_domain::metadata::verdict`). The filter runs detached, as
+  passt does, and exits once either side closes, passt with it. A VM that
+  a host from before the filter linked gets it as a session next starts in
+  it, which links its network again. The VM asks the host's nameservers,
+  as a Docker container does: those in `/etc/resolv.conf` but for any on
+  the loopback, and where only those are left (systemd-resolved's
   `127.0.0.53`), the servers systemd-resolved asks; with none, passt's
   forwarder to the host's resolver.
-- **Processes.** Firecracker and `passt` run in process groups of their
-  own, as the process driver's agents do, so restarting or updating the
-  host leaves them running; the host finds a VM's processes by the ids it
-  keeps and the sockets in their command lines, in a private directory of
-  the user's in `/tmp` (sockets' paths are limited to about 100 bytes).
-  A VM's console goes to `console.log` in its directory.
+- **Processes.** Firecracker, `passt` and the network's filter run in
+  process groups of their own, as the process driver's agents do, so
+  restarting or updating the host leaves them running; the host finds a
+  VM's processes by the ids it keeps and the sockets in their command
+  lines, in a private directory of the user's in `/tmp` (sockets' paths
+  are limited to about 100 bytes). A VM's console goes to `console.log` in
+  its directory.
 
 The VMs share no filesystem with the host: they mount a project's
 [package caches](#package-caches) from a file server beside each VM.

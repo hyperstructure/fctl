@@ -98,4 +98,5 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0090](0090-agents-prove-who-they-are-with-tokens-their-workspaces-issuer-signs.md) | Agents prove who they are with tokens their workspace's issuer signs |
 | [0091](0091-autopilots-delete-stale-memory-notes-once-they-crowd-the-memory.md) | Autopilots delete stale memory notes once they crowd the memory (experimental) |
 | [0092](0092-projects-choose-how-long-stale-memory-notes-stay.md) | Projects choose how long stale memory notes stay |
-| [0093](0093-runner-pools-scale-with-the-sessions-that-wait-for-them.md) | Runner pools scale with the sessions that wait for them |
+| [0093](0093-hosts-keep-sandboxes-off-cloud-metadata-services.md) | Hosts keep sandboxes off cloud metadata services |
+| [0094](0094-runner-pools-scale-with-the-sessions-that-wait-for-them.md) | Runner pools scale with the sessions that wait for them |

@@ -1171,6 +1171,7 @@ build_timeout_minutes = 60
 max_build_mb = 20480     # the largest image a build may make
 auto_update = true       # update fctl to the version the control plane runs (false: `fctl self update`)
 agent_as_root = true     # fctl-agent as root in sandboxes, out of the agent's reach (false: as the sandbox's user)
+allow_cloud_metadata = false  # true: sandboxes reach the cloud's instance metadata service (169.254.169.254)
 
 [firecracker]            # with the firecracker driver
 # firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads
@@ -1295,6 +1296,26 @@ VMs boot with fctl-agent as their init, as root, either way. New
 sandboxes follow the setting; one where fctl-agent already ran as root
 keeps it so, rather than start a second one beside it. `fctl host status`
 says which it runs as.
+
+On a cloud machine, sandboxes don't reach the cloud's instance metadata
+service (`169.254.169.254`, and the addresses of ECS, EKS Pod Identity,
+Alibaba and Tencent), which hands out the machine's own credentials and
+its user data, where boot scripts keep secrets such as an enrollment
+token. Docker sandboxes get routes that make those addresses unreachable,
+which a helper container with nothing but `NET_ADMIN` adds in their
+network, and run without `NET_RAW`, so that not even their root takes the
+routes out or sends around them; `ping` still works. Firecracker VMs'
+frames to them are dropped on the host before `passt` carries them, but for
+DNS, which Google Cloud's metadata server answers as the machine's
+nameserver; a connection there fails at once with "No route to host".
+Apple container and Lima VMs, whose root could change anything the host
+set inside them, and the process driver aren't kept off them. A runner
+whose sessions should use the machine's own cloud role sets
+`allow_cloud_metadata = true`; agents reach clouds without one through
+[identity tokens](identity-tokens.md) instead. A run whose sandbox can't
+be kept off them doesn't start, and says why. A Docker sandbox made
+before, with raw sockets, is replaced as its session next starts, which
+starts a new conversation on its branch.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the
 host's default. Sessions only start on a runner whose maximum covers that;
@@ -1606,8 +1627,10 @@ an active admin. It changes no roles, nor the primary instance owner's
 account, and only the primary instance owner's tokens change admins'.
 `--claude-token -` reads the token from stdin, so that it stays out of
 your shell's history. A new account has no password until someone sets
-one: `--password-stdin`, Google sign-in where the instance has it, or the
-link `fctl admin reset-link` makes.
+one: `--password-stdin`, or the link `fctl admin reset-link` makes. Where
+the instance has Google sign-in and Google hosts the address (Google
+Workspace or Gmail), the person's first Google sign-in links Google to
+the account instead.
 
 A new workspace or project takes the slug its name makes, and when
 another has it or it is reserved, that slug with a random ending of six
