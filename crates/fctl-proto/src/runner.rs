@@ -475,7 +475,74 @@ pub struct SessionSpec {
     /// hosts leave it out of the agent's configuration, and their agents
     /// mint none.
     pub id_tokens: Option<crate::identity::IdTokensSpec>,
+    /// Snapshots of the session (docs/architecture.md#session-snapshots):
+    /// its agent saves one as the sandbox stops, and restores the one it
+    /// names in a sandbox that doesn't have the conversation, so that the
+    /// session resumes on any runner with its conversation and uncommitted
+    /// work. Absent where its workspace or instance keeps none, for review
+    /// agents, from older control planes, and for hosts that don't announce
+    /// [`FEATURE_SNAPSHOTS`]; older agents ignore it.
+    pub snapshot: Option<SnapshotSpec>,
 }
+
+/// What a session's agent does with snapshots ([`SessionSpec::snapshot`]).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SnapshotSpec {
+    /// The session's key, which encrypts its snapshots: 32 bytes, base64.
+    /// The control plane keeps it sealed with its master key, so that
+    /// whoever stores a snapshot reads nothing of it.
+    pub key: String,
+    /// Save one as the sandbox stops.
+    pub save: bool,
+    /// The most bytes one may take: past it, the agent leaves the
+    /// conversation's images out, then the uncommitted work, then saves
+    /// none.
+    pub max_bytes: u64,
+    /// The snapshot to restore in a sandbox that doesn't have the
+    /// conversation: the session's last.
+    pub restore: Option<SnapshotRef>,
+}
+
+/// A session's snapshot, as the control plane keeps it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SnapshotRef {
+    /// `snp_…`.
+    pub id: String,
+    /// Its encrypted bytes.
+    pub size: u64,
+    /// Their SHA-256, hex.
+    pub sha256: String,
+    /// The parts it was uploaded in, of [`SNAPSHOT_PART_BYTES`] each.
+    pub parts: u32,
+    /// The Claude Code that wrote its conversation, `2.1.140`: one that is
+    /// older, or of another major version, may not read it.
+    pub claude_version: Option<String>,
+    /// The last event its run journaled before it was saved: it is the
+    /// session's current one only while the control plane has no later
+    /// event (`AgentConfig::first_agent_seq`), when no run carried on
+    /// elsewhere since.
+    pub agent_seq: u64,
+    pub saved_at: Millis,
+    /// The runner it was saved on.
+    pub saved_on: Option<String>,
+    /// It holds Claude's conversation, and uncommitted work or commits
+    /// not pushed.
+    pub conversation: bool,
+    pub changes: bool,
+}
+
+/// What hosts whose agents save and restore session snapshots announce in
+/// their hello ([`HostHello::features`]): their specs carry
+/// [`SessionSpec::snapshot`].
+pub const FEATURE_SNAPSHOTS: &str = "snapshots";
+
+/// The bytes of a snapshot's parts, as its agent hands it to the host and
+/// the host uploads it: the last part is shorter.
+pub const SNAPSHOT_PART_BYTES: usize = 4 * 1024 * 1024;
 
 /// What hosts whose agents run review sessions announce in their hello
 /// ([`HostHello::features`]).
