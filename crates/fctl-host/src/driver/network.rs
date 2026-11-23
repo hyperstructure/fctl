@@ -183,7 +183,8 @@ impl Network {
         self.state().left.clone()
     }
 
-    /// The container `name` runs again, or is gone.
+    /// The container `name` runs again, is gone, or the host stopped it on
+    /// purpose: no restart starts it again.
     pub fn started(&self, name: &str) {
         self.state().left.retain(|n| n != name);
     }

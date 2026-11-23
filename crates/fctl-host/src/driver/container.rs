@@ -2406,6 +2406,9 @@ impl ContainerDriver {
     /// Stops the sandbox, which keeps its files. With Apple's `container`
     /// it first gives back the disk space of the files deleted in it.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
+        // Stopped on purpose (its session ended, or went back to the
+        // queue): what a restart of Apple's `container` left stopped stays so.
+        self.network.started(&sb.name);
         if self.state(&sb.name).await?.as_deref() == Some("running") {
             if self.flavor == Flavor::Apple {
                 self.give_back_space(&sb.name).await;
@@ -2467,6 +2470,7 @@ impl ContainerDriver {
     }
 
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
+        self.network.started(&sb.name);
         let args: &[&str] = match self.flavor {
             Flavor::Apple => &["delete", "--force", &sb.name],
             Flavor::Docker => &["rm", "-f", &sb.name],
@@ -5036,7 +5040,21 @@ esac
             down.0
         );
         assert!(!apple.runs(ours)?);
-        // The host's next look starts it.
+        // The session, going back to the queue, stops it: the host's next
+        // look leaves it so, as another runner may start the session.
+        driver.stop(&sandbox(ours)).await?;
+        apple.accept_starts()?;
+        assert_eq!(network_down(&apple, &driver).await?, None);
+        assert!(!apple.runs(ours)?);
+
+        // A sandbox whose session waits for it, and that nothing stopped,
+        // the host's next look starts.
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.lose_network()?;
+        apple.mends_on_restart()?;
+        apple.refuse_starts()?;
+        assert!(readied(&apple, &driver, ours).await.is_err());
         apple.accept_starts()?;
         assert_eq!(network_down(&apple, &driver).await?, None);
         assert!(apple.runs(ours)?);
