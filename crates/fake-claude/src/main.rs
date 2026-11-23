@@ -29,6 +29,7 @@
 //! | `look` | reads an image with `Read`, as agents look at a screenshot of what they changed: a small PNG it draws, or each image at the paths after the word (`look /tmp/before.png /tmp/after.png`), one call after another; the result holds the image, as Claude Code's does |
 //! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
 //! | `recall` | lists the project's memory with `fctl memory` |
+//! | `recap` | says what its conversation held before the message: how many messages, and what the first one asked, read from the file it keeps as Claude Code does (`~/.claude/projects/<working directory>/<session>.jsonl`), so that a session that resumed elsewhere shows whether its conversation came along |
 //! | a line that starts with `ask <question>` | asks the people who follow the session `<question>` (to the end of its line) with `fctl ask`, offering the answers after each ` / ` in it to click (`ask Ship it today? / Yes / Not yet`), and ends its turn, as agents do when they need a person's input |
 //! | a line that starts with `fctl ticket` | runs it, as agents read and write their project's tickets (`fctl ticket view ENG-1`, `fctl ticket comment ENG-1 "On it"`) |
 //! | a line that starts with `fctl id-token` | runs it, as agents prove who they are to a service (`fctl id-token -a https://api.acme.dev --claims`) |
@@ -57,6 +58,12 @@
 //! (`replay.rs`) gets the turns it has written down instead: thoughts, text
 //! and tool calls, as Claude Code streams them, with the edits, commits
 //! and commands among them made for real in the working directory.
+//!
+//! Like Claude Code, it writes its conversation down as it goes, one JSON
+//! line a message, in `~/.claude/projects/<working directory, each
+//! character but letters and digits a ->/<session>.jsonl`: each user
+//! message as it came, and each turn's result. `--resume <session>` carries
+//! on with that file.
 //!
 //! Plan usage comes as Claude Code reports it after a response
 //! (`unifiedWindows` in a `rate_limit_event`): the five-hour and weekly
@@ -198,6 +205,41 @@ struct Session {
     /// Its system prompt asks a review agent to sum the pull request up in
     /// its description (`fctl review summarize`).
     summarizes: bool,
+    /// The file it writes its conversation down in, as Claude Code does.
+    conversation: Option<std::path::PathBuf>,
+}
+
+/// Where Claude Code keeps conversation `id` of the working directory:
+/// `~/.claude/projects/<the directory, each character but letters and
+/// digits a ->/<id>.jsonl`.
+fn conversation_file(id: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let cwd = std::env::current_dir().ok()?;
+    let dir: String = cwd
+        .display()
+        .to_string()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    Some(
+        std::path::Path::new(&home)
+            .join(".claude/projects")
+            .join(dir)
+            .join(format!("{id}.jsonl")),
+    )
+}
+
+/// The text of a message's content: a string, or its text blocks.
+fn content_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 /// A shell command Claude Code runs with `run_in_background`, or a
@@ -258,6 +300,63 @@ const SUBAGENT_REPORT: &str =
 impl Session {
     fn sleep(&self) {
         std::thread::sleep(self.delay);
+    }
+
+    /// Writes a `kind` message (`user`, `assistant`) down in its
+    /// conversation file, as Claude Code does.
+    fn write_down(&self, kind: &str, message: &Value) {
+        let Some(file) = &self.conversation else {
+            return;
+        };
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let line = json!({"type": kind, "sessionId": self.id, "uuid": uuid(), "message": message});
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+        {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+
+    /// What the user messages in its conversation file asked, oldest
+    /// first.
+    fn asked(&self) -> Vec<String> {
+        let Some(text) = self
+            .conversation
+            .as_ref()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+        else {
+            return Vec::new();
+        };
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v.get("type").and_then(Value::as_str) == Some("user"))
+            .map(|v| content_text(v.pointer("/message/content").unwrap_or(&Value::Null)))
+            .collect()
+    }
+
+    /// What its conversation held before the message it answers, as
+    /// `recap` says it.
+    fn recap(&self) -> String {
+        let asked = self.asked();
+        let before = asked.len().saturating_sub(1);
+        match asked.first() {
+            Some(first) if before > 0 => {
+                let first: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
+                let first = match first.char_indices().nth(80) {
+                    Some((i, _)) => format!("{}…", &first[..i]),
+                    None => first,
+                };
+                let messages = if before == 1 { "message" } else { "messages" };
+                format!(
+                    "This conversation holds {before} {messages} before this one. The first asked: “{first}”"
+                )
+            }
+            _ => "This conversation starts with this message: I have nothing earlier.".into(),
+        }
     }
 
     /// `system/session_state_changed`, when the state changes.
@@ -1150,6 +1249,10 @@ impl Session {
     /// since it `started`.
     fn result_took(&mut self, started: Instant, text: &str, subtype: &str, took: Option<Duration>) {
         self.turns += 1;
+        self.write_down(
+            "assistant",
+            &json!({"role": "assistant", "content": [{"type": "text", "text": text}]}),
+        );
         let ms = took.unwrap_or_else(|| started.elapsed()).as_millis() as u64;
         out(&json!({
             "type": "result", "subtype": subtype, "is_error": subtype != "success", "duration_ms": ms, "duration_api_ms": ms,
@@ -1422,6 +1525,10 @@ impl Session {
         }
         if says(&lower, "recall") {
             self.fctl(&["memory"], "Read the project's memory");
+        }
+        if says(&lower, "recap") {
+            let recap = self.recap();
+            self.stream_text(&recap);
         }
         if let Some(asked) = line_starting(text, "ask ") {
             let asked = asked.unwrap_or_else(|| "Shall I go on? / Yes / Not yet".into());
@@ -2157,7 +2264,9 @@ fn main() {
         playing: None,
         summarizes: arg("--append-system-prompt")
             .is_some_and(|p| p.contains("fctl review summarize")),
+        conversation: None,
     };
+    session.conversation = conversation_file(&session.id);
     // stdin is read on its own thread so interrupts arrive during a turn.
     let (tx, rx) = mpsc::channel::<Value>();
     let (turn_tx, turn_rx) = mpsc::channel::<Value>();
@@ -2254,16 +2363,9 @@ fn main() {
                 QUEUED_TURNS.fetch_sub(1, Ordering::SeqCst);
                 let text = v
                     .pointer("/message/content")
-                    .map(|c| match c {
-                        Value::String(s) => s.clone(),
-                        Value::Array(blocks) => blocks
-                            .iter()
-                            .filter_map(|b| b.get("text").and_then(Value::as_str))
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        _ => String::new(),
-                    })
+                    .map(content_text)
                     .unwrap_or_default();
+                session.write_down("user", v.get("message").unwrap_or(&Value::Null));
                 let images = v
                     .pointer("/message/content")
                     .and_then(Value::as_array)
