@@ -534,6 +534,7 @@ pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<
                             &AddClaudeTokenRequest {
                                 token,
                                 label: claude_label,
+                                made_at: None,
                             },
                         )
                         .await?

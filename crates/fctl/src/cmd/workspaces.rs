@@ -770,6 +770,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                             autopilots,
                             snapshots,
                             snapshot_days,
+                            claude_oversight: None,
+                            claude_limit_pauses: None,
+                            claude_admin_email: None,
                         },
                     )
                     .await?;

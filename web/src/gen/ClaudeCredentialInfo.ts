@@ -32,4 +32,23 @@ usage?: Array<PlanLimit>,
  * `kind` is `setup_token`, which older clients show it as. One per
  * person.
  */
-on_runners?: boolean, };
+on_runners?: boolean, 
+/**
+ * When Claude last answered it: a session's first answer from Claude,
+ * or a usage reading, either of which means Claude accepted it.
+ * Absent until a session runs on it, and from control planes before
+ * it.
+ */
+answered_at?: number, 
+/**
+ * For a long-lived token, `expires_at` is when it runs out: a year
+ * after `claude setup-token` made it. This says fctl counted the
+ * year from when the token was connected, as nobody said when it was
+ * made, so it runs out around then, maybe sooner.
+ */
+expiry_estimated?: boolean, 
+/**
+ * When fctl found it ended (`status` is `invalid`): Claude refused the
+ * token in sessions, or the login in renewing it.
+ */
+ended_at?: number, };

@@ -1283,6 +1283,10 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     max_workspaces,
                     snapshots,
                     max_snapshot_mb,
+                    claude_oversight: None,
+                    claude_limit_pauses: None,
+                    claude_instance_view: None,
+                    claude_refusals: None,
                 })
                 .await?;
             if json {

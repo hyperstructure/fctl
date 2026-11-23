@@ -221,6 +221,14 @@ struct ClaudeRow {
     created_at: i64,
     #[serde(deserialize_with = "crate::db::int")]
     updated_at: i64,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    expires_at: Option<i64>,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    made_at: Option<i64>,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    answered_at: Option<i64>,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    ended_at: Option<i64>,
     /// The id of the connection their sessions run on when they chose
     /// none: their newest working one (`api::sessions::credential_for`).
     newest: Option<String>,
@@ -253,8 +261,8 @@ pub async fn read(ctx: &Ctx, user_id: &str) -> AppResult<AdminUser> {
     .await?;
     let claude: Option<ClaudeRow> = q(
         &ctx.db,
-        "SELECT c.id, c.label, c.status, c.created_at, c.updated_at, \
-         (SELECT n.id FROM claude_credentials n WHERE n.user_id = c.user_id AND n.status = 'active' \
+        "SELECT c.id, c.label, c.status, c.created_at, c.updated_at, c.expires_at, c.made_at, \
+         c.answered_at, c.ended_at, (SELECT n.id FROM claude_credentials n WHERE n.user_id = c.user_id AND n.status = 'active' \
           ORDER BY n.created_at DESC LIMIT 1) AS newest \
          FROM claude_credentials c WHERE c.user_id = ? AND c.provisioned = 1 LIMIT 1",
         &[s(&user.id)],
@@ -296,17 +304,24 @@ pub async fn read(ctx: &Ctx, user_id: &str) -> AppResult<AdminUser> {
                 added_at: p.created_at,
             })
             .collect(),
-        claude: claude.map(|c| AdminClaudeToken {
-            is_default: default_id.as_ref().or(c.newest.as_ref()) == Some(&c.id),
-            id: CredentialId(c.id),
-            label: c.label,
-            status: if c.status == "active" {
-                CredentialStatus::Active
-            } else {
-                CredentialStatus::Invalid
-            },
-            created_at: c.created_at,
-            updated_at: c.updated_at,
+        claude: claude.map(|c| {
+            let active = c.status == "active";
+            AdminClaudeToken {
+                is_default: default_id.as_ref().or(c.newest.as_ref()) == Some(&c.id),
+                id: CredentialId(c.id),
+                label: c.label,
+                status: if active {
+                    CredentialStatus::Active
+                } else {
+                    CredentialStatus::Invalid
+                },
+                created_at: c.created_at,
+                updated_at: c.updated_at,
+                expires_at: c.expires_at,
+                expiry_estimated: c.made_at.is_none(),
+                answered_at: c.answered_at,
+                ended_at: c.ended_at.filter(|_| !active),
+            }
         }),
         user: user.to_user(),
     })

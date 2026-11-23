@@ -374,7 +374,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                     crate::prompt::read_secret("Paste the token (input hidden): ")?
                 }
             };
-            let me = api.add_claude_token(&token, None).await?;
+            let me = api.add_claude_token(&token, None, None).await?;
             if json {
                 return style::print_json(&me);
             }
