@@ -539,6 +539,9 @@ impl DurableObject for FleetObject {
                 Ok(b) => self.demand(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
+            (worker::Method::Post, "/demand-all") => {
+                self.demand_all().await.map(|d| serde_json::json!(d))
+            }
             (worker::Method::Post, "/pool-changed") => {
                 match req.json::<internal::PoolChanged>().await {
                     Ok(b) => {
@@ -2858,6 +2861,55 @@ impl FleetObject {
             unpooled,
             at: now,
         })
+    }
+
+    /// What every workspace's pools need now (`/demand-all`), for the
+    /// Prometheus endpoint: the workspaces that have pools, and those whose
+    /// sessions wait.
+    async fn demand_all(&self) -> std::result::Result<internal::AllDemand, ApiError> {
+        let db = self
+            .env
+            .d1("DB")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        #[derive(Deserialize)]
+        struct W {
+            workspace_id: String,
+        }
+        let pooled: Vec<W> = crate::db::q(
+            &db,
+            "SELECT DISTINCT workspace_id FROM enrollment_tokens",
+            &[],
+        )
+        .map_err(|e| e.0)?
+        .all()
+        .await
+        .map_err(|e| e.0)?;
+        let mut ids: std::collections::BTreeSet<String> =
+            pooled.into_iter().map(|w| w.workspace_id).collect();
+        let queued: Vec<String> = self
+            .sql
+            .exec("SELECT session_id, attempts FROM queue", None)
+            .and_then(|c| c.to_array::<QueueRow>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|q| q.session_id)
+            .collect();
+        if !queued.is_empty() {
+            let refs: Vec<&str> = queued.iter().map(String::as_str).collect();
+            let wants = spec::session_wants(&db, &refs).await.map_err(|e| e.0)?;
+            ids.extend(wants.into_values().map(|w| w.workspace_id));
+        }
+        let mut workspaces = Vec::new();
+        for id in ids.into_iter().filter(|id| !id.is_empty()) {
+            let d = self
+                .demand(internal::DemandOf {
+                    workspace_id: id.clone(),
+                    pools: None,
+                })
+                .await?;
+            workspaces.push((id, d));
+        }
+        Ok(internal::AllDemand { workspaces })
     }
 
     /// Whether the fleet gave the session to `runner_id`.

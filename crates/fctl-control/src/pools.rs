@@ -40,6 +40,64 @@ pub async fn demand_of(
     .await
 }
 
+/// `GET /api/v1/metrics`: every workspace's pools' demand in Prometheus's
+/// text format (`fctl_domain::pools::prometheus`), for the bearer token in
+/// `FCTL_METRICS_TOKEN`. A control plane whose deployment sets none has no
+/// metrics: the endpoint answers as if it weren't there. Counts only,
+/// with workspaces' slugs and pools' names.
+pub async fn metrics(env: &worker::Env, req: &worker::Request) -> worker::Result<worker::Response> {
+    let Some(token) = crate::config::metrics_token(env) else {
+        return Ok(crate::http::error_response(
+            &fctl_proto::ApiError::not_found("Endpoint"),
+        ));
+    };
+    let presented = crate::http::header(req, "Authorization")
+        .and_then(|h| h.strip_prefix("Bearer ").map(|t| t.trim().to_owned()))
+        .unwrap_or_default();
+    if !fctl_domain::tokens::constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+        let mut r = crate::http::error_response(&fctl_proto::ApiError::unauthorized());
+        let _ = r
+            .headers_mut()
+            .set("WWW-Authenticate", "Bearer realm=\"fctl metrics\"");
+        return Ok(r);
+    }
+    let text = match scrape(env).await {
+        Ok(text) => text,
+        Err(e) => return Ok(crate::http::error_response(&e.0)),
+    };
+    let mut r = worker::Response::ok(text)?;
+    let headers = r.headers_mut();
+    headers.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")?;
+    headers.set("Cache-Control", "no-store")?;
+    Ok(r)
+}
+
+/// Every workspace's pools' demand, by its slug, in Prometheus's format.
+async fn scrape(env: &worker::Env) -> AppResult<String> {
+    let stub = internal::fleet_stub(env)?;
+    let all: internal::AllDemand = internal::post(&stub, "/demand-all", &()).await?;
+    let db = env.d1("DB")?;
+    #[derive(Deserialize)]
+    struct W {
+        id: String,
+        slug: String,
+    }
+    let slugs: Vec<W> = q(&db, "SELECT id, slug FROM workspaces", &[])?
+        .all()
+        .await?;
+    let named: Vec<(&str, &WorkspaceDemand)> = all
+        .workspaces
+        .iter()
+        .filter_map(|(id, d)| {
+            slugs
+                .iter()
+                .find(|w| &w.id == id)
+                .map(|w| (w.slug.as_str(), d))
+        })
+        .collect();
+    Ok(fctl_domain::pools::prometheus(&named))
+}
+
 /// A pool that sessions whose project asks for its labels name as they
 /// wait.
 #[derive(Clone, Debug, PartialEq, Eq)]

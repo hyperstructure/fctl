@@ -76,6 +76,11 @@ pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<
     if path.starts_with(fctl_domain::id_tokens::ISSUER_PATH) {
         return id_tokens::serve(&env, &req, &path).await;
     }
+    // Runner pools' demand for Prometheus, with a token of its own
+    // (`FCTL_METRICS_TOKEN`), which no other endpoint takes.
+    if path == "/api/v1/metrics" && req.method() == Method::Get {
+        return pools::metrics(&env, &req).await;
+    }
     if !path.starts_with("/api/") {
         // Static assets are served before the Worker runs, unless the
         // instance takes only HTTPS (`run_worker_first` in its wrangler

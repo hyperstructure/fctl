@@ -390,6 +390,126 @@ fn wanted(pool: &Pool, running: u32, busy: u32, waiting: u32) -> u32 {
     pool.info.max_runners.map_or(want, |max| want.min(max))
 }
 
+// ───────────────────────────── Prometheus ─────────────────────────────
+
+/// Pools' demand in Prometheus's text format, for self-hosted control
+/// planes (`GET /api/v1/metrics`): each workspace by its slug, each pool
+/// by its name and its enrollment token's id. The same numbers as
+/// `fctl runners demand`.
+pub fn prometheus(workspaces: &[(&str, &fctl_proto::api::WorkspaceDemand)]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let mut family = |name: &str, help: &str, rows: &mut dyn Iterator<Item = (String, u64)>| {
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} gauge");
+        for (labels, value) in rows {
+            let _ = writeln!(out, "{name}{{{labels}}} {value}");
+        }
+    };
+    let pools = || {
+        workspaces.iter().flat_map(|(slug, d)| {
+            d.pools.iter().map(move |p| {
+                (
+                    format!(
+                        "workspace=\"{}\",pool=\"{}\",pool_id=\"{}\"",
+                        escape(slug),
+                        escape(&p.pool.name),
+                        escape(p.pool.id.as_str())
+                    ),
+                    p,
+                )
+            })
+        })
+    };
+    family(
+        "fctl_pool_runners",
+        "A pool's runners, by what they do now.",
+        &mut pools().flat_map(|(l, p)| {
+            let r = p.runners;
+            [
+                ("online", r.online),
+                ("draining", r.draining),
+                ("pending", r.pending),
+                ("starting", r.starting),
+                ("offline", r.offline),
+            ]
+            .into_iter()
+            .map(move |(state, n)| (format!("{l},state=\"{state}\""), u64::from(n)))
+        }),
+    );
+    family(
+        "fctl_pool_busy_runners",
+        "A pool's online runners that run a session.",
+        &mut pools().map(|(l, p)| (l, u64::from(p.runners.busy))),
+    );
+    family(
+        "fctl_pool_slots",
+        "Session slots on a pool's runners that take sessions: all of them, busy and free.",
+        &mut pools().flat_map(|(l, p)| {
+            let s = p.slots;
+            [("capacity", s.capacity), ("busy", s.busy), ("free", s.free)]
+                .into_iter()
+                .map(move |(state, n)| (format!("{l},state=\"{state}\""), u64::from(n)))
+        }),
+    );
+    family(
+        "fctl_pool_waiting_sessions",
+        "Sessions that wait for a runner and count towards a pool.",
+        &mut pools().map(|(l, p)| (l, u64::from(p.waiting.sessions))),
+    );
+    family(
+        "fctl_pool_oldest_wait_seconds",
+        "How long the session that has waited longest for a pool has waited.",
+        &mut pools().map(|(l, p)| {
+            let waited = p
+                .waiting
+                .since
+                .map_or(0, |since| (p.at - since).max(0) / 1000);
+            (l, u64::try_from(waited).unwrap_or(0))
+        }),
+    );
+    family(
+        "fctl_pool_wanted_runners",
+        "How many runners would run every session a pool runs and every one that counts towards it.",
+        &mut pools().map(|(l, p)| (l, u64::from(p.wanted))),
+    );
+    family(
+        "fctl_waiting_sessions",
+        "A workspace's sessions that wait for a runner, by why.",
+        &mut workspaces.iter().flat_map(|(slug, d)| {
+            d.waiting.reasons.iter().map(move |(reason, n)| {
+                (
+                    format!(
+                        "workspace=\"{}\",reason=\"{}\"",
+                        escape(slug),
+                        escape(reason)
+                    ),
+                    u64::from(*n),
+                )
+            })
+        }),
+    );
+    family(
+        "fctl_unpooled_sessions",
+        "A workspace's sessions that wait for a runner and that no pool could run.",
+        &mut workspaces.iter().map(|(slug, d)| {
+            (
+                format!("workspace=\"{}\"", escape(slug)),
+                u64::from(d.unpooled),
+            )
+        }),
+    );
+    out
+}
+
+/// A label value as Prometheus reads it: backslashes, quotes and line
+/// breaks escaped.
+fn escape(v: &str) -> String {
+    v.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,5 +869,44 @@ mod tests {
         }
         let (out, _, _) = demand(vec![mine], &[token_kept], 0);
         assert_eq!(out.first().map(|p| p.waiting.sessions), Some(1));
+    }
+
+    #[test]
+    fn pools_read_as_prometheus_metrics() {
+        let none: Vec<String> = vec![];
+        let pools = vec![pool(
+            "enr_large",
+            &["aws"],
+            Some(5),
+            Some(shape(4, 65_536)),
+            vec![up(2), Member::default()],
+        )];
+        let queue = [queued(&none, 40_000, "busy"), queued(&none, 70_000, "home")];
+        let (pools, waiting, unpooled) = demand(pools, &queue, 100_000);
+        let mut d = fctl_proto::api::WorkspaceDemand {
+            pools,
+            waiting,
+            unpooled,
+            at: 100_000,
+        };
+        if let Some(p) = d.pools.first_mut() {
+            p.pool.name = "AWS \"large\"".into();
+        }
+        let text = prometheus(&[("acme", &d)]);
+        let l = r#"workspace="acme",pool="AWS \"large\"",pool_id="enr_large""#;
+        for line in [
+            "# TYPE fctl_pool_runners gauge".to_owned(),
+            format!(r#"fctl_pool_runners{{{l},state="online"}} 1"#),
+            format!(r#"fctl_pool_runners{{{l},state="starting"}} 1"#),
+            format!("fctl_pool_busy_runners{{{l}}} 1"),
+            format!(r#"fctl_pool_slots{{{l},state="free"}} 2"#),
+            format!("fctl_pool_waiting_sessions{{{l}}} 1"),
+            format!("fctl_pool_oldest_wait_seconds{{{l}}} 60"),
+            format!("fctl_pool_wanted_runners{{{l}}} 1"),
+            r#"fctl_waiting_sessions{workspace="acme",reason="home"} 1"#.to_owned(),
+            r#"fctl_unpooled_sessions{workspace="acme"} 0"#.to_owned(),
+        ] {
+            assert!(text.lines().any(|t| t == line), "{line}\n{text}");
+        }
     }
 }

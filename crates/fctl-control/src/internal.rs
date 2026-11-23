@@ -295,6 +295,14 @@ pub struct DemandOf {
     pub pools: Option<Vec<String>>,
 }
 
+/// What every workspace's pools need now, by workspace id (`POST
+/// /demand-all`): the workspaces with pools, and those with sessions that
+/// wait.
+#[derive(Serialize, Deserialize, Default)]
+pub struct AllDemand {
+    pub workspaces: Vec<(String, fctl_proto::api::WorkspaceDemand)>,
+}
+
 /// A pool's labels, placement or name changed (`POST /pool-changed`): its
 /// runners carry them at once, feeds show them, and sessions that wait
 /// for its labels may start.
