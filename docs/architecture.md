@@ -1522,6 +1522,73 @@ message resumes them on other runners. When the host isn't connected,
 FleetDO stops its sessions at once and the CLI stops the sandboxes on the
 machine with the driver.
 
+A cloud that takes a machine away gives it a deadline: Spot's two
+minutes, an autoscaling group's lifecycle hook, Google Cloud's graceful
+shutdown, Azure's terminate notification, a pod's `preStop` hook and
+grace period. `fctl host drain --timeout 60s` (on Spot's two minutes)
+drains the runner and waits that long at most, then drains it with
+`stop_sessions`, as `fctl host uninstall --force` does, and waits up to a
+minute for the sessions to stop: the turns under way get the time there
+is, and every agent still pushes its work. Give it a minute less than the
+notice.
+
+### Machines that retire
+
+A machine in a pool that grows and shrinks takes itself away once its
+runner has run nothing for a while (`retire_idle_minutes` and
+`retire_command` in `host.toml`, `crates/fctl-host/src/retire.rs`,
+[ADR 0095](adr/0095-machines-retire-themselves-once-idle.md)), so
+that its autoscaler only ever adds machines, each protected from
+scale-in, and never removes a busy one:
+
+1. The daemon notes at each heartbeat whether anything runs or is about
+   to: sessions, starts that wait for an earlier run, Claude sign-ins,
+   chores on sandboxes, package caches being emptied. A runner that waits
+   for approval doesn't retire: its admins decide about it.
+2. Idle for the whole while, it drains the runner (`POST
+   /api/v1/runner/drain`), so that FleetDO sends it nothing more, and
+   looks again: a session FleetDO sent as it drained keeps it, and the
+   runner takes sessions again, unless someone else had drained it.
+3. Still idle, it runs `retire_command` with `sh -c`, for five minutes at
+   most. A command that fails (an autoscaling group at its minimum size,
+   wrong permissions) leaves the machine a runner that takes sessions
+   again and tries once more after another idle while: a machine never
+   leaves fctl without going away itself.
+4. Once the command worked, an enrolled runner leaves its workspace
+   (`DELETE /api/v1/runner`, as `fctl host uninstall` removes it), the
+   host forgets its token, uninstalls its service and stops. The machine
+   is marked retired (`retired` in its data directory) before the command
+   runs, and a stop signal waits until the runner has left, as `systemctl
+   poweroff` sends one as soon as it is under way; a command that fails
+   takes the mark back. Run otherwise, it waits for the machine to go
+   rather than exit, and `fctl host run` on a machine that retired waits
+   too, so that a unit or container that restarts it doesn't make it a
+   runner again: `fctl host install` does. A host that restarts before
+   its runner left (killed while the command ran, or the machine back from
+   a poweroff) finds `retiring.json` beside the mark: the retirement
+   stopped short, as when the command fails, and the mark goes. A runner
+   a person registered stays, drained. Without `retire_command`, it
+   leaves at once, and whatever ran the host takes the machine away.
+
+While it retires, the host declines the sessions FleetDO still sends it
+(resumes into the sandboxes it keeps), which then start elsewhere, and
+doesn't update itself. What it drained is kept in `retiring.json` in its
+data directory until the runner takes sessions again: a retirement that
+stops short (the drain's answer lost, a failed command, a restart) has
+the runner undrained, asked at every heartbeat until the control plane
+hears it, unless someone else had drained it.
+
+Sessions whose sandboxes the machine kept resume elsewhere as after any
+machine that goes: from the snapshots they saved as they stopped, with
+their conversation and the work their agents hadn't pushed
+([Session snapshots](#session-snapshots)). A host in a Kubernetes pod
+keeps its pod's `controller.kubernetes.io/pod-deletion-cost` at the
+number of sessions it runs (`crates/fctl-host/src/kube.rs`, `[kubernetes]
+pod_deletion_cost` in `host.toml`, on by default), patching its own pod
+with its service account's token, so that a Deployment that scales down
+removes the pods that run none first
+([Hosts in Kubernetes](self-hosting.md#hosts-in-kubernetes)).
+
 ### A runner that goes away
 
 A host that stops answering (a laptop gone to sleep, a host that hangs or

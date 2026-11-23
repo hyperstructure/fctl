@@ -1260,6 +1260,46 @@ any image a project chooses until its owner lists the ones it allows
 some (`allowed_builds`): set both on machines that run other people's
 projects ([Which images a host runs](sandbox-images.md#which-images-a-host-runs)).
 
+### Hosts in Kubernetes
+
+A host that runs in a pod, enrolled with an enrollment token from a
+secret, as one of a Deployment's replicas that something scales (KEDA,
+say), needs what its driver needs there: the `docker` driver a Docker
+daemon it reaches (`DOCKER_HOST`), for example. It keeps its pod's
+`controller.kubernetes.io/pod-deletion-cost`
+annotation at the number of sessions it runs, so that the Deployment,
+scaling down, removes the pods that run none first. That takes its
+service account permission to patch its own pod, and its name from the
+downward API (else it takes its hostname, which a pod's is):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: fctl-host, namespace: fctl }
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, patch]
+---
+# in the Deployment's pod template
+env:
+  - name: POD_NAME
+    valueFrom: { fieldRef: { fieldPath: metadata.name } }
+  - name: POD_NAMESPACE
+    valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+lifecycle:
+  preStop:
+    exec: { command: [fctl, host, drain, --timeout, 25m] }
+terminationGracePeriodSeconds: 1800
+```
+
+Bind the role to the pod's service account. A host whose service account
+may not patch its pod says so once in its log and stops trying;
+`pod_deletion_cost = false` under `[kubernetes]` in `host.toml` turns it
+off. The `preStop` hook drains the runner when the pod is to go, gives the
+turns under way 25 minutes, then stops what still runs, whose agents push
+their work, within the pod's 30.
+
 ## Notifications, published screenshots and identity tokens
 
 - **Notifications** need no setup and no push provider account: the control

@@ -100,4 +100,5 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0092](0092-projects-choose-how-long-stale-memory-notes-stay.md) | Projects choose how long stale memory notes stay |
 | [0093](0093-hosts-keep-sandboxes-off-cloud-metadata-services.md) | Hosts keep sandboxes off cloud metadata services |
 | [0094](0094-runner-pools-scale-with-the-sessions-that-wait-for-them.md) | Runner pools scale with the sessions that wait for them |
+| [0095](0095-machines-retire-themselves-once-idle.md) | Machines retire themselves once idle |
 | [0096](0096-sessions-keep-their-conversation-in-encrypted-snapshots.md) | Sessions keep their conversation in encrypted snapshots |

@@ -1080,6 +1080,7 @@ fctl host install --enroll fctl_et_…  # without signing in, as one of a worksp
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
 fctl host install --agent-as-root off # run fctl-agent as the sandbox's user, not root
+fctl host install --enroll fctl_et_… --retire-when-idle 20m --retire-command 'systemctl poweroff'   # a machine that goes once idle
 fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's id and sessions, whether it drains, and the autopilots that wake here
 fctl host doctor                 # check the configuration, tokens, connection, driver, sandboxes, images, disk and service
@@ -1094,6 +1095,7 @@ fctl host auto-update off        # or on; restarts the host service (sessions ke
 fctl host restart                # sessions keep running
 fctl host drain                  # take no new sessions; the ones here carry on
 fctl host drain --wait           # …and wait until none runs here
+fctl host drain --timeout 60s    # …for a minute at most, then stop what still runs (on Spot's two-minute notice)
 fctl host undrain                # take new sessions again
 fctl host uninstall              # sandboxes are kept; asks first when sessions run
 fctl host uninstall --wait       # drain, and uninstall once none runs
@@ -1107,6 +1109,31 @@ runner, where its sandbox has Claude's conversation. So the runner is empty
 whenever no turn runs, and `--wait` returns then. Admins can drain a runner
 too, from the runners list or with `fctl admin drain`; whoever drained it,
 either can stop the drain.
+
+`--timeout` (`60s`, `10m`, `1h`, up to `48h`; it implies `--wait`) is for a machine
+that a cloud takes away on a deadline: a Spot notice, an autoscaling
+group's lifecycle hook, a pod's `preStop`. The turns under way get that
+long to end; then the sessions that still run stop as `fctl host
+uninstall --force` stops them, their agents push their work, and a
+message resumes each on another runner. Stopping takes up to a minute
+more, so give it a minute less than the cloud gives the machine.
+
+A machine of a pool that grows and shrinks retires itself once its runner
+has run nothing for a while: `fctl host install --retire-when-idle 20m
+--retire-command '…'` (`retire_idle_minutes` and `retire_command` in
+`host.toml`). It drains, checks that nothing came meanwhile, runs the
+command, which takes the machine away (`aws autoscaling
+terminate-instance-in-auto-scaling-group --instance-id … --should-decrement-desired-capacity`,
+`gcloud compute instance-groups managed delete-instances …`, `systemctl
+poweroff`), and once that worked, leaves: an enrolled runner is removed,
+and the host service is uninstalled. Sessions the control plane still
+sends it meanwhile start elsewhere.
+A command that fails (an autoscaling group at its minimum size, say)
+leaves the machine a runner, which takes sessions again and tries once
+more after another idle while. `fctl host status` says how it retires.
+With every machine protected from scale-in, the autoscaler only ever adds
+machines, and never picks a busy one
+([Machines that retire](architecture.md#machines-that-retire)).
 
 An autopilot's own session wakes again by itself, on the runner that has
 its sandbox: `fctl host status` lists the autopilots whose next wake
@@ -1177,6 +1204,11 @@ max_build_mb = 20480     # the largest image a build may make
 auto_update = true       # update fctl to the version the control plane runs (false: `fctl self update`)
 agent_as_root = true     # fctl-agent as root in sandboxes, out of the agent's reach (false: as the sandbox's user)
 allow_cloud_metadata = false  # true: sandboxes reach the cloud's instance metadata service (169.254.169.254)
+retire_idle_minutes = 0  # once the runner has run nothing this long, drain, run retire_command and leave (0: never)
+# retire_command = "systemctl poweroff"   # what takes the machine away, with sh -c (unset: the host leaves and stops)
+
+[kubernetes]             # with the host in a Kubernetes pod
+pod_deletion_cost = true # keep the pod's deletion cost at its number of sessions, so that scaling down takes idle pods first
 
 [firecracker]            # with the firecracker driver
 # firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads

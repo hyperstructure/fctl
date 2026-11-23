@@ -12,14 +12,21 @@
 //! A host that updates itself follows the version the control plane says
 //! it runs in its welcome (`crate::update`), and restarts on the new fctl
 //! once no session is being started or stopped here.
+//!
+//! A machine that retires once idle (`retire_idle_minutes`) drains, runs
+//! its `retire_command` and leaves (`crate::retire`); one in a Kubernetes
+//! pod keeps its pod's deletion cost at its number of sessions
+//! (`crate::kube`).
 
 use crate::caches;
 use crate::claude_token;
 use crate::config::HostConfig;
 use crate::driver::{DiskSpot, Driver, SandboxInfo, sandbox_name, session_of, timed_out};
 use crate::expiry::{self, Why};
+use crate::kube;
 use crate::login::{self, LoginCmd};
 use crate::refresh;
+use crate::retire;
 use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Start};
 use crate::sysinfo;
 use crate::update;
@@ -105,6 +112,38 @@ pub struct Daemon {
     /// The drivers as the control plane last heard of them, in the hello
     /// or a heartbeat since: a heartbeat says them again once they change.
     drivers_said: Vec<DriverInfo>,
+    /// Since when nothing has run here, for a machine that retires once
+    /// idle (`retire_idle_minutes`).
+    idle: retire::Idle,
+    /// Where a retirement under way is.
+    retiring: Option<Retiring>,
+    /// A retirement that stopped short drained the runner, which takes
+    /// sessions again once the control plane hears so: until then, every
+    /// heartbeat asks again. `undraining`: an ask is under way.
+    owe_undrain: bool,
+    undraining: bool,
+    /// The Kubernetes pod this host runs in, whose deletion cost it keeps
+    /// at its number of sessions: `None` outside one, with
+    /// `pod_deletion_cost` off, and once the cluster refused.
+    pod: Option<Arc<kube::Pod>>,
+    /// The deletion cost it last set, whether it is setting one now, and,
+    /// after a failure, when it tries again.
+    pod_cost: Option<usize>,
+    pod_setting: bool,
+    pod_retry_at: Option<tokio::time::Instant>,
+    /// A stop signal waits: from when the retire command runs until the
+    /// runner has left and the machine is marked retired, as
+    /// `systemctl poweroff` sends one as soon as it is under way.
+    hold_stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Where a retirement is (`crate::retire`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Retiring {
+    /// The runner drains: nothing more comes.
+    Draining,
+    /// The retire command runs, with what was drained.
+    Running(retire::Drained),
 }
 
 /// A host that updates itself: where its fctl is, and the newer version
@@ -171,6 +210,25 @@ enum Chore {
     /// The driver this host uses became ready, or stopped being: the
     /// control plane hears it at once (`serve`).
     Drivers,
+    /// The runner drained for this machine to retire: what was drained,
+    /// and how many sessions the control plane says it runs; or why not,
+    /// with what was to be drained when the runner was known by then (the
+    /// drain may have happened all the same).
+    RetireDrained(Result<(retire::Drained, usize), (String, Option<retire::Drained>)>),
+    /// The retire command ran: what it printed, or why it failed.
+    RetireRan {
+        result: Result<String, String>,
+        drained: retire::Drained,
+    },
+    /// The runner takes sessions again after a retirement that stopped
+    /// short, or the control plane didn't hear it.
+    Undrained(Result<(), String>),
+    /// The pod's deletion cost was set to this, or setting it failed, and
+    /// whether it will fail every time.
+    PodCost(usize, Result<(), (String, bool)>),
+    /// The runner has left and the machine is marked retired: a stop
+    /// signal that waited ends the host now.
+    Left,
 }
 
 const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
@@ -260,6 +318,46 @@ impl Daemon {
         let (chores_tx, chores_rx) = mpsc::unbounded_channel();
         let mut update_check = tokio::time::interval(UPDATE_CHECK_EVERY);
         update_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        if ctx.cfg.retire_after().is_some() {
+            tracing::info!(
+                "retiring this machine once its runner has run nothing for {}{} (retire_idle_minutes in host.toml)",
+                fctl_domain::enrollment::minutes(ctx.cfg.retire_idle_minutes),
+                match &ctx.cfg.retire_command {
+                    Some(c) => format!(", with `{c}`"),
+                    None => String::new(),
+                }
+            );
+        }
+        let pod = ctx
+            .cfg
+            .kubernetes
+            .pod_deletion_cost
+            .then(kube::Pod::here)
+            .flatten()
+            .map(Arc::new);
+        if let Some(pod) = &pod {
+            tracing::info!(
+                "in pod {}: keeping its {} at the number of sessions here",
+                pod.name(),
+                kube::DELETION_COST
+            );
+        }
+        // A retirement a restart cut short: the runner takes sessions again,
+        // unless someone else had drained it.
+        let marker = retire::marker(&ctx.cfg.data_dir());
+        let owe_undrain = match retire::marked(&marker) {
+            Some(d) if !d.before => {
+                tracing::info!(
+                    "a retirement stopped short as the host restarted: the runner takes sessions again"
+                );
+                true
+            }
+            Some(_) => {
+                retire::unmark(&marker);
+                false
+            }
+            None => false,
+        };
         Ok(Self {
             ctx,
             sessions: HashMap::new(),
@@ -291,6 +389,15 @@ impl Daemon {
             waiting_for_approval: false,
             awake: None,
             drivers_said: Vec::new(),
+            idle: retire::Idle::default(),
+            retiring: None,
+            owe_undrain,
+            undraining: false,
+            pod,
+            pod_cost: None,
+            pod_setting: false,
+            pod_retry_at: None,
+            hold_stop: Arc::default(),
         })
     }
 
@@ -770,7 +877,288 @@ impl Daemon {
             Chore::Downloaded(ready) => self.downloaded(*ready),
             // `serve` sends them as it loops.
             Chore::Drivers => {}
+            Chore::RetireDrained(Ok((drained, sessions))) => {
+                // A sign-in that ended dropped what takes its codes.
+                self.logins.retain(|_, tx| !tx.is_closed());
+                if sessions == 0
+                    && self.sessions.is_empty()
+                    && self.pending_starts.is_empty()
+                    && self.logins.is_empty()
+                {
+                    self.run_retire_command(drained);
+                } else {
+                    tracing::info!("{}", retire::Kept::Busy.words());
+                    self.keep(Some(drained));
+                }
+            }
+            Chore::RetireDrained(Err((e, drained))) => {
+                tracing::warn!("{}", retire::Kept::Unreachable(e).words());
+                // The drain may have happened all the same.
+                self.keep(drained);
+            }
+            Chore::RetireRan {
+                result: Ok(said),
+                drained,
+            } => self.leave(said, drained),
+            Chore::RetireRan {
+                result: Err(why),
+                drained,
+            } => {
+                tracing::error!("{}", retire::Kept::Command(why).words());
+                let _ = std::fs::remove_file(retire::retired_marker(&self.ctx.cfg.data_dir()));
+                self.hold_stop
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.keep(Some(drained));
+            }
+            // It woke the loop, whose stop signal may go through now.
+            Chore::Left => {}
+            Chore::Undrained(result) => {
+                self.undraining = false;
+                match result {
+                    Ok(()) => {
+                        self.owe_undrain = false;
+                        retire::unmark(&retire::marker(&self.ctx.cfg.data_dir()));
+                    }
+                    Err(e) => tracing::warn!("taking sessions again: {e}; trying again"),
+                }
+            }
+            Chore::PodCost(n, result) => {
+                self.pod_setting = false;
+                match result {
+                    Ok(()) => {
+                        self.pod_cost = Some(n);
+                        self.pod_retry_at = None;
+                    }
+                    Err((why, true)) => {
+                        tracing::warn!(
+                            "can't set this pod's {} ({why}); not trying again",
+                            kube::DELETION_COST
+                        );
+                        self.pod = None;
+                    }
+                    Err((why, false)) => {
+                        tracing::warn!(
+                            "setting this pod's {}: {why}; trying again in a minute",
+                            kube::DELETION_COST
+                        );
+                        self.pod_retry_at = Some(tokio::time::Instant::now() + kube::RETRY_AFTER);
+                    }
+                }
+            }
         }
+    }
+
+    /// The control connection is up, after none: while it was down, no
+    /// heartbeat watched sessions start and end here, so a full idle while
+    /// counts from now.
+    fn connected(&mut self) {
+        self.idle.reset();
+    }
+
+    /// Whether a stop signal ends the host now: not while a retirement's
+    /// command has run and the runner hasn't left yet.
+    fn may_stop(&self) -> bool {
+        !self.hold_stop.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// An API client with the runner's token.
+    fn runner_api(&self) -> fctl_client::Api {
+        fctl_client::Api::new(&self.ctx.cfg.server, Some(self.ctx.token.clone()))
+    }
+
+    /// Every heartbeat: keeps the pod's deletion cost at the sessions here,
+    /// and starts retiring a machine that has run nothing for as long as
+    /// `retire_idle_minutes` says, which drains its runner first.
+    fn check_idle(&mut self) {
+        if let Some(pod) = self.pod.clone()
+            && !self.pod_setting
+            && self.pod_cost != Some(self.sessions.len())
+            && self
+                .pod_retry_at
+                .is_none_or(|at| tokio::time::Instant::now() >= at)
+        {
+            let n = self.sessions.len();
+            self.pod_setting = true;
+            let tx = self.chores_tx.clone();
+            tokio::spawn(async move {
+                let result = pod.set_deletion_cost(n).await;
+                let _ = tx.send(Chore::PodCost(n, result));
+            });
+        }
+        if self.owe_undrain && !self.undraining && self.retiring.is_none() {
+            self.undraining = true;
+            let api = self.runner_api();
+            let tx = self.chores_tx.clone();
+            tokio::spawn(async move {
+                let result = api
+                    .drain_this_runner(false, false)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(Chore::Undrained(result));
+            });
+        }
+        let Some(after) = self.ctx.cfg.retire_after() else {
+            return;
+        };
+        // A runner that waits for approval waits for its admins.
+        if self.retiring.is_some() || self.waiting_for_approval || self.owe_undrain {
+            return;
+        }
+        // A sign-in that ended dropped what takes its codes.
+        self.logins.retain(|_, tx| !tx.is_closed());
+        let busy = !self.sessions.is_empty()
+            || !self.pending_starts.is_empty()
+            || !self.busy.is_empty()
+            || !self.clearing.is_empty()
+            || !self.logins.is_empty();
+        if !self.idle.note(busy, tokio::time::Instant::now(), after) {
+            return;
+        }
+        tracing::info!(
+            "nothing has run here for {}: draining the runner to retire this machine",
+            fctl_domain::enrollment::minutes(self.ctx.cfg.retire_idle_minutes)
+        );
+        self.retiring = Some(Retiring::Draining);
+        let api = self.runner_api();
+        let tx = self.chores_tx.clone();
+        let marker = retire::marker(&self.ctx.cfg.data_dir());
+        tokio::spawn(async move {
+            let drained = async {
+                let before = api.this_runner().await.map_err(|e| (e.to_string(), None))?;
+                let d = retire::Drained {
+                    before: before.runner.drain.is_some(),
+                    enrolled: before.runner.workspace.is_some(),
+                };
+                // Before the drain, so that a restart finds it.
+                if let Err(e) = retire::mark(&marker, &d) {
+                    tracing::warn!("saving {}: {e}", marker.display());
+                }
+                let detail = api
+                    .drain_this_runner(true, false)
+                    .await
+                    .map_err(|e| (e.to_string(), Some(d)))?;
+                Ok((d, detail.sessions.len()))
+            }
+            .await;
+            let _ = tx.send(Chore::RetireDrained(drained));
+        });
+    }
+
+    /// The runner drained and nothing runs: the retire command takes the
+    /// machine away. Without one, it leaves at once.
+    fn run_retire_command(&mut self, drained: retire::Drained) {
+        self.retiring = Some(Retiring::Running(drained));
+        // Marked before the command, which may take the machine down at
+        // once: whatever starts the host again finds it retired, and
+        // waits. A command that fails takes the mark back.
+        let at = fctl_domain::account::iso8601(expiry::now_ms());
+        if let Err(e) = std::fs::write(retire::retired_marker(&self.ctx.cfg.data_dir()), &at) {
+            tracing::warn!("saving that this machine retires: {e}");
+        }
+        // A stop signal waits until the runner has left.
+        self.hold_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let command = self.ctx.cfg.retire_command.clone();
+        let tx = self.chores_tx.clone();
+        tokio::spawn(async move {
+            let result = match command {
+                Some(c) => {
+                    tracing::info!("retiring: running `{c}`");
+                    retire::run_command(&c, retire::COMMAND_LIMIT).await
+                }
+                None => Ok(String::new()),
+            };
+            let _ = tx.send(Chore::RetireRan { result, drained });
+        });
+    }
+
+    /// A retirement that didn't happen: the runner takes sessions again,
+    /// unless someone else drained it (`drained`: what was drained, when
+    /// the runner was known), asked at every heartbeat until the control
+    /// plane hears it; and the machine tries again once it has been idle
+    /// another while.
+    fn keep(&mut self, drained: Option<retire::Drained>) {
+        self.retiring = None;
+        self.idle.reset();
+        match drained {
+            Some(d) if !d.before => {
+                self.owe_undrain = true;
+                self.check_idle();
+            }
+            _ => retire::unmark(&retire::marker(&self.ctx.cfg.data_dir())),
+        }
+    }
+
+    /// The retire command worked: the runner leaves its workspace (an
+    /// enrolled one is removed, as `fctl host uninstall` removes it; one a
+    /// person registered stays, drained), the host forgets its token,
+    /// uninstalls its service, so that nothing starts it again, and stops,
+    /// while the machine goes.
+    fn leave(&mut self, said: String, drained: retire::Drained) {
+        if !said.is_empty() {
+            tracing::info!("retire_command said: {said}");
+        }
+        let api = self.runner_api();
+        let data_dir = self.ctx.cfg.data_dir();
+        let marker = retire::marker(&data_dir);
+        let command = self.ctx.cfg.retire_command.is_some();
+        let hold = self.hold_stop.clone();
+        let wake = self.chores_tx.clone();
+        tokio::spawn(async move {
+            if drained.enrolled {
+                let removed =
+                    tokio::time::timeout(Duration::from_secs(20), api.remove_this_runner())
+                        .await
+                        .unwrap_or_else(|_| Err(fctl_client::Error::Other("timed out".into())));
+                match removed {
+                    Ok(_) => {
+                        tracing::info!("retired: the runner left its workspace");
+                        // Gone before the token is: a host that restarts
+                        // finds this machine retired, not cut short.
+                        retire::unmark(&marker);
+                        if let Err(e) = HostConfig::remove_token() {
+                            tracing::warn!("removing the runner token: {e:#}");
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        "retired, but removing the runner failed ({e}): its enrollment token removes it once it has been offline long enough"
+                    ),
+                }
+            } else {
+                tracing::info!(
+                    "retired: the runner stays, drained, as one a person registered (`fctl host undrain` takes sessions again)"
+                );
+            }
+            retire::unmark(&marker);
+            // Nothing starts the host again, before anything ends it.
+            tracing::info!("uninstalling the host service");
+            let _ = tokio::task::spawn_blocking(crate::service::uninstall_unit).await;
+            // launchd keeps a loaded job alive whatever its plist says, so
+            // on macOS the job goes too before a stop signal may end the
+            // host; systemd's went with its unit.
+            if cfg!(target_os = "macos") {
+                let _ = tokio::task::spawn_blocking(crate::service::stop_unit).await;
+            }
+            // The runner is gone and the service with it: a stop signal
+            // that waited, or the one stopping the service sends, ends the
+            // host.
+            hold.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = wake.send(Chore::Left);
+            // Stopping the service ends this process, on the signal the
+            // runtime has to be free to take.
+            if !cfg!(target_os = "macos") {
+                let _ = tokio::task::spawn_blocking(crate::service::stop_unit).await;
+            }
+            // Still here: something else runs the host. One whose machine
+            // goes waits for that rather than exit, so that what restarts it
+            // doesn't; one with no command leaves that to what ran it.
+            if command {
+                tracing::info!("retired: waiting for the machine to go");
+                std::future::pending::<()>().await;
+            }
+            std::process::exit(0);
+        });
     }
 
     /// The control plane says it runs `version`, as the host connects: a
@@ -884,7 +1272,9 @@ impl Daemon {
         });
         // A sign-in that ended dropped what takes its codes.
         self.logins.retain(|_, tx| !tx.is_closed());
-        if changing || !self.busy.is_empty() {
+        if self.retiring.is_some() {
+            Some("this machine is no longer retiring".into())
+        } else if changing || !self.busy.is_empty() {
             Some("no sandbox is being made, stopped or removed here".into())
         } else if !self.pending_starts.is_empty() {
             Some("no session waits to start here".into())
@@ -1051,6 +1441,9 @@ impl Daemon {
             }
         }
         let h = session::spawn(self.ctx.clone(), Start::New(spec), self.events_tx.clone());
+        // Something runs: the idle while starts again, even should it end
+        // before the next heartbeat looks.
+        self.idle.reset();
         self.sessions.insert(id, h);
     }
 
@@ -1140,7 +1533,7 @@ impl Daemon {
         loop {
             let recovered = tokio::select! {
                 r = self.recover() => r,
-                _ = &mut shutdown => return Ok(()),
+                _ = &mut shutdown, if self.may_stop() => return Ok(()),
             };
             if recovered {
                 break;
@@ -1152,7 +1545,7 @@ impl Daemon {
             );
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
-                _ = &mut shutdown => return Ok(()),
+                _ = &mut shutdown, if self.may_stop() => return Ok(()),
             }
             wait = (wait * 2).min(Duration::from_secs(60));
         }
@@ -1169,7 +1562,7 @@ impl Daemon {
         loop {
             let connected = tokio::select! {
                 c = ws::connect(&url, Some(&self.ctx.token)) => c,
-                _ = &mut shutdown => return Ok(()),
+                _ = &mut shutdown, if self.may_stop() => return Ok(()),
             };
             match connected {
                 Ok(socket) => {
@@ -1193,7 +1586,7 @@ impl Daemon {
                     Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
                     _ = self.sweep.tick() => self.start_sweep(),
                     _ = self.update_check.tick(), if self.ready.is_some() => self.update_if_quiet(),
-                    _ = &mut shutdown => return Ok(()),
+                    _ = &mut shutdown, if self.may_stop() => return Ok(()),
                 }
             }
             backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -1206,6 +1599,7 @@ impl Daemon {
         shutdown: &mut oneshot::Receiver<()>,
     ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
+        self.connected();
         let hello = self.greet();
         ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(hello))).await?;
         let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
@@ -1247,8 +1641,9 @@ impl Daemon {
                 _ = heartbeat.tick() => {
                     let hb = self.heartbeat();
                     self.outbox.push_back(HostToFleet::Heartbeat(hb));
+                    self.check_idle();
                 }
-                _ = &mut *shutdown => {
+                _ = &mut *shutdown, if self.may_stop() => {
                     tracing::info!("shutting down; sessions keep running in their sandboxes");
                     std::process::exit(0);
                 }
@@ -1394,7 +1789,13 @@ impl Daemon {
             FleetToHost::Ping => self.outbox.push_back(HostToFleet::Pong),
             FleetToHost::StartSession { spec } => {
                 let id = spec.session_id.clone();
-                let error = self.start_session(spec).err();
+                // A machine that retires takes nothing more: the control
+                // plane starts it elsewhere.
+                let error = if self.retiring.is_some() {
+                    Some("This runner's machine is retiring: it takes no new sessions".to_owned())
+                } else {
+                    self.start_session(spec).err()
+                };
                 // Declined for its driver, which the session comes back to.
                 let unready = error.is_some()
                     && error
@@ -1443,6 +1844,19 @@ impl Daemon {
                 }
             }
             FleetToHost::ClaudeLoginStart { job_id, user } => {
+                // A machine that retires takes no sign-in either: the
+                // control plane passes it on to another runner.
+                if self.retiring.is_some() {
+                    self.outbox.push_back(HostToFleet::ClaudeLogin {
+                        job_id,
+                        update: ClaudeLoginUpdate::Failed {
+                            error: "This runner's machine is retiring: it takes no Claude sign-in"
+                                .into(),
+                            unready: Some(true),
+                        },
+                    });
+                    return;
+                }
                 let (tx, rx) = mpsc::unbounded_channel();
                 self.logins.insert(job_id.clone(), tx);
                 tracing::info!("starting a Claude sign-in for {}", user.name);
@@ -1743,7 +2157,8 @@ fn shutdown_signal() -> oneshot::Receiver<()> {
     rx
 }
 
-async fn signalled() {
+/// Signalled to stop: SIGTERM, or Ctrl-C (SIGINT).
+pub async fn signalled() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -1803,6 +2218,199 @@ mod tests {
 
     /// A process-driver daemon whose data directory has stopped session
     /// sandboxes, each stopped `minutes` ago.
+    /// A machine that retires once idle drains first, but only once
+    /// nothing has run for the whole while, never while a session runs, and
+    /// never while its runner waits for approval.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_machine_starts_retiring_once_nothing_ran_for_the_while() -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |c| {
+            c.retire_idle_minutes = 20;
+            c.retire_command = Some("true".into());
+            // Nothing answers: the drain fails, which keeps the runner.
+            c.server = "http://127.0.0.1:9".into();
+        })
+        .await?;
+        let minutes = |m: u64| tokio::time::advance(Duration::from_secs(m * 60));
+        d.check_idle();
+        minutes(19).await;
+        d.check_idle();
+        assert_eq!(d.retiring, None);
+        // Connected again after an outage, which no heartbeat watched: the
+        // while starts again.
+        d.connected();
+        minutes(2).await;
+        d.check_idle();
+        assert_eq!(d.retiring, None);
+        // A session in between starts the while again.
+        running(&mut d, "ses_1");
+        d.check_idle();
+        minutes(25).await;
+        d.check_idle();
+        assert_eq!(d.retiring, None);
+        d.sessions.clear();
+        d.check_idle();
+        minutes(10).await;
+        d.check_idle();
+        assert_eq!(d.retiring, None);
+        // Waiting for approval, it waits for its admins.
+        d.waiting_for_approval = true;
+        minutes(10).await;
+        d.check_idle();
+        assert_eq!(d.retiring, None);
+        d.waiting_for_approval = false;
+        d.check_idle();
+        assert_eq!(d.retiring, Some(Retiring::Draining));
+        // The control plane didn't answer before it knew the runner: it
+        // stays, and waits a while again.
+        d.on_chore(Chore::RetireDrained(Err(("unreachable".into(), None))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, false));
+        d.check_idle();
+        assert_eq!(d.retiring, None);
+        let ours = retire::Drained {
+            before: false,
+            enrolled: true,
+        };
+        // While it retires, sessions the control plane still sends are
+        // declined: it starts them elsewhere.
+        d.retiring = Some(Retiring::Draining);
+        d.on_fleet(FleetToHost::StartSession {
+            spec: spec("ses_late")?,
+        });
+        assert!(d.sessions.is_empty());
+        assert!(matches!(
+            d.outbox.back(),
+            Some(HostToFleet::StartResult {
+                accepted: false,
+                ..
+            })
+        ));
+        // So are Claude sign-ins, which the control plane passes on.
+        d.on_fleet(FleetToHost::ClaudeLoginStart {
+            job_id: LoginJobId("ljb_late".into()),
+            user: fctl_proto::session::UserRef {
+                id: fctl_proto::UserId("usr_ada".into()),
+                name: "Ada".into(),
+                avatar_url: None,
+            },
+        });
+        assert!(d.logins.is_empty());
+        assert!(matches!(
+            d.outbox.back(),
+            Some(HostToFleet::ClaudeLogin {
+                update: ClaudeLoginUpdate::Failed {
+                    unready: Some(true),
+                    ..
+                },
+                ..
+            })
+        ));
+        // The drain failed after the runner was known: it may have
+        // happened, so the runner takes sessions again, asked until heard.
+        d.on_chore(Chore::RetireDrained(Err(("timed out".into(), Some(ours)))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, true));
+        assert!(d.undraining);
+        d.on_chore(Chore::Undrained(Err("unreachable".into())));
+        assert!(d.owe_undrain && !d.undraining);
+        // It doesn't retire meanwhile, and asks again at the next beat.
+        minutes(30).await;
+        d.check_idle();
+        assert!(d.undraining && d.retiring.is_none());
+        d.on_chore(Chore::Undrained(Ok(())));
+        assert!(!d.owe_undrain);
+        // Drained with a session the control plane sent meanwhile: it stays.
+        d.retiring = Some(Retiring::Draining);
+        d.on_chore(Chore::RetireDrained(Ok((ours, 1))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, true));
+        d.on_chore(Chore::Undrained(Ok(())));
+        // So with a sign-in that began before it drained.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        d.logins.insert(LoginJobId("ljb_early".into()), tx);
+        d.retiring = Some(Retiring::Draining);
+        d.on_chore(Chore::RetireDrained(Ok((ours, 0))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, true));
+        d.on_chore(Chore::Undrained(Ok(())));
+        d.logins.clear();
+        // Drained and idle: the command runs.
+        let theirs = retire::Drained {
+            before: true,
+            enrolled: true,
+        };
+        d.retiring = Some(Retiring::Draining);
+        d.on_chore(Chore::RetireDrained(Ok((theirs, 0))));
+        assert_eq!(d.retiring, Some(Retiring::Running(theirs)));
+        // Marked retired before the command, which may take the machine
+        // down at once, and a stop signal waits meanwhile.
+        let data = d.ctx.cfg.data_dir();
+        assert!(retire::retired_marker(&data).exists());
+        assert!(!d.may_stop());
+        // It failed: the runner stays as drained as it was before, unmarked.
+        d.on_chore(Chore::RetireRan {
+            result: Err("exit 1".into()),
+            drained: theirs,
+        });
+        assert_eq!((d.retiring, d.owe_undrain), (None, false));
+        assert!(!retire::retired_marker(&data).exists());
+        assert!(d.may_stop());
+        Ok(())
+    }
+
+    /// A host that restarts in the middle of a retirement it drained the
+    /// runner for takes sessions again.
+    #[tokio::test]
+    async fn a_retirement_cut_short_by_a_restart_takes_sessions_again() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ours = retire::Drained {
+            before: false,
+            enrolled: true,
+        };
+        retire::mark(&retire::marker(dir.path()), &ours)?;
+        let cfg = HostConfig {
+            driver: "process".into(),
+            data_dir: Some(dir.path().to_owned()),
+            agent_bin: Some(dir.path().join("fctl-agent")),
+            server: "http://127.0.0.1:9".into(),
+            ..HostConfig::default()
+        };
+        let d = Daemon::new(cfg.clone(), "fctl_rt_test".into()).await?;
+        assert!(d.owe_undrain);
+        // Someone else had drained it: it stays drained.
+        retire::mark(
+            &retire::marker(dir.path()),
+            &retire::Drained {
+                before: true,
+                ..ours
+            },
+        )?;
+        let d = Daemon::new(cfg, "fctl_rt_test".into()).await?;
+        assert!(!d.owe_undrain);
+        assert_eq!(retire::marked(&retire::marker(dir.path())), None);
+        Ok(())
+    }
+
+    /// Outside a pod there is no deletion cost to keep; a refusal stops it
+    /// trying.
+    #[tokio::test]
+    async fn a_refused_pod_cost_stops_trying() -> Result<()> {
+        let (_dir, mut d) = daemon_with(&[]).await?;
+        assert!(d.pod.is_none());
+        d.check_idle();
+        assert!(!d.pod_setting);
+        d.pod_setting = true;
+        d.on_chore(Chore::PodCost(2, Ok(())));
+        assert_eq!((d.pod_cost, d.pod_setting), (Some(2), false));
+        // One that fails for now waits a minute before it tries again.
+        d.pod_setting = true;
+        d.on_chore(Chore::PodCost(3, Err(("503".into(), false))));
+        assert_eq!(d.pod_cost, Some(2));
+        assert!(
+            d.pod_retry_at
+                .is_some_and(|at| at > tokio::time::Instant::now())
+        );
+        d.on_chore(Chore::PodCost(3, Ok(())));
+        assert_eq!((d.pod_cost, d.pod_retry_at), (Some(3), None));
+        Ok(())
+    }
+
     async fn daemon_with(stopped: &[(&str, i64)]) -> Result<(tempfile::TempDir, Daemon)> {
         daemon_where(stopped, |_| {}).await
     }
