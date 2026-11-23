@@ -204,9 +204,13 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let session = SessionId("ses_1".into());
         let mut spool = Spool::start(dir.path(), &session, "snp_1")?;
-        spool.add(0, &STANDARD.encode(b"abc")).map_err(anyhow::Error::msg)?;
+        spool
+            .add(0, &STANDARD.encode(b"abc"))
+            .map_err(anyhow::Error::msg)?;
         assert!(spool.add(2, &STANDARD.encode(b"x")).is_err());
-        spool.add(1, &STANDARD.encode(b"def")).map_err(anyhow::Error::msg)?;
+        spool
+            .add(1, &STANDARD.encode(b"def"))
+            .map_err(anyhow::Error::msg)?;
         assert!(spool.add(2, "not base64!").is_err());
         spool.file.flush()?;
         assert_eq!(std::fs::read(&spool.path)?, b"abcdef");

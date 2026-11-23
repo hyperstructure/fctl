@@ -286,6 +286,15 @@ pub struct HomeSessions {
     pub sessions: Vec<String>,
 }
 
+/// A snapshot in a SessionDO (`/snapshot/commit`, `/snapshot/delete`):
+/// its id, and for a commit how many parts it has and their bytes.
+#[derive(Serialize, Deserialize)]
+pub struct SnapshotParts {
+    pub id: String,
+    pub parts: u32,
+    pub size: u64,
+}
+
 /// Asks FleetDO where a session's sandbox is, and whether a resume now
 /// would leave it (`POST /sandbox`).
 #[derive(Serialize, Deserialize)]

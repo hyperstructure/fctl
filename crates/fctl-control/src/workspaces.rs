@@ -53,7 +53,8 @@ pub const WORKSPACE_SELECT: &str = concat!(
     ") AS runner_ids, \
     (SELECT json_group_array(g.account) FROM workspace_github g WHERE g.workspace_id = w.id AND g.status = 'active') AS github, \
     pu.id AS primary_id, pu.name AS primary_name, pu.avatar_url AS primary_avatar, pu.status AS primary_status, \
-    w.autopilots AS autopilots, wa.project_id AS autopilot_project_id, wap.slug AS autopilot_project_slug, \
+    w.autopilots AS autopilots, w.snapshots AS snapshots, w.snapshot_days AS snapshot_days, \
+    wa.project_id AS autopilot_project_id, wap.slug AS autopilot_project_slug, \
     wap.name AS autopilot_project_name, wa.state AS autopilot_state, \
     CASE WHEN COALESCE(wm.role, '') IN ('owner', 'admin') \
       THEN (SELECT COUNT(*) FROM autopilot_asks k WHERE k.project_id = wa.project_id AND k.status = 'open') \
@@ -106,6 +107,11 @@ pub struct WorkspaceRow {
     /// Its admins let its projects have autopilots, and its own autopilot.
     #[serde(deserialize_with = "int_bool", default)]
     pub autopilots: bool,
+    /// Its sessions save snapshots, kept this many days (NULL: the default).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub snapshots: bool,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    pub snapshot_days: Option<i64>,
     #[serde(default)]
     pub autopilot_project_id: Option<String>,
     #[serde(default)]
@@ -206,6 +212,12 @@ impl WorkspaceRow {
             skip_invites: self.skip_invites,
             own_runners: self.own_runners,
             autopilots: self.autopilots,
+            snapshots: self.snapshots,
+            snapshot_days: Some(
+                self.snapshot_days
+                    .and_then(|d| u32::try_from(d).ok())
+                    .unwrap_or(fctl_domain::snapshots::DEFAULT_DAYS),
+            ),
             autopilot: self.autopilot(),
             service_accounts: crate::service_accounts::briefs(
                 self.service_accounts.as_deref(),

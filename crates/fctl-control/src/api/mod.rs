@@ -30,6 +30,7 @@ pub mod schedules;
 pub mod search;
 pub mod service_accounts;
 pub mod sessions;
+pub mod snapshots;
 pub mod tickets;
 pub mod tokens;
 pub mod two_factor;

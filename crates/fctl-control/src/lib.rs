@@ -37,6 +37,7 @@ mod reviews;
 mod schedules;
 mod service_accounts;
 mod slugs;
+mod snapshots;
 mod spec;
 mod starts;
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -456,6 +457,15 @@ async fn dispatch(
         }
         (Post, ["runner", "sessions", id, "published"]) => {
             api::published::runner_publish(ctx, req, id).await
+        }
+        (Put, ["runner", "sessions", id, "snapshots", snapshot, "parts", n]) => {
+            api::snapshots::put_part(ctx, req, id, snapshot, n).await
+        }
+        (Get, ["runner", "sessions", id, "snapshots", snapshot, "parts", n]) => {
+            api::snapshots::get_part(ctx, req, id, snapshot, n).await
+        }
+        (Post, ["runner", "sessions", id, "snapshots", snapshot]) => {
+            api::snapshots::commit(ctx, req, id, snapshot).await
         }
         (Get, ["feed", "ws"]) => api::runners::feed(ctx, req).await,
 

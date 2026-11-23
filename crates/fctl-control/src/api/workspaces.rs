@@ -228,6 +228,17 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         None => None,
     };
     let color = policy::stored_color(body.color, body.hex.as_deref())?;
+    if let Some(d) = body.snapshot_days
+        && !fctl_domain::snapshots::valid_days(d)
+    {
+        return Err(validation(
+            "snapshot_days",
+            &format!(
+                "Keep snapshots 1 to {} days",
+                fctl_domain::snapshots::MAX_DAYS
+            ),
+        ));
+    }
     if let Some(on) = body.require_two_factor {
         policy::check_two_factor(&ctx.settings(), on)?;
     }
@@ -247,7 +258,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         &ctx.db,
         "UPDATE workspaces SET name = COALESCE(?, name), slug = COALESCE(?, slug), color = COALESCE(?, color), \
          base_role = COALESCE(?, base_role), require_two_factor = COALESCE(?, require_two_factor), \
-         skip_invites = COALESCE(?, skip_invites), autopilots = COALESCE(?, autopilots), updated_at = ? WHERE id = ?",
+         skip_invites = COALESCE(?, skip_invites), autopilots = COALESCE(?, autopilots), \
+         snapshots = COALESCE(?, snapshots), snapshot_days = COALESCE(?, snapshot_days), updated_at = ? WHERE id = ?",
         &[
             os(name.as_deref()),
             os(slug.as_deref()),
@@ -256,6 +268,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             body.require_two_factor.map_or(crate::db::null(), crate::db::b),
             body.skip_invites.map_or(crate::db::null(), crate::db::b),
             body.autopilots.map_or(crate::db::null(), crate::db::b),
+            body.snapshots.map_or(crate::db::null(), crate::db::b),
+            crate::db::on(body.snapshot_days.map(i64::from)),
             n(ctx.now),
             s(a.id()),
         ],

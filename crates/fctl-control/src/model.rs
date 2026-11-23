@@ -1003,6 +1003,8 @@ impl SessionRow {
                         name: self.service_account_name.clone(),
                     }
                 }),
+                // Only GET /api/v1/sessions/{id} says it.
+                snapshot: None,
             };
         fctl_domain::pulls::backfill(&mut s);
         s

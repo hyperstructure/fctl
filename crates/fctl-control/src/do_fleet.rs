@@ -20,8 +20,8 @@ use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
     ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_DRIVERS, FEATURE_REVIEWS,
-    FEATURE_TRIAGE, FleetToHost, HostHello, HostSessionReport, HostToFleet, RunnerClaudeToken,
-    SandboxLimits, StopReason,
+    FEATURE_SNAPSHOTS, FEATURE_TRIAGE, FleetToHost, HostHello, HostSessionReport, HostToFleet,
+    RunnerClaudeToken, SandboxLimits, StopReason,
 };
 use fctl_proto::session::{GithubAccess, RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -2325,7 +2325,9 @@ impl FleetObject {
             } else {
                 self.home_of(&item.session_id)
             };
-            let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
+            // With a snapshot, a resume starts elsewhere as it was rather
+            // than wait for its busy home (`crate::snapshots`).
+            let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS && !want.snapshot;
             let picked = self.pick_runner(&want, home.as_deref(), wait);
             let (runner_id, runner_name) = match picked {
                 Ok(r) => r,
@@ -2343,6 +2345,10 @@ impl FleetObject {
             let spec = match built {
                 Ok(mut s) => {
                     s.run_id = Some(fctl_domain::ids::new_id("run", now));
+                    // Hosts that don't restore snapshots get none, and save none.
+                    if !self.host_has(&runner_id, FEATURE_SNAPSHOTS) {
+                        s.snapshot = None;
+                    }
                     // Hosts from before triage can't read a spec that has it.
                     if let Some(g @ GithubAccess::Triage) = s.github_access {
                         s.github_access = Some(fctl_domain::limits::for_host(
