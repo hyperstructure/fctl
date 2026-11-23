@@ -19,17 +19,35 @@ use tokio::sync::mpsc;
 /// ended anyway.
 pub const UPLOAD_LIMIT: Duration = Duration::from_secs(10 * 60);
 
-/// A snapshot whose parts come from the agent, spooled to a file.
+/// How long a stop waits for an agent that saves a snapshot as it stops,
+/// rather than the minute others get: its turn's grace, its push, then
+/// the snapshot.
+pub const STOP_SAVING: Duration = Duration::from_secs(3 * 60);
+
+/// How long a stop waits after each part of a snapshot, while they come.
+pub const STOP_PER_PART: Duration = Duration::from_secs(60);
+
+/// A snapshot whose parts come from the agent, spooled to a file, at most
+/// `limit` bytes: an agent runs what the session runs, which mustn't fill
+/// the disk the runner's other sandboxes share.
 pub struct Spool {
     pub id: String,
     path: PathBuf,
     file: std::fs::File,
     next: u32,
+    bytes: u64,
+    limit: u64,
 }
 
 impl Spool {
-    /// Starts spooling snapshot `id` of `session` under `data_dir`.
-    pub fn start(data_dir: &Path, session: &SessionId, id: &str) -> std::io::Result<Self> {
+    /// Starts spooling snapshot `id` of `session` under `data_dir`, for a
+    /// snapshot of at most `max_bytes`, as the session's spec allows.
+    pub fn start(
+        data_dir: &Path,
+        session: &SessionId,
+        id: &str,
+        max_bytes: u64,
+    ) -> std::io::Result<Self> {
         let dir = data_dir.join("snapshots");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}-{id}", session.as_str()));
@@ -38,6 +56,8 @@ impl Spool {
             file: std::fs::File::create(&path)?,
             path,
             next: 0,
+            bytes: 0,
+            limit: max_bytes.saturating_add(SNAPSHOT_PART_BYTES as u64),
         })
     }
 
@@ -49,6 +69,13 @@ impl Spool {
         let bytes = STANDARD
             .decode(data.as_bytes())
             .map_err(|e| format!("part {n} isn't base64: {e}"))?;
+        self.bytes += bytes.len() as u64;
+        if self.bytes > self.limit {
+            return Err(format!(
+                "it passed the {} bytes its spec allows",
+                self.limit - SNAPSHOT_PART_BYTES as u64
+            ));
+        }
         self.file
             .write_all(&bytes)
             .map_err(|e| format!("spooling it failed: {e}"))?;
@@ -69,18 +96,25 @@ pub fn upload(
     session: SessionId,
     spool: Spool,
     saved: SnapshotSaved,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::JoinHandle<Result<(), String>> {
     tokio::spawn(async move {
         let Spool { id, path, file, .. } = spool;
         drop(file);
-        match upload_parts(&api, &session, &id, &path, &saved).await {
-            Ok(parts) => tracing::info!(
-                "saved {session}'s snapshot ({} bytes, {parts} parts)",
-                saved.size
-            ),
-            Err(e) => tracing::warn!("saving {session}'s snapshot: {e}"),
-        }
+        let done = match upload_parts(&api, &session, &id, &path, &saved).await {
+            Ok(parts) => {
+                tracing::info!(
+                    "saved {session}'s snapshot ({} bytes, {parts} parts)",
+                    saved.size
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!("saving {session}'s snapshot: {e}");
+                Err(e)
+            }
+        };
         let _ = std::fs::remove_file(&path);
+        done
     })
 }
 
@@ -203,7 +237,7 @@ mod tests {
     fn parts_spool_in_order_only() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let session = SessionId("ses_1".into());
-        let mut spool = Spool::start(dir.path(), &session, "snp_1")?;
+        let mut spool = Spool::start(dir.path(), &session, "snp_1", 1_000)?;
         spool
             .add(0, &STANDARD.encode(b"abc"))
             .map_err(anyhow::Error::msg)?;
@@ -217,6 +251,25 @@ mod tests {
         let path = spool.path.clone();
         spool.discard();
         assert!(!path.exists());
+        Ok(())
+    }
+
+    /// An agent can't spool more than its spec allows, and a part over it
+    /// leaves nothing more to add to.
+    #[test]
+    fn a_spool_stops_at_its_limit() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let session = SessionId("ses_1".into());
+        let part = vec![7u8; SNAPSHOT_PART_BYTES];
+        let mut spool = Spool::start(dir.path(), &session, "snp_2", 10)?;
+        // Its limit and one part's room for what seals it.
+        spool
+            .add(0, &STANDARD.encode(&part))
+            .map_err(anyhow::Error::msg)?;
+        let over = spool.add(1, &STANDARD.encode(b"0123456789a"));
+        assert!(over.is_err_and(|e| e.contains("10 bytes")));
+        spool.discard();
+        assert_eq!(std::fs::read_dir(dir.path().join("snapshots"))?.count(), 0);
         Ok(())
     }
 }
