@@ -261,6 +261,23 @@ pub struct SessionWants {
     pub on_runners: bool,
     /// It is a review agent's session: only runners that run them take it.
     pub review: bool,
+    /// The labels its project asks of a runner (`runner_labels`): only
+    /// runners with them all take it, until it has waited
+    /// `fallback_minutes`, when there are some.
+    pub labels: Vec<String>,
+    pub fallback_minutes: Option<u32>,
+}
+
+impl SessionWants {
+    /// The labels a runner needs to take it at `now`, when it has waited
+    /// since `waiting_since`: its project's, or none once it has waited as
+    /// long as its project lets it wait for them.
+    pub fn labels_at(&self, waiting_since: i64, now: i64) -> &[String] {
+        match self.fallback_minutes {
+            Some(m) if now - waiting_since >= i64::from(m) * 60_000 => &[],
+            _ => &self.labels,
+        }
+    }
 }
 
 /// The CPUs, memory and image each of these sessions asks for (its
@@ -316,6 +333,8 @@ pub async fn session_wants(
                 own_runners: r.own_runners,
                 on_runners: r.on_runners,
                 review: r.review,
+                labels: settings.runner_labels.clone(),
+                fallback_minutes: settings.runner_fallback_minutes,
             };
             (r.id, wants)
         })
@@ -604,6 +623,9 @@ async fn review_spec(
         cpus: p.cpus,
         memory_mb: p.memory_mb,
         idle_timeout_minutes: Some(1),
+        // Where its project's sessions run.
+        runner_labels: p.runner_labels.clone(),
+        runner_fallback_minutes: p.runner_fallback_minutes,
         auto_pull_request: false,
         pull_request_descriptions: Default::default(),
         // It opens none: empty, they say nothing.

@@ -20,6 +20,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+use std::collections::BTreeMap;
 
 // ───────────────────────────── instance ─────────────────────────────
 
@@ -2391,7 +2392,15 @@ pub struct Runner {
     pub allowed_images: Option<Vec<String>>,
     /// The repositories it builds images from. Absent: none.
     pub allowed_builds: Option<Vec<String>>,
+    /// Its labels: those of its pool ([`EnrollmentToken::labels`]) and
+    /// those its host sets in `host.toml`. Projects that ask for labels
+    /// (`ProjectSettings::runner_labels`) run only on runners with them all.
     pub labels: Vec<String>,
+    /// The pool it is in: the enrollment token it enrolled with, whose
+    /// labels it carries and whose placement it follows. Absent for
+    /// runners that were registered rather than enrolled, once that token
+    /// is deleted, and from control planes before pools.
+    pub pool: Option<RunnerPool>,
     pub last_seen_at: Option<Millis>,
     pub created_at: Millis,
     pub created_by: Option<UserRef>,
@@ -2476,6 +2485,14 @@ pub struct RunnerEnrollment {
     pub location: Option<String>,
 }
 
+/// The pool a runner is in: the enrollment token it enrolled with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RunnerPool {
+    pub id: EnrollmentTokenId,
+    pub name: String,
+}
+
 /// What a host says about its machine as it enrolls, before its first
 /// hello: the runners list shows it until the host connects.
 #[skip_serializing_none]
@@ -2534,6 +2551,15 @@ pub struct EnrollmentInfo {
     /// The runners it enrolled that are still there.
     pub runners: u32,
     pub remove_offline_after_minutes: Option<u32>,
+    /// The labels the runners it enrolls carry ([`EnrollmentToken::labels`]).
+    /// Absent (none) from control planes before pools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub labels: Vec<String>,
+    /// Absent (spread) from control planes before pools.
+    #[serde(default, deserialize_with = "spread_if_unknown")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Placement>", optional))]
+    pub placement: Placement,
 }
 
 /// A workspace's enrollment token: machines that autoscaling creates, or
@@ -2579,6 +2605,61 @@ pub struct EnrollmentToken {
     pub runners: u32,
     /// Of those, the ones that wait for approval.
     pub pending: u32,
+    /// The labels every runner it enrolls carries, beside those its host
+    /// sets in `host.toml`: its runners are a pool, which projects choose
+    /// by these labels (`ProjectSettings::runner_labels`). The control
+    /// plane takes them from the token, never from a host, so no machine
+    /// joins a pool it didn't enroll in. Absent (none) from control planes
+    /// before pools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub labels: Vec<String>,
+    /// How its runners take the sessions that more than one of them
+    /// could run. Absent (spread) from control planes before pools.
+    #[serde(default, deserialize_with = "spread_if_unknown")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Placement>", optional))]
+    pub placement: Placement,
+}
+
+/// How a pool's runners (an enrollment token's) take the sessions that
+/// more than one of them could run: the session's home runner, its size
+/// and its image come first either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    /// The least busy runner with room: sessions spread across the pool,
+    /// as on runners that aren't in one.
+    #[default]
+    Spread,
+    /// The busiest runner that still has room: sessions fill one runner
+    /// before the next, so that in a pool that grows and shrinks some
+    /// runners empty out and can go. Runners that spread take a session
+    /// before ones that pack it, so that a fixed fleet runs what it can
+    /// before a pool that grows adds machines.
+    Packed,
+}
+
+impl Placement {
+    pub const ALL: [Self; 2] = [Self::Spread, Self::Packed];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Spread => "spread",
+            Self::Packed => "packed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == s.trim())
+    }
+}
+
+/// A [`Placement`] that a newer version may have stored or sent, which
+/// reads as spread when this version doesn't know it.
+fn spread_if_unknown<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Placement, D::Error> {
+    let v: Option<String> = Option::deserialize(d)?;
+    Ok(v.and_then(|v| Placement::parse(&v)).unwrap_or_default())
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2607,6 +2688,28 @@ pub struct CreateEnrollmentTokenRequest {
     pub approval: Option<bool>,
     /// See [`EnrollmentToken::remove_offline_after_minutes`].
     pub remove_offline_after_minutes: Option<u32>,
+    /// See [`EnrollmentToken::labels`]. Absent: none.
+    pub labels: Option<Vec<String>>,
+    /// See [`EnrollmentToken::placement`]. Absent: packed for a token that
+    /// removes offline runners, whose pool grows and shrinks, else spread
+    /// (`fctl_domain::pools::default_placement`).
+    pub placement: Option<Placement>,
+}
+
+/// `PATCH /api/v1/workspaces/{id}/enrollment-tokens/{token}`: changes a
+/// pool as it runs, for those who may revoke its token. Its runners carry
+/// the new labels and placement at once. Absent fields stay as they are.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateEnrollmentTokenRequest {
+    pub name: Option<String>,
+    /// Replaces its labels; empty takes them all away.
+    pub labels: Option<Vec<String>>,
+    pub placement: Option<Placement>,
+    /// The most runners it keeps enrolled at once; 0 for no limit. Fewer
+    /// than it has removes none: it enrolls no more until some go.
+    pub max_runners: Option<u32>,
 }
 
 /// A new enrollment token, with its secret (`fctl_et_…`), shown once.
@@ -2721,6 +2824,155 @@ pub struct RunnerAutopilot {
     pub scope: crate::autopilot::AutopilotScope,
     /// When fctl wakes it next, unless something needs it sooner.
     pub wake_at: Option<Millis>,
+}
+
+/// What a pool needs now, for whatever scales it: `GET
+/// /api/v1/runner/enroll/demand` with its enrollment token, and each pool
+/// of `GET /api/v1/workspaces/{id}/runners/demand`. Counts only, never
+/// sessions, projects or people: its token's holder learns nothing they
+/// couldn't learn by running the pool.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PoolDemand {
+    pub pool: PoolInfo,
+    pub runners: PoolRunners,
+    pub slots: PoolSlots,
+    pub waiting: PoolWaiting,
+    /// How many runners would run every session its runners run and every
+    /// one that waits that it could run, at the capacity its runners
+    /// announce, within its `max_runners`: what to scale it to. KEDA's
+    /// metrics-api scaler reads it with `valueLocation: wanted`.
+    pub wanted: u32,
+    /// What its runners announced last, which `wanted` and `waiting`
+    /// count with while none is online, so that it scales up from none.
+    /// Absent until a runner of it has connected.
+    pub shape: Option<PoolShape>,
+    /// When the control plane counted.
+    pub at: Millis,
+}
+
+/// A pool: an enrollment token and the runners it enrolled.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PoolInfo {
+    /// Its enrollment token's id and name.
+    pub id: EnrollmentTokenId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub labels: Vec<String>,
+    #[serde(default, deserialize_with = "spread_if_unknown")]
+    pub placement: Placement,
+    /// The most runners it may have at once. Absent: no limit.
+    pub max_runners: Option<u32>,
+    /// For a token its maker made for their own sessions: them, whose
+    /// sessions alone its runners run.
+    pub owner: Option<UserRef>,
+    /// Its token enrolls no more runners: revoked or expired. The runners
+    /// it enrolled stay in it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub closed: bool,
+}
+
+/// A pool's runners, by what they do now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PoolRunners {
+    /// Connected and taking sessions: approved, not draining, with a
+    /// driver that is ready.
+    pub online: u32,
+    /// Of those, the ones that run a session.
+    pub busy: u32,
+    /// Connected and draining: they take no new sessions.
+    pub draining: u32,
+    /// Enrolled, and waiting for approval.
+    pub pending: u32,
+    /// Enrolled and never connected yet: machines on their way up.
+    pub starting: u32,
+    /// Connected before, and not now.
+    pub offline: u32,
+}
+
+/// A pool's sessions slots, on its runners that take sessions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PoolSlots {
+    /// The most sessions they run at once, together.
+    pub capacity: u32,
+    /// The sessions its runners run now, draining ones' too.
+    pub busy: u32,
+    /// The sessions they could start now.
+    pub free: u32,
+}
+
+/// Sessions that wait for a runner.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PoolWaiting {
+    /// How many. A pool counts those it could run that no other pool
+    /// counts first (`fctl_domain::pools`).
+    pub sessions: u32,
+    /// Since when the one that has waited longest has.
+    pub since: Option<Millis>,
+    /// How many wait for each reason (`fctl_domain::schedule::Wait::kind`):
+    /// `busy`, `no_runner`, `labels`, `too_big`, `driver`…
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<BTreeMap<String, u32>>", optional))]
+    pub reasons: BTreeMap<String, u32>,
+}
+
+/// What a pool's runners announced last: each of a pool's machines is
+/// alike, as an autoscaler makes them.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PoolShape {
+    /// The most sessions one runner runs at once.
+    pub capacity: u32,
+    /// The machine's CPUs and memory (MiB).
+    pub cpus: u32,
+    pub memory_mb: u64,
+    /// What it gives each sandbox.
+    pub sandbox: Option<SandboxLimits>,
+    pub image: Option<String>,
+    pub allowed_images: Option<Vec<String>>,
+    pub allowed_builds: Option<Vec<String>>,
+    pub driver: String,
+    pub version: String,
+    /// The labels its host sets in `host.toml`, beside the pool's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub labels: Vec<String>,
+    /// It runs review agents' sessions (`fctl_proto::runner::FEATURE_REVIEWS`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub reviews: bool,
+    /// Its host keeps its owner's Claude token, for a pool its maker made
+    /// for their own sessions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub keeps_token: bool,
+    /// When a runner of the pool said it.
+    pub seen_at: Millis,
+}
+
+/// `GET /api/v1/workspaces/{id}/runners/demand`: the workspace's pools
+/// that the caller manages, as their enrollment tokens: every one for its
+/// admins and its service accounts, a member's own for them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WorkspaceDemand {
+    pub pools: Vec<PoolDemand>,
+    /// Every session of the workspace that waits for a runner, a pool or
+    /// not.
+    pub waiting: PoolWaiting,
+    /// Of those, the ones no pool could run.
+    pub unpooled: u32,
+    pub at: Millis,
 }
 
 /// A session a runner runs.

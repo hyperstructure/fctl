@@ -15,7 +15,8 @@ use fctl_domain::verify::Sensitive;
 use fctl_domain::workspace as policy;
 use fctl_proto::api::{
     CreateEnrollmentTokenRequest, CreatedEnrollmentToken, EnrollRunnerRequest, EnrollmentInfo,
-    EnrollmentToken, EnrollmentTokenList, RunnerRegistration,
+    EnrollmentToken, EnrollmentTokenList, Placement, RunnerRegistration,
+    UpdateEnrollmentTokenRequest,
 };
 use fctl_proto::session::{UserRef, WorkspaceRef};
 use fctl_proto::{ApiError, EnrollmentTokenId, ErrorCode, UserId};
@@ -62,10 +63,16 @@ struct TokenRow {
     runners: i64,
     #[serde(deserialize_with = "int", default)]
     pending: i64,
+    /// Its runners' labels (JSON) and placement: they are a pool.
+    #[serde(default)]
+    labels: Option<String>,
+    #[serde(default)]
+    placement: Option<String>,
 }
 
 const TOKEN_SELECT: &str = "SELECT t.id, t.workspace_id, t.name, t.personal, t.approval, t.max_runners, \
     t.remove_offline_after_minutes, t.expires_at, t.created_by, cu.name AS creator_name, t.created_at, \
+    t.labels, t.placement, \
     EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = t.workspace_id \
       AND m.user_id = t.created_by AND cu.status = 'active') AS maker_member, \
     EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = t.workspace_id \
@@ -108,7 +115,20 @@ impl TokenRow {
             revoked_by: user_ref(&self.revoked_by, &self.revoker_name),
             runners: count(Some(self.runners)).unwrap_or_default(),
             pending: count(Some(self.pending)).unwrap_or_default(),
+            labels: self.labels(),
+            placement: self.placement(),
         }
+    }
+
+    fn labels(&self) -> Vec<String> {
+        crate::model::pool_labels(self.labels.as_deref())
+    }
+
+    fn placement(&self) -> Placement {
+        self.placement
+            .as_deref()
+            .and_then(Placement::parse)
+            .unwrap_or_default()
     }
 
     /// The person whose runners it enrolls, for a token for its maker's
@@ -207,7 +227,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     q(
         &ctx.db,
         "INSERT INTO enrollment_tokens (id, workspace_id, name, token_hash, personal, approval, max_runners, \
-         remove_offline_after_minutes, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         remove_offline_after_minutes, expires_at, created_by, created_at, labels, placement) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(token_id.as_str()),
             s(a.id()),
@@ -220,6 +241,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             on(new.expires_at),
             s(&user),
             n(ctx.now),
+            os(labels_json(&new.labels).as_deref()),
+            s(new.placement.as_str()),
         ],
     )?
     .run()
@@ -235,6 +258,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             "max_runners": new.max_runners,
             "remove_offline_after_minutes": new.remove_offline_after_minutes,
             "expires_at": new.expires_at,
+            "labels": new.labels,
+            "placement": new.placement,
         })),
     );
     let row = token_row(ctx, a.id(), token_id.as_str()).await?;
@@ -242,6 +267,85 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         token: row.to_token(),
         secret,
     })
+}
+
+/// Labels as D1 keeps them: JSON, or NULL for none.
+fn labels_json(labels: &[String]) -> Option<String> {
+    (!labels.is_empty())
+        .then(|| serde_json::to_string(labels).ok())
+        .flatten()
+}
+
+/// `PATCH /api/v1/workspaces/{id}/enrollment-tokens/{token}`: renames a
+/// pool, or changes its labels, its placement or how many runners it
+/// keeps, for those who may revoke it: its runners carry the new labels
+/// and placement at FleetDO's next dispatch, revoked tokens' too.
+pub async fn update(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    id: &str,
+    token: &str,
+) -> AppResult<Response> {
+    let body: UpdateEnrollmentTokenRequest = http::body(req).await?;
+    let a = ws::load(ctx, id).await?;
+    a.require_open()?;
+    let row = token_row(ctx, a.id(), token).await?;
+    if !manages(ctx, &a, &row)? {
+        return Err(not_found("Enrollment token"));
+    }
+    let change = enrollment::check_change(&body).map_err(AppError)?;
+    if change.is_empty() {
+        return http::ok(&row.to_token());
+    }
+    let mut sets: Vec<&str> = Vec::new();
+    let mut params = Vec::new();
+    if let Some(name) = &change.name {
+        sets.push("name = ?");
+        params.push(s(name));
+    }
+    if let Some(labels) = &change.labels {
+        sets.push("labels = ?");
+        params.push(os(labels_json(labels).as_deref()));
+    }
+    if let Some(p) = change.placement {
+        sets.push("placement = ?");
+        params.push(s(p.as_str()));
+    }
+    if let Some(max) = change.max_runners {
+        sets.push("max_runners = ?");
+        params.push(on(max.map(i64::from)));
+    }
+    params.push(s(token));
+    params.push(s(a.id()));
+    q(
+        &ctx.db,
+        &format!(
+            "UPDATE enrollment_tokens SET {} WHERE id = ? AND workspace_id = ?",
+            sets.join(", ")
+        ),
+        &params,
+    )?
+    .run()
+    .await?;
+    let mut data = serde_json::json!({ "name": change.name.as_deref().unwrap_or(&row.name) });
+    if let Some(labels) = &change.labels {
+        data["labels"] = serde_json::json!(labels);
+    }
+    if let Some(p) = change.placement {
+        data["placement"] = serde_json::json!(p);
+    }
+    if let Some(max) = change.max_runners {
+        data["max_runners"] = serde_json::json!(max);
+    }
+    ctx.audit_in(
+        Some(a.id()),
+        "workspace.enrollment_token_changed",
+        Some(token),
+        Some(data),
+    );
+    // Its runners' labels and placement, and the names sessions wait for.
+    crate::api::runners::pool_changed(ctx, token);
+    http::ok(&token_row(ctx, a.id(), token).await?.to_token())
 }
 
 /// `DELETE /api/v1/workspaces/{id}/enrollment-tokens/{token}`: revokes it,
@@ -274,6 +378,56 @@ pub async fn revoke(ctx: &mut Ctx, id: &str, token: &str) -> AppResult<Response>
         );
     }
     http::ok(&row.to_token())
+}
+
+/// `GET /api/v1/workspaces/{id}/runners/demand`: what the workspace's pools
+/// that the caller manages need now: every one for its admins, and so for
+/// its service accounts, which read as their keeper; a member's own for
+/// them. `?pool=` narrows it to one, by its id or name.
+pub async fn workspace_demand(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
+    let a = ws::load(ctx, id).await?;
+    a.require_open()?;
+    let rows: Vec<TokenRow> = q(
+        &ctx.db,
+        &format!("{TOKEN_SELECT} WHERE t.workspace_id = ? ORDER BY t.created_at"),
+        &[s(a.id())],
+    )?
+    .all()
+    .await?;
+    let wanted = http::query(req, "pool");
+    let mut ids = Vec::new();
+    for t in &rows {
+        let named = wanted
+            .as_deref()
+            .is_none_or(|w| w.trim() == t.id || w.trim() == t.name);
+        if named && manages(ctx, &a, t)? {
+            ids.push(t.id.clone());
+        }
+    }
+    if let Some(w) = &wanted
+        && ids.is_empty()
+    {
+        return Err(not_found(&format!("Pool {w}")));
+    }
+    let mut demand = crate::pools::workspace_demand(ctx, a.id(), Some(&ids)).await?;
+    // Every session that waits is the admins' to see; a member sees those
+    // their pools count.
+    if !policy::can_manage_enrollment_token(Some(a.require_open()?), false) {
+        demand.waiting = fctl_proto::api::PoolWaiting::default();
+        for p in &demand.pools {
+            let w = &p.waiting;
+            demand.waiting.sessions += w.sessions;
+            demand.waiting.since = match (demand.waiting.since, w.since) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            for (k, n) in &w.reasons {
+                *demand.waiting.reasons.entry(k.clone()).or_default() += n;
+            }
+        }
+        demand.unpooled = 0;
+    }
+    http::ok(&demand)
 }
 
 /// The enrollment token a host presents, with its workspace.
@@ -356,7 +510,32 @@ pub async fn info(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         max_runners: count(p.token.max_runners),
         runners: count(Some(p.token.runners)).unwrap_or_default(),
         remove_offline_after_minutes: count(p.token.remove_offline_after_minutes),
+        labels: p.token.labels(),
+        placement: p.token.placement(),
     })
+}
+
+/// `GET /api/v1/runner/enroll/demand`, with an enrollment token: what its
+/// pool needs now, for whatever scales it (`fctl runners demand`, KEDA's
+/// metrics-api scaler, the CloudWatch exporter). Counts only. A token that
+/// enrolls nothing any more (revoked, expired, or its maker no longer one
+/// who may make it) reads nothing either.
+pub async fn demand(ctx: &Ctx, req: &Request) -> AppResult<Response> {
+    let p = presented(ctx, req).await?;
+    p.token.usable(&p.workspace.name)?;
+    let state = p.token.state();
+    if let Err(r @ (Refusal::Revoked { .. } | Refusal::Expired { .. })) =
+        enrollment::check(&state, ctx.now)
+    {
+        return Err(AppError(r.error(&p.workspace.name, p.token.personal)));
+    }
+    let demand =
+        crate::pools::workspace_demand(ctx, &p.token.workspace_id, Some(&[p.token.id.clone()]))
+            .await?;
+    match demand.pools.into_iter().next() {
+        Some(pool) => http::ok(&pool),
+        None => Err(not_found("Pool")),
+    }
 }
 
 /// `POST /api/v1/runner/enroll`, with an enrollment token: registers the

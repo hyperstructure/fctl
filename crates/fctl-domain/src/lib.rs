@@ -42,6 +42,7 @@ pub mod naming;
 pub mod notify;
 pub mod order;
 pub mod perm;
+pub mod pools;
 pub mod private_key;
 pub mod published;
 pub mod pulls;

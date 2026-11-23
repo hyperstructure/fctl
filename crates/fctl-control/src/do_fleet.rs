@@ -16,7 +16,7 @@ use crate::spec;
 use fctl_domain::image::HostImages;
 use fctl_domain::reconcile::{self, Known, Unassigned};
 use fctl_domain::schedule::{Home, Slot, TokenWait, Unready, Wait};
-use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
+use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer, Placement};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
     ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_DRIVERS, FEATURE_REVIEWS,
@@ -153,6 +153,9 @@ struct QueueRow {
     /// pass. Unlike declines, these leave it its runner.
     #[serde(default)]
     spec_failures: Option<f64>,
+    /// Why it waits, in a word (`Wait::kind`), as demand counts it.
+    #[serde(default)]
+    wait: Option<String>,
 }
 
 impl QueueRow {
@@ -237,9 +240,12 @@ struct Candidate {
     claude_token: Option<RunnerClaudeToken>,
     /// The workspaces whose sessions it runs.
     serves: Serves,
+    /// Its pool packs sessions onto the busiest runner with room.
+    packed: bool,
 }
 
-/// Whose sessions a runner runs, as D1 had it at the last dispatch.
+/// Whose sessions a runner runs, and the pool it is in, as D1 had it at
+/// the last dispatch.
 #[derive(Clone, Debug, Default)]
 struct Serves {
     /// Who registered it.
@@ -247,6 +253,27 @@ struct Serves {
     /// The workspaces it runs sessions of, each with whether it runs only
     /// its owner's there.
     workspaces: Vec<(String, bool)>,
+    /// The pool it enrolled in: its labels, which the runner carries, and
+    /// whether it packs sessions.
+    pool_labels: Vec<String>,
+    packed: bool,
+}
+
+/// A pool that sessions which ask for its labels name as they wait, as D1
+/// had it at the last dispatch.
+#[derive(Clone, Debug)]
+struct NamedPool {
+    workspace_id: String,
+    name: String,
+    labels: Vec<String>,
+    /// For a token its maker made for their own sessions: them.
+    owner: Option<String>,
+    max_runners: Option<u32>,
+    created_at: i64,
+    /// Its runners that don't wait for approval, and of those the ones
+    /// that never connected.
+    runners: u32,
+    starting: u32,
 }
 
 impl Serves {
@@ -304,6 +331,7 @@ impl Candidate {
                 .unready
                 .as_ref()
                 .map(|(driver, why)| Unready { driver, why }),
+            packed: self.packed,
         }
     }
 }
@@ -333,6 +361,26 @@ fn sv(s: &str) -> SqlStorageValue {
     SqlStorageValue::from(s)
 }
 
+/// What a runner of a pool announced in its hello, as its pool keeps it
+/// (`enrollment_tokens.shape`).
+fn pool_shape(hello: &HostHello, now: i64) -> fctl_proto::api::PoolShape {
+    fctl_proto::api::PoolShape {
+        capacity: hello.capacity,
+        cpus: hello.cpus,
+        memory_mb: hello.memory_mb,
+        sandbox: hello.sandbox,
+        image: hello.image.clone(),
+        allowed_images: hello.allowed_images.clone(),
+        allowed_builds: hello.allowed_builds.clone(),
+        driver: hello.driver.clone(),
+        version: hello.version.clone(),
+        labels: hello.labels.clone(),
+        reviews: hello.features.iter().any(|f| f == FEATURE_REVIEWS),
+        keeps_token: hello.claude_token.is_some_and(|t| t.kept()),
+        seen_at: now,
+    }
+}
+
 fn iv(n: i64) -> SqlStorageValue {
     SqlStorageValue::from(n)
 }
@@ -351,6 +399,9 @@ pub struct FleetObject {
     /// The workspaces where runners that enrolled wait for approval, read
     /// with them: a session that no runner takes says so.
     waiting_workspaces: RefCell<HashSet<String>>,
+    /// The pools with labels, read with them: a session whose project asks
+    /// for labels names the pool that has them as it waits.
+    named_pools: RefCell<Vec<NamedPool>>,
     /// session id → when it last asked for credentials
     /// (`fctl_domain::throttle`).
     credential_asks: RefCell<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
@@ -396,6 +447,8 @@ impl DurableObject for FleetObject {
         add_column(&sql, "queue", "driver_declined", "INTEGER");
         // How many times in a row building its spec failed (`spec_failures`).
         add_column(&sql, "queue", "spec_failures", "INTEGER");
+        // Why it waits, in a word (`Wait::kind`), which demand counts.
+        add_column(&sql, "queue", "wait", "TEXT");
         add_column(&sql, "runners", "memory_available_mb", "INTEGER");
         add_column(&sql, "runners", "disk_available_mb", "INTEGER");
         // Set while the runner drains: since when, and the admin who drained
@@ -421,6 +474,7 @@ impl DurableObject for FleetObject {
             dispatching: RefCell::new(false),
             runner_workspaces: RefCell::new(std::collections::HashMap::new()),
             waiting_workspaces: RefCell::new(HashSet::new()),
+            named_pools: RefCell::new(Vec::new()),
             credential_asks: RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -498,6 +552,19 @@ impl DurableObject for FleetObject {
                 Ok(b) => self.homes(&b.runner_id).map(|h| serde_json::json!(h)),
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
+            (worker::Method::Post, "/demand") => match req.json::<internal::DemandOf>().await {
+                Ok(b) => self.demand(b).await.map(|d| serde_json::json!(d)),
+                Err(e) => Err(ApiError::bad_request(e.to_string())),
+            },
+            (worker::Method::Post, "/pool-changed") => {
+                match req.json::<internal::PoolChanged>().await {
+                    Ok(b) => {
+                        self.pool_changed(&b.token_id).await;
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    Err(e) => Err(ApiError::bad_request(e.to_string())),
+                }
+            }
             (worker::Method::Post, "/sandbox") => match req.json::<internal::SandboxOf>().await {
                 Ok(b) => self
                     .sandbox_at(&b.session_id)
@@ -1280,6 +1347,20 @@ impl FleetObject {
         if kept == Some(false) {
             self.removed(&rs.id, "Its runner was removed.").await;
             return;
+        }
+        // Its pool's shape, which its demand counts with once no runner of
+        // it is online, so that it starts again from none.
+        if let Ok(shape) = serde_json::to_string(&pool_shape(&hello, now))
+            && let Ok(db) = self.env.d1("DB")
+            && let Ok(q) = crate::db::q(
+                &db,
+                "UPDATE enrollment_tokens SET shape = ?1 \
+                 WHERE id = (SELECT enrollment_id FROM runners WHERE id = ?2)",
+                &[crate::db::s(&shape), crate::db::s(&rs.id)],
+            )
+            && let Err(e) = q.run().await
+        {
+            worker::console_error!("keeping the shape of {}'s pool: {}", rs.id, e.0.message);
         }
         if let Ok(text) = serde_json::to_string(&Self::welcome(rs, now)) {
             let _ = ws.send_with_str(&text);
@@ -2234,15 +2315,23 @@ impl FleetObject {
         if let Some(item) = queued {
             // Dispatch says why it waits; one already running skipped it.
             if item.reason.is_none() {
-                self.note_waiting(&item, Wait::NoRunner.reason()).await;
+                let wait = Wait::NoRunner;
+                self.note_waiting(&item, wait.reason(), wait.kind()).await;
             }
             self.ensure_alarm().await;
         }
         Ok(serde_json::json!({ "ok": true, "queued": still_queued }))
     }
 
-    /// Shows why a queued session waits, when that changed.
-    async fn note_waiting(&self, item: &QueueRow, reason: String) {
+    /// Shows why a queued session waits, when that changed, and keeps the
+    /// word for it (`kind`, `Wait::kind`) that demand counts.
+    async fn note_waiting(&self, item: &QueueRow, reason: String, kind: &str) {
+        if item.wait.as_deref() != Some(kind) {
+            let _ = self.sql.exec(
+                "UPDATE queue SET wait = ? WHERE session_id = ?",
+                Some(vec![sv(kind), sv(&item.session_id)]),
+            );
+        }
         if item.reason.as_deref() == Some(reason.as_str()) {
             return;
         }
@@ -2272,7 +2361,7 @@ impl FleetObject {
         let now = now_ms();
         let queued: Vec<QueueRow> = self
             .sql
-            .exec("SELECT session_id, attempts, reason, enqueued_at, driver_declined, spec_failures FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
+            .exec("SELECT session_id, attempts, reason, enqueued_at, driver_declined, spec_failures, wait FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
             .and_then(|c| c.to_array::<QueueRow>())
             .unwrap_or_default();
         if queued.is_empty() {
@@ -2284,38 +2373,37 @@ impl FleetObject {
             worker::console_error!("FCTL_MASTER_KEY is missing: sessions cannot start");
             return;
         };
-        // What the sessions ask for, and the workspaces runners serve, read
-        // when some runner could take one.
-        let wants = if self.candidates().is_empty() {
-            None
-        } else {
-            let ids: Vec<&str> = queued.iter().map(|q| q.session_id.as_str()).collect();
-            match spec::session_wants(&db, &ids).await {
-                Ok(w) => {
-                    self.load_runner_workspaces(&db).await;
-                    Some(w)
-                }
-                Err(e) => {
-                    worker::console_error!("reading queued sessions' sizes: {}", e.0.message);
-                    return;
-                }
+        // What the sessions ask for, the workspaces runners serve and the
+        // pools sessions wait for, read also while no runner is online:
+        // a session that asks for a pool's labels says it waits for that
+        // pool, which may be starting its first runner.
+        let ids: Vec<&str> = queued.iter().map(|q| q.session_id.as_str()).collect();
+        let wants = match spec::session_wants(&db, &ids).await {
+            Ok(w) => {
+                self.load_runner_workspaces(&db).await;
+                w
+            }
+            Err(e) => {
+                worker::console_error!("reading queued sessions' sizes: {}", e.0.message);
+                return;
             }
         };
         for item in queued {
-            // A session that cannot start now says why and lets the ones
-            // behind it try: a smaller one may fit where it does not.
-            let Some(wants) = &wants else {
-                self.note_waiting(&item, Wait::NoRunner.reason()).await;
-                continue;
-            };
             // Two runs of a session never overlap: a resume while the last
             // run still stops starts once it has.
             if self.still_stopping(&item.session_id) {
-                self.note_waiting(&item, "Starting again once the last run has stopped".into())
-                    .await;
+                self.note_waiting(
+                    &item,
+                    "Starting again once the last run has stopped".into(),
+                    "stopping",
+                )
+                .await;
                 continue;
             }
             let want = wants.get(&item.session_id).cloned().unwrap_or_default();
+            // The labels its project asks for, until it has waited as long
+            // as its project lets it wait for them.
+            let labels = want.labels_at(item.enqueued_at as i64, now).to_vec();
             // A resume goes back to the runner that has its sandbox, where
             // Claude continues the same conversation, and waits a while for
             // it when it is busy. Not after it declined the session, unless
@@ -2326,15 +2414,15 @@ impl FleetObject {
                 self.home_of(&item.session_id)
             };
             let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
-            let picked = self.pick_runner(&want, home.as_deref(), wait);
+            let picked = self.pick_runner(&want, &labels, home.as_deref(), wait);
             let (runner_id, runner_name) = match picked {
                 Ok(r) => r,
-                Err(Wait::Workspace) => {
-                    self.note_waiting(&item, self.no_runner_takes(&want)).await;
-                    continue;
-                }
+                // A session that cannot start now says why and lets the
+                // ones behind it try: a smaller one may fit where it does
+                // not.
                 Err(wait) => {
-                    self.note_waiting(&item, wait.reason()).await;
+                    let reason = self.why_waits(&want, &labels, &wait);
+                    self.note_waiting(&item, reason, wait.kind()).await;
                     continue;
                 }
             };
@@ -2510,7 +2598,9 @@ impl FleetObject {
                     name: r.name,
                     capacity: hello.capacity,
                     active: n,
-                    labels: hello.labels,
+                    // Its pool's, from D1, beside its host's own.
+                    labels: fctl_domain::pools::all_labels(&serves.pool_labels, &hello.labels),
+                    packed: serves.packed,
                     sandbox: hello.sandbox,
                     draining: r.draining_since.is_some(),
                     low_disk: fctl_domain::disk::low(
@@ -2625,6 +2715,7 @@ impl FleetObject {
         let runs = |c: &Candidate, home: bool| {
             fctl_domain::schedule::could_run(
                 &c.slot(&want),
+                &want.labels,
                 want.size,
                 &want.image,
                 want.review,
@@ -2640,6 +2731,205 @@ impl FleetObject {
                 .iter()
                 .any(|c| Some(c.id.as_str()) != home.as_deref() && runs(c, false));
         Ok(internal::SandboxAt { runner, elsewhere })
+    }
+
+    /// What a workspace's pools need now (`/demand`): every pool of it, or
+    /// those `b.pools` names, from what D1 has of their tokens and runners,
+    /// what their runners do here, and the workspace's sessions that wait
+    /// (`fctl_domain::pools::demand`). A pool whose token no longer enrolls
+    /// and that has no runners left is no pool any more.
+    async fn demand(
+        &self,
+        b: internal::DemandOf,
+    ) -> std::result::Result<fctl_proto::api::WorkspaceDemand, ApiError> {
+        use fctl_domain::pools::{Member, Pool, Queued};
+        let now = now_ms();
+        let db = self
+            .env
+            .d1("DB")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        #[derive(Deserialize)]
+        struct T {
+            id: String,
+            name: String,
+            labels: Option<String>,
+            placement: Option<String>,
+            #[serde(deserialize_with = "crate::db::opt_int", default)]
+            max_runners: Option<i64>,
+            #[serde(deserialize_with = "crate::db::int")]
+            created_at: i64,
+            owner: Option<String>,
+            owner_name: Option<String>,
+            #[serde(deserialize_with = "crate::db::int_bool", default)]
+            open: bool,
+            shape: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct R {
+            id: String,
+            pool: String,
+            #[serde(deserialize_with = "crate::db::int_bool", default)]
+            enabled: bool,
+            #[serde(deserialize_with = "crate::db::opt_int", default)]
+            pending_until: Option<i64>,
+            #[serde(deserialize_with = "crate::db::opt_int", default)]
+            last_seen_at: Option<i64>,
+        }
+        let tokens: Vec<T> = crate::db::q(
+            &db,
+            "SELECT t.id, t.name, t.labels, t.placement, t.max_runners, t.created_at, t.shape, \
+             CASE WHEN t.personal = 1 THEN t.created_by END AS owner, u.name AS owner_name, \
+             (t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)) AS open \
+             FROM enrollment_tokens t LEFT JOIN users u ON u.id = t.created_by \
+             WHERE t.workspace_id = ?1 ORDER BY t.created_at",
+            &[crate::db::s(&b.workspace_id), crate::db::n(now)],
+        )
+        .map_err(|e| e.0)?
+        .all()
+        .await
+        .map_err(|e| e.0)?;
+        let runners: Vec<R> = crate::db::q(
+            &db,
+            "SELECT r.id, r.enrollment_id AS pool, r.enabled, r.pending_until, r.last_seen_at \
+             FROM runners r JOIN enrollment_tokens t ON t.id = r.enrollment_id WHERE t.workspace_id = ?",
+            &[crate::db::s(&b.workspace_id)],
+        )
+        .map_err(|e| e.0)?
+        .all()
+        .await
+        .map_err(|e| e.0)?;
+        // What each runner does here: connected, draining, its hello and
+        // the sessions assigned to it.
+        #[derive(Deserialize)]
+        struct C {
+            runner_id: String,
+            n: f64,
+        }
+        let active: Vec<C> = self
+            .sql
+            .exec(
+                "SELECT runner_id, COUNT(*) AS n FROM assignments GROUP BY runner_id",
+                None,
+            )
+            .and_then(|c| c.to_array::<C>())
+            .unwrap_or_default();
+        let live: std::collections::HashMap<String, LiveRow> = self
+            .live_rows()
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
+        let mut pools = Vec::new();
+        for t in tokens {
+            if b.pools.as_ref().is_some_and(|only| !only.contains(&t.id)) {
+                continue;
+            }
+            let mine: Vec<&R> = runners.iter().filter(|r| r.pool == t.id).collect();
+            if !t.open && mine.is_empty() {
+                continue;
+            }
+            let mut members = Vec::new();
+            // The latest hello of a connected runner of it, else what D1 kept.
+            let mut latest: Option<(i64, HostHello)> = None;
+            for r in mine {
+                let row = live.get(&r.id);
+                let connected = row.is_some_and(|row| row.online(self));
+                let hello = row
+                    .and_then(|row| row.hello.as_deref())
+                    .and_then(|h| serde_json::from_str::<HostHello>(h).ok());
+                let unready = hello.as_ref().is_some_and(|h| {
+                    h.features.iter().any(|f| f == FEATURE_DRIVERS)
+                        && fctl_domain::schedule::driver_problem(&h.driver, &h.drivers).is_some()
+                });
+                if connected && let Some(h) = &hello {
+                    let seen = row.and_then(|row| row.last_seen).map_or(0, |t| t as i64);
+                    if latest.as_ref().is_none_or(|(at, _)| seen > *at) {
+                        latest = Some((seen, h.clone()));
+                    }
+                }
+                members.push(Member {
+                    connected,
+                    pending: r.pending_until.is_some(),
+                    draining: row.is_some_and(|row| row.draining_since.is_some()),
+                    ready: r.enabled && !unready,
+                    seen: r.last_seen_at.is_some() || row.is_some(),
+                    capacity: hello.as_ref().map_or(0, |h| h.capacity),
+                    active: active
+                        .iter()
+                        .find(|c| c.runner_id == r.id)
+                        .map_or(0, |c| c.n as u32),
+                });
+            }
+            let shape = latest.map(|(_, h)| pool_shape(&h, now)).or_else(|| {
+                t.shape
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str::<fctl_proto::api::PoolShape>(j).ok())
+            });
+            pools.push(Pool {
+                info: fctl_proto::api::PoolInfo {
+                    id: fctl_proto::EnrollmentTokenId(t.id.clone()),
+                    name: t.name,
+                    labels: crate::model::pool_labels(t.labels.as_deref()),
+                    placement: t
+                        .placement
+                        .as_deref()
+                        .and_then(Placement::parse)
+                        .unwrap_or_default(),
+                    max_runners: t.max_runners.and_then(|m| u32::try_from(m).ok()),
+                    owner: t.owner.zip(t.owner_name).map(|(id, name)| {
+                        fctl_proto::session::UserRef {
+                            id: fctl_proto::UserId(id),
+                            name,
+                            avatar_url: None,
+                        }
+                    }),
+                    closed: !t.open,
+                },
+                created_at: t.created_at,
+                shape,
+                runners: members,
+            });
+        }
+        // The workspace's sessions that wait, and what each asks for.
+        let queue: Vec<QueueRow> = self
+            .sql
+            .exec(
+                "SELECT session_id, attempts, enqueued_at, wait FROM queue ORDER BY enqueued_at",
+                None,
+            )
+            .and_then(|c| c.to_array::<QueueRow>())
+            .unwrap_or_default();
+        let wants = if queue.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            let ids: Vec<&str> = queue.iter().map(|q| q.session_id.as_str()).collect();
+            spec::session_wants(&db, &ids).await.map_err(|e| e.0)?
+        };
+        let waiting: Vec<(&QueueRow, &spec::SessionWants)> = queue
+            .iter()
+            .filter_map(|q| wants.get(&q.session_id).map(|w| (q, w)))
+            .filter(|(_, w)| w.workspace_id == b.workspace_id)
+            .collect();
+        let queued: Vec<Queued<'_>> = waiting
+            .iter()
+            .map(|(q, w)| Queued {
+                want: w.size,
+                image: &w.image,
+                labels: w.labels_at(q.enqueued_at as i64, now),
+                review: w.review,
+                person: w.person.as_deref(),
+                only_theirs: fctl_domain::schedule::only_theirs(w.own_runners, w.on_runners),
+                on_runners: w.on_runners,
+                since: q.enqueued_at as i64,
+                kind: q.wait.as_deref().unwrap_or("no_runner"),
+            })
+            .collect();
+        let (pools, waiting, unpooled) = fctl_domain::pools::demand(pools, &queued, now);
+        Ok(fctl_proto::api::WorkspaceDemand {
+            pools,
+            waiting,
+            unpooled,
+            at: now,
+        })
     }
 
     /// Whether the fleet gave the session to `runner_id`.
@@ -2688,14 +2978,15 @@ impl FleetObject {
             .any(|reports| reports.iter().any(|r| r.session_id.as_str() == session_id))
     }
 
-    /// The least loaded connected runner with a free slot that takes the
-    /// session, runs its image and gives its sandbox what it wants, or why
-    /// there is none. `home`, the runner that has the session's sandbox,
-    /// comes first, and with `wait` the session waits for it while it is
-    /// busy.
+    /// The connected runner with a free slot that takes the session, has
+    /// `labels`, runs its image and gives its sandbox what it wants, as its
+    /// pool places sessions (`fctl_domain::schedule::pick`), or why there
+    /// is none. `home`, the runner that has the session's sandbox, comes
+    /// first, and with `wait` the session waits for it while it is busy.
     fn pick_runner(
         &self,
         want: &spec::SessionWants,
+        labels: &[String],
         home: Option<&str>,
         wait: bool,
     ) -> std::result::Result<(String, String), Wait> {
@@ -2709,7 +3000,7 @@ impl FleetObject {
                 wait,
             });
         let chosen =
-            fctl_domain::schedule::pick(&slots, &[], want.size, &want.image, home, want.review)?;
+            fctl_domain::schedule::pick(&slots, labels, want.size, &want.image, home, want.review)?;
         let name = candidates
             .iter()
             .find(|c| c.id == chosen.id)
@@ -3416,24 +3707,81 @@ impl FleetObject {
     }
 
     async fn feed_runner(&self, runner_id: &str) {
+        self.feed_runners(&[runner_id]).await;
+    }
+
+    /// Shows these runners as they are now to the feeds that see them.
+    async fn feed_runners(&self, runner_ids: &[&str]) {
         let Ok(rows) = self.runner_rows().await else {
             return;
         };
-        let Some(row) = rows.into_iter().find(|r| r.id == runner_id) else {
-            return;
-        };
         let live = self.live_runners();
-        for (ws, ident) in self.feed_sockets() {
-            let view = feed_view(&ident);
-            if !row.visible_to(&view) {
-                continue;
-            }
-            if let Ok(text) = serde_json::to_string(&FeedServer::Runner {
-                runner: Box::new(row.to_runner(&live, &view)),
-            }) {
-                let _ = ws.send_with_str(&text);
+        let sockets = self.feed_sockets();
+        for row in rows.iter().filter(|r| runner_ids.contains(&r.id.as_str())) {
+            for (ws, ident) in &sockets {
+                let view = feed_view(ident);
+                if !row.visible_to(&view) {
+                    continue;
+                }
+                if let Ok(text) = serde_json::to_string(&FeedServer::Runner {
+                    runner: Box::new(row.to_runner(&live, &view)),
+                }) {
+                    let _ = ws.send_with_str(&text);
+                }
             }
         }
+    }
+
+    /// What a session that waits says: for one that asks for labels, the
+    /// pool that has them and why it can't take the session, where that
+    /// explains it, and whether any runner takes it after a while; for
+    /// one that no runner of its workspace takes, why
+    /// ([`Self::no_runner_takes`]); otherwise what `wait` says.
+    fn why_waits(&self, want: &spec::SessionWants, labels: &[String], wait: &Wait) -> String {
+        let pooled = (!labels.is_empty())
+            .then(|| self.pool_for(want, labels))
+            .flatten()
+            .and_then(|pool| {
+                fctl_domain::pools::waiting_for(
+                    &fctl_domain::pools::Named {
+                        name: &pool.name,
+                        runners: pool.runners,
+                        starting: pool.starting,
+                        max_runners: pool.max_runners,
+                    },
+                    wait,
+                )
+            });
+        let reason = match (pooled, wait) {
+            (Some(reason), _) => reason,
+            (None, Wait::Workspace) => self.no_runner_takes(want),
+            (None, wait) => wait.reason(),
+        };
+        match want.fallback_minutes {
+            Some(m) if !labels.is_empty() => format!(
+                "{}. Any runner takes it once it has waited {}.",
+                reason.trim_end_matches('.'),
+                fctl_domain::enrollment::minutes(m)
+            ),
+            _ => reason,
+        }
+    }
+
+    /// The pool a session whose project asks for `labels` waits for: of its
+    /// workspace's pools that have them, and run its person's sessions, the
+    /// one with the fewest other labels, then the oldest.
+    fn pool_for(&self, want: &spec::SessionWants, labels: &[String]) -> Option<NamedPool> {
+        let pools = self.named_pools.borrow();
+        let fits: Vec<&NamedPool> = pools
+            .iter()
+            .filter(|p| p.workspace_id == want.workspace_id)
+            .filter(|p| p.owner.is_none() || p.owner == want.person)
+            .collect();
+        let i = fctl_domain::pools::first_with(
+            labels,
+            fits.iter().map(|p| (p.labels.as_slice(), p.created_at)),
+        )?;
+        fits.get(i).map(|p| (*p).clone())
     }
 
     /// Why a session waits that no online runner takes
@@ -3487,12 +3835,18 @@ impl FleetObject {
             #[serde(deserialize_with = "crate::db::int_bool", default)]
             personal: bool,
             owner: Option<String>,
+            #[serde(default)]
+            pool_labels: Option<String>,
+            #[serde(default)]
+            pool_placement: Option<String>,
         }
         let rows: Vec<R> = match crate::db::q(
             db,
             concat!(
-                "SELECT rw.runner_id, rw.workspace_id, rw.personal, r.created_by AS owner \
-                 FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id WHERE r.enabled = 1 AND ",
+                "SELECT rw.runner_id, rw.workspace_id, rw.personal, r.created_by AS owner, \
+                 et.labels AS pool_labels, et.placement AS pool_placement \
+                 FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
+                 LEFT JOIN enrollment_tokens et ON et.id = r.enrollment_id WHERE r.enabled = 1 AND ",
                 crate::serves!()
             ),
             &[],
@@ -3511,8 +3865,12 @@ impl FleetObject {
             let serves = map.entry(r.runner_id).or_default();
             serves.owner = r.owner;
             serves.workspaces.push((r.workspace_id, r.personal));
+            serves.pool_labels = crate::model::pool_labels(r.pool_labels.as_deref());
+            serves.packed =
+                r.pool_placement.as_deref().and_then(Placement::parse) == Some(Placement::Packed);
         }
         *self.runner_workspaces.borrow_mut() = map;
+        self.load_named_pools(db).await;
         #[derive(Deserialize)]
         struct W {
             workspace_id: String,
@@ -3528,6 +3886,87 @@ impl FleetObject {
         };
         *self.waiting_workspaces.borrow_mut() =
             waiting.into_iter().map(|w| w.workspace_id).collect();
+    }
+
+    /// Reads the pools with labels that may still run sessions: those whose
+    /// token still enrolls, or that have runners. A session that asks for
+    /// their labels names one as it waits.
+    async fn load_named_pools(&self, db: &worker::D1Database) {
+        #[derive(Deserialize)]
+        struct P {
+            workspace_id: String,
+            name: String,
+            labels: Option<String>,
+            owner: Option<String>,
+            #[serde(deserialize_with = "crate::db::opt_int", default)]
+            max_runners: Option<i64>,
+            #[serde(deserialize_with = "crate::db::int")]
+            created_at: i64,
+            #[serde(deserialize_with = "crate::db::int_bool", default)]
+            open: bool,
+            #[serde(deserialize_with = "crate::db::int", default)]
+            runners: i64,
+            #[serde(deserialize_with = "crate::db::int", default)]
+            starting: i64,
+        }
+        let rows: Vec<P> = match crate::db::q(
+            db,
+            "SELECT t.workspace_id, t.name, t.labels, t.max_runners, t.created_at, \
+             CASE WHEN t.personal = 1 THEN t.created_by END AS owner, \
+             (t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?1)) AS open, \
+             (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id AND x.pending_until IS NULL) AS runners, \
+             (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id AND x.pending_until IS NULL \
+               AND x.last_seen_at IS NULL) AS starting \
+             FROM enrollment_tokens t WHERE t.labels IS NOT NULL",
+            &[crate::db::n(now_ms())],
+        ) {
+            Ok(q) => match q.all().await {
+                Ok(r) => r,
+                Err(e) => {
+                    worker::console_error!("reading pools: {}", e.0.message);
+                    return;
+                }
+            },
+            Err(_) => return,
+        };
+        let count = |n: i64| u32::try_from(n).unwrap_or(0);
+        *self.named_pools.borrow_mut() = rows
+            .into_iter()
+            .filter(|p| p.open || p.runners > 0)
+            .map(|p| NamedPool {
+                workspace_id: p.workspace_id,
+                name: p.name,
+                labels: crate::model::pool_labels(p.labels.as_deref()),
+                owner: p.owner,
+                max_runners: p.max_runners.and_then(|m| u32::try_from(m).ok()),
+                created_at: p.created_at,
+                runners: count(p.runners),
+                starting: count(p.starting),
+            })
+            .collect();
+    }
+
+    /// A pool's labels, placement or name changed: its runners carry them
+    /// at once, feeds show them, and sessions that wait for its labels may
+    /// start now.
+    async fn pool_changed(&self, token_id: &str) {
+        let Ok(db) = self.env.d1("DB") else { return };
+        #[derive(Deserialize)]
+        struct Id {
+            id: String,
+        }
+        let runners: Vec<Id> = match crate::db::q(
+            &db,
+            "SELECT id FROM runners WHERE enrollment_id = ?",
+            &[crate::db::s(token_id)],
+        ) {
+            Ok(q) => q.all().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        self.load_runner_workspaces(&db).await;
+        let ids: Vec<&str> = runners.iter().map(|r| r.id.as_str()).collect();
+        self.feed_runners(&ids).await;
+        self.dispatch().await;
     }
 
     /// People's workspaces changed: the sessions that run on their Claude

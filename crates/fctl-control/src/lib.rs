@@ -31,6 +31,7 @@ mod linear;
 mod merge_checks;
 mod model;
 mod notify;
+mod pools;
 mod pull_requests;
 mod push;
 mod reviews;
@@ -377,6 +378,12 @@ async fn dispatch(
         (Delete, ["workspaces", id, "enrollment-tokens", token]) => {
             api::enrollment::revoke(ctx, id, token).await
         }
+        (Patch, ["workspaces", id, "enrollment-tokens", token]) => {
+            api::enrollment::update(ctx, req, id, token).await
+        }
+        (Get, ["workspaces", id, "runners", "demand"]) => {
+            api::enrollment::workspace_demand(ctx, req, id).await
+        }
         (Put, ["workspaces", id, "runners", runner]) => {
             api::workspaces::add_runner(ctx, req, id, runner).await
         }
@@ -447,6 +454,7 @@ async fn dispatch(
         (Get, ["runner"]) => api::runners::this_runner(ctx, req).await,
         (Delete, ["runner"]) => api::runners::remove_this_runner(ctx, req).await,
         (Get, ["runner", "enroll"]) => api::enrollment::info(ctx, req).await,
+        (Get, ["runner", "enroll", "demand"]) => api::enrollment::demand(ctx, req).await,
         (Post, ["runner", "enroll"]) => api::enrollment::enroll(ctx, req).await,
         (Post, ["runner", "drain"]) => api::runners::drain_this_runner(ctx, req).await,
         (Get, ["runner", "connect"]) => api::runners::connect(ctx, req).await,
