@@ -473,6 +473,19 @@ fctl and the sandbox image ready, a group that grows and shrinks, and a
 hook that lets each machine's agents finish their turns before the cloud
 takes it.
 
+Each token's runners are a pool. Give it labels, and keep one pool of
+large machines for the projects that ask for them and one in another
+region for others; let a pool that grows and shrinks pack sessions onto
+its busiest runners, so that idle ones can go; and have your autoscaler
+scale it to what it needs now, which it reads with the enrollment token,
+a service account, `fctl runners demand --cloudwatch` or, on your own
+instance, Prometheus ([Runner pools](cli.md#runner-pools)):
+
+```sh
+fctl runners enrollment-tokens create "AWS large" -w acme --labels aws,large --max-runners 20 --remove-offline-after 15m
+fctl projects set -p ml --runners large
+```
+
 ## Oversight
 
 - **Audit logs.** Each workspace's (its admins: its **Audit log** tab,

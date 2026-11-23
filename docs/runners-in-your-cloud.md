@@ -108,7 +108,8 @@ and 8 GiB each: 24 GiB for sandboxes, 8 GiB for the rest.
 
 A project that sets more for its sandboxes (`fctl projects set --cpus 8
 --memory 16g`) gets that, up to the whole machine: give such projects
-machines of their own size, or keep `capacity` lower.
+machines of their own size, a second group whose token has a label they
+ask for ([Runner pools](cli.md#runner-pools)), or keep `capacity` lower.
 
 ## 3. Write the machine's scripts
 
@@ -785,13 +786,34 @@ terminate notification.
 
 ### How many machines
 
-fctl doesn't tell your autoscaler how many sessions wait yet. Until it
-does, size the group by the hour (AWS scheduled actions, Compute
-Engine's schedule-based autoscaling, Azure autoscale profiles), or have
-a job compare `fctl runners -w acme --json` (each runner's
-`active_sessions` and `capacity`) and the sessions that wait for a
-runner (`fctl sessions -w acme --active --json`, those whose `status`
-is `queued`) with the group's size.
+The token's runners are a pool, and fctl says how many machines it
+needs now, its `wanted`: enough for the sessions its runners run and
+those that wait for it, never fewer than its runners that run one, nor
+more than `--max-runners` ([Runner pools](cli.md#runner-pools)). The
+enrollment token reads it, without signing in. Size the group to it
+with a job that runs every minute where you run such jobs (cron on a
+machine outside the group, a scheduled container), with the cloud's CLI
+signed in as someone who may read the secret and resize the group:
+
+```sh
+#!/bin/sh
+# fctl-size-group: sizes the group to the runners its pool wants, never below MIN.
+set -eu
+token=$(aws secretsmanager get-secret-value --secret-id fctl/enroll-token --query SecretString --output text)
+wanted=$(FCTL_SERVER=https://fctl.acme.dev FCTL_ENROLL_TOKEN=$token fctl runners demand --json | jq .wanted)
+[ "$wanted" -ge "$MIN" ] || wanted=$MIN
+aws autoscaling set-desired-capacity --auto-scaling-group-name "$GROUP" --desired-capacity "$wanted"
+# Google Cloud: gcloud compute instance-groups managed resize "$GROUP" --region="$REGION" --size="$wanted"
+# Azure: az vmss scale --resource-group "$RESOURCE_GROUP" --name "$GROUP" --new-capacity "$wanted"
+```
+
+On Google Cloud and Azure, the job reads the token as their boot
+scripts do. A token that removes offline runners gives each session to
+its busiest runner that still has room, so that the others empty out;
+the group still picks which machine it takes by its own rules, and the
+drain lets that machine's turns end first. On AWS, `fctl runners demand
+--cloudwatch --watch` puts the same numbers into CloudWatch as well,
+for dashboards and alarms.
 
 ## Keeping the image current
 

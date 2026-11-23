@@ -193,8 +193,8 @@ pub enum ProjectsCmd {
     /// (maintainers). Sessions take a change of settings when they next
     /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "compact_window", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "stale_note_days", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory", "id_tokens", "aws_role", "aws_region", "aws_session_tags", "gcp_provider", "gcp_service_account", "azure_tenant", "azure_client"])),
-        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --compact-window 400k        # Claude compacts as its context nears 400K tokens\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set --stale-note-days 7         # fctl deletes notes a week after they go stale (never: kept)\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "compact_window", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "runners", "runner_fallback", "publish_screenshots", "screenshot_days", "project_memory", "stale_note_days", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory", "id_tokens", "aws_role", "aws_region", "aws_session_tags", "gcp_provider", "gcp_service_account", "azure_tenant", "azure_client"])),
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --compact-window 400k        # Claude compacts as its context nears 400K tokens\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set -p ml --runners gpu          # its sessions wait for a runner of the gpu pool\n  fctl projects set --runners gpu --runner-fallback 15m   # or run on any runner after 15 minutes\n  fctl projects set --runners \"\"                # any runner of the workspace\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set --stale-note-days 7         # fctl deletes notes a week after they go stale (never: kept)\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -266,6 +266,17 @@ pub enum ProjectsCmd {
         /// resumes it.
         #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u32).range(1..=10_080))]
         idle_timeout: Option<u32>,
+        /// The labels a runner needs to run the project's sessions, which
+        /// choose a pool (an enrollment token's labels) or runners whose
+        /// `host.toml` sets them: gpu,large. "" for any runner of the
+        /// workspace.
+        #[arg(long, value_name = "LABELS", value_delimiter = ',')]
+        runners: Option<Vec<String>>,
+        /// How long a session waits for a runner with those labels before
+        /// any runner takes it: 10m, 1h, or never (the default: it waits
+        /// for one).
+        #[arg(long, value_name = "DURATION|never", value_parser = fallback_arg)]
+        runner_fallback: Option<OrNever>,
         /// Let agents publish screenshots for their pull requests (`fctl
         /// publish`), at links anyone who has one can open until they
         /// expire. Needs the instance's admins to allow it too. Off takes
@@ -983,6 +994,29 @@ fn stale_note_days_arg(s: &str) -> std::result::Result<OrNever, String> {
     }
 }
 
+/// `--runner-fallback`: a duration like 10m, or `never`.
+fn fallback_arg(s: &str) -> std::result::Result<OrNever, String> {
+    let minutes = fctl_domain::enrollment::parse_minutes(s)?;
+    fctl_domain::pools::check_fallback("runner_fallback", minutes)
+        .map(OrNever)
+        .map_err(|e| e.message)
+}
+
+/// Where a project's sessions run, in words.
+fn runners_words(s: &ProjectSettings) -> String {
+    if s.runner_labels.is_empty() {
+        return "on any runner of the workspace".to_owned();
+    }
+    let labels = fctl_domain::pools::labels_words(&s.runner_labels);
+    match s.runner_fallback_minutes {
+        None => format!("on runners with {labels}, and wait for one"),
+        Some(m) => format!(
+            "on runners with {labels}, or on any runner once they have waited {}",
+            fctl_domain::enrollment::minutes(m)
+        ),
+    }
+}
+
 /// `--compact-window`: a number of tokens like 400k, or `default`.
 fn compact_window_arg(s: &str) -> std::result::Result<OrDefault, String> {
     use fctl_domain::context;
@@ -1292,6 +1326,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 println!("env:     {}", keys.join(", "));
             }
             println!("idle:    sessions {}", idle(&p.settings));
+            println!("runners: sessions run {}", runners_words(&p.settings));
             println!("agents:  {}", learning(&p.settings));
             if let Some(text) = p.settings.instructions.as_deref() {
                 println!(
@@ -1378,6 +1413,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             credit_people,
             credit_claude,
             idle_timeout,
+            runners,
+            runner_fallback,
             publish_screenshots,
             screenshot_days,
             project_memory,
@@ -1514,6 +1551,16 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if idle_timeout.is_some() {
                 settings.idle_timeout_minutes = idle_timeout;
+            }
+            if let Some(labels) = &runners {
+                settings.runner_labels = labels
+                    .iter()
+                    .map(|l| l.trim().to_owned())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+            }
+            if let Some(OrNever(minutes)) = runner_fallback {
+                settings.runner_fallback_minutes = minutes;
             }
             if let Some(on) = publish_screenshots {
                 settings.publish_screenshots = on;
@@ -1688,6 +1735,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     idle(&p.settings)
+                );
+            }
+            if runners.is_some() || runner_fallback.is_some() {
+                println!(
+                    "{} Sessions in {} run {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    runners_words(&p.settings)
                 );
             }
             if new_image.is_some() || build.is_some() || build_context.is_some() {

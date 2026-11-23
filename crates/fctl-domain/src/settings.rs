@@ -85,7 +85,10 @@ pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
 /// project keeps its agents away from; for the Linear teams of `tickets`
 /// besides the first (`more_teams`), none, while the first stays in the same
 /// Linear workspace (send `[]` for none); for `id_tokens`, on, which would
-/// let agents mint identity tokens again; for `cloud_access`, no cloud. An
+/// let agents mint identity tokens again; for `cloud_access`, no cloud; for
+/// `runner_labels`, any runner, which would move its sessions out of their
+/// pool (send `[]` for any); for `runner_fallback_minutes`, waiting for
+/// those labels for ever (send `null` for that). An
 /// `image_build` it leaves out stays unless it chooses an image instead
 /// (send `null` for none). `sent` is the update's `settings` object as it
 /// arrived.
@@ -156,6 +159,12 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("cloud_access").is_none() {
         settings.cloud_access = stored.cloud_access.clone();
+    }
+    if sent.get("runner_labels").is_none() {
+        settings.runner_labels = stored.runner_labels.clone();
+    }
+    if sent.get("runner_fallback_minutes").is_none() {
+        settings.runner_fallback_minutes = stored.runner_fallback_minutes;
     }
     if let (Some(l), Some(was)) = (settings.tickets.linear.as_mut(), &stored.tickets.linear)
         && l.more_teams.is_none()

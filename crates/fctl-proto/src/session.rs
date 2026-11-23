@@ -651,6 +651,24 @@ pub struct ProjectSettings {
     /// Minutes an idle session keeps its sandbox, and its slot on the host,
     /// before it stops (10 by default). A message resumes it.
     pub idle_timeout_minutes: Option<u32>,
+    /// The labels a runner needs to run its sessions: a pool's (the labels
+    /// of the enrollment token its runners enrolled with), or ones a host
+    /// sets in its `host.toml`. A session waits for a runner that has them
+    /// all. Empty: any runner of the workspace. Always sent, as `[]` for
+    /// none: an update that leaves it out keeps what was stored (see
+    /// `fctl_domain::settings::keep_unsent`). Older control planes ignore
+    /// it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub runner_labels: Vec<String>,
+    /// Minutes a session waits for a runner with `runner_labels` before
+    /// any runner of the workspace may take it: the labels are then a
+    /// preference rather than a need. Absent: it waits for one however
+    /// long that takes. Always sent, as `null` for that: an update without
+    /// it keeps what was stored (see `fctl_domain::settings::keep_unsent`).
+    #[serialize_always]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub runner_fallback_minutes: Option<u32>,
     /// Ask agents to open a pull request when they finish.
     pub auto_pull_request: bool,
     /// How much agents write in the descriptions of the pull requests they
@@ -1087,6 +1105,8 @@ impl Default for ProjectSettings {
             cpus: None,
             memory_mb: None,
             idle_timeout_minutes: None,
+            runner_labels: Vec::new(),
+            runner_fallback_minutes: None,
             auto_pull_request: true,
             pull_request_descriptions: Verbosity::Balanced,
             pull_request_instructions: None,
@@ -1856,6 +1876,15 @@ mod tests {
         );
         let kept: ProjectSettings = serde_json::from_str(r#"{"stale_note_days":7}"#)?;
         assert_eq!(kept.stale_note_days, Some(7));
+        // Any runner, before projects chose them: the labels go out as []
+        // and the fallback as null, so that clearing them is sent too.
+        assert!(old.runner_labels.is_empty());
+        let sent = serde_json::to_value(&old)?;
+        assert_eq!(sent.get("runner_labels"), Some(&serde_json::json!([])));
+        assert_eq!(
+            sent.get("runner_fallback_minutes"),
+            Some(&serde_json::Value::Null)
+        );
         let off: ProjectSettings =
             serde_json::from_str(r#"{"credit_people":false,"credit_claude":false}"#)?;
         assert!(!off.credit_people && !off.credit_claude);

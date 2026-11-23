@@ -1993,6 +1993,13 @@ impl Api {
         self.post("/runner/enroll", req).await
     }
 
+    /// What the pool of the enrollment token this client has needs now:
+    /// its runners, slots and sessions that wait, and how many runners
+    /// would run them all.
+    pub async fn pool_demand(&self) -> Result<PoolDemand> {
+        self.get("/runner/enroll/demand").await
+    }
+
     /// Drains the runner whose token this client has, or stops draining it.
     /// `stop_sessions` also stops the sessions it runs (uninstalling).
     pub async fn drain_this_runner(
@@ -2521,6 +2528,31 @@ impl Api {
         req: &CreateEnrollmentTokenRequest,
     ) -> Result<CreatedEnrollmentToken> {
         self.post(&format!("/workspaces/{}/enrollment-tokens", enc(id)), req)
+            .await
+    }
+
+    /// Changes a workspace's enrollment token: its name, its pool's labels
+    /// and placement, how many runners it keeps.
+    pub async fn update_enrollment_token(
+        &self,
+        id: &str,
+        token: &str,
+        req: &UpdateEnrollmentTokenRequest,
+    ) -> Result<EnrollmentToken> {
+        self.patch(
+            &format!("/workspaces/{}/enrollment-tokens/{}", enc(id), enc(token)),
+            req,
+        )
+        .await
+    }
+
+    /// What a workspace's pools that this client manages need now; `pool`
+    /// (an id or a name) narrows it to one.
+    pub async fn workspace_demand(&self, id: &str, pool: Option<&str>) -> Result<WorkspaceDemand> {
+        let query = pool
+            .map(|p| format!("?pool={}", enc(p)))
+            .unwrap_or_default();
+        self.get(&format!("/workspaces/{}/runners/demand{query}", enc(id)))
             .await
     }
 

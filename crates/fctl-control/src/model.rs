@@ -1083,6 +1083,10 @@ pub struct RunnerRow {
     pub enrollment_id: Option<String>,
     #[serde(default)]
     pub enrollment_name: Option<String>,
+    /// That token's labels (JSON), which the runner carries: it is in the
+    /// token's pool.
+    #[serde(default)]
+    pub enrollment_labels: Option<String>,
     #[serde(default)]
     pub enrolled_ip: Option<String>,
     #[serde(default)]
@@ -1258,7 +1262,18 @@ impl RunnerRow {
             image: hello.as_ref().and_then(|h| h.image.clone()),
             allowed_images: hello.as_ref().and_then(|h| h.allowed_images.clone()),
             allowed_builds: hello.as_ref().and_then(|h| h.allowed_builds.clone()),
-            labels: hello.as_ref().map(|h| h.labels.clone()).unwrap_or_default(),
+            labels: fctl_domain::pools::all_labels(
+                &pool_labels(self.enrollment_labels.as_deref()),
+                &hello.as_ref().map(|h| h.labels.clone()).unwrap_or_default(),
+            ),
+            pool: self
+                .enrollment_id
+                .clone()
+                .zip(self.enrollment_name.clone())
+                .map(|(id, name)| fctl_proto::api::RunnerPool {
+                    id: fctl_proto::EnrollmentTokenId(id),
+                    name,
+                }),
             last_seen_at: self.last_seen_at,
             drain: live.drains.get(&self.id).cloned(),
             created_at: self.created_at,
@@ -1306,6 +1321,13 @@ impl RunnerRow {
     }
 }
 
+/// A pool's labels as D1 keeps them (`enrollment_tokens.labels`, JSON):
+/// none when it has none, or they don't read.
+pub fn pool_labels(json: Option<&str>) -> Vec<String> {
+    json.and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default()
+}
+
 /// Whether runner `r` serves the workspace of `runner_workspaces` row `rw`:
 /// while its owner is an active member there (a runner whose owner's
 /// account is gone serves where it was put before workspaces had owners).
@@ -1332,6 +1354,7 @@ pub const RUNNER_SELECT: &str = concat!(
     ") AS workspaces, \
     r.workspace_id, ow.slug AS owner_slug, ow.name AS owner_name, ow.color AS owner_color, \
     ow.avatar_updated_at AS owner_avatar_at, r.enrollment_id, et.name AS enrollment_name, \
+    et.labels AS enrollment_labels, \
     r.enrolled_ip, r.enrolled_location, r.facts, r.pending_until, r.remove_offline_after_minutes \
     FROM runners r LEFT JOIN users u ON u.id = r.created_by \
     LEFT JOIN workspaces ow ON ow.id = r.workspace_id \

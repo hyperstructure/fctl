@@ -589,12 +589,60 @@ with the runner and its own runner token
 a host uploads the snapshot of a session it runs (`PUT
 /api/v1/runner/sessions/{id}/snapshots/{snapshot}/parts/{n}`, then `POST
 /api/v1/runner/sessions/{id}/snapshots/{snapshot}`) and downloads one
-(`GET …/parts/{n}`) ([Session snapshots](architecture.md#session-snapshots)).
-A workspace's admins choose whether its sessions keep snapshots and for
-how long (`PATCH /api/v1/workspaces/{id}` with `snapshots` and
-`snapshot_days`), and an instance's admins whether any workspace does and
-how large one may be (`snapshots`, `max_snapshot_mb` in `PATCH
-/api/v1/admin/settings`). The routes are listed in
+(`GET …/parts/{n}`)
+([Session snapshots](architecture.md#session-snapshots)). A workspace's
+admins choose whether its sessions keep snapshots and for how long
+(`PATCH /api/v1/workspaces/{id}` with `snapshots` and `snapshot_days`),
+and an instance's admins whether any workspace does and how large one may
+be (`snapshots`, `max_snapshot_mb` in `PATCH /api/v1/admin/settings`).
+
+## Runner pools
+
+What a pool (an enrollment token's runners) needs now, for whatever scales
+it ([Runner pools](architecture.md#runner-pools)): with its enrollment
+token as the bearer token, `GET /api/v1/runner/enroll/demand` answers the
+token's pool; signed in, or as a service account acting for nobody, `GET
+/api/v1/workspaces/{id}/runners/demand` (`?pool=` its name or id) answers
+the workspace's pools the caller manages, with every session that waits:
+
+```json
+{
+  "pool": {"id": "enr_…", "name": "AWS large", "labels": ["aws", "large"], "placement": "packed", "max_runners": 20},
+  "runners": {"online": 3, "busy": 3, "draining": 0, "pending": 0, "starting": 1, "offline": 0},
+  "slots": {"capacity": 12, "busy": 11, "free": 1},
+  "waiting": {"sessions": 4, "since": 1795000000000, "reasons": {"busy": 4}},
+  "wanted": 4,
+  "shape": {"capacity": 4, "cpus": 16, "memory_mb": 65536, "driver": "docker", "version": "0.38.0", "seen_at": 1795000000000},
+  "at": 1795000120000
+}
+```
+
+`wanted` is what to scale the pool to: KEDA's metrics-api scaler reads it
+with `valueLocation: wanted`, as from a `ScaledObject` like this one:
+
+```yaml
+triggers:
+  - type: metrics-api
+    metadata:
+      url: https://app.fctl.sh/api/v1/runner/enroll/demand
+      valueLocation: wanted
+      targetValue: "1"
+      authMode: bearer
+    authenticationRef:
+      name: fctl-enrollment-token   # a TriggerAuthentication whose token is the fctl_et_…
+```
+
+`PATCH /api/v1/workspaces/{id}/enrollment-tokens/{token}` with `{"name":
+…, "labels": […], "placement": "spread"|"packed", "max_runners": n}` (0 for
+no limit) changes a pool; its runners carry the new labels and placement
+at once. A self-hosted control plane whose deployment sets
+`FCTL_METRICS_TOKEN` also serves every workspace's pools to Prometheus at
+`GET /api/v1/metrics`, with that token as the bearer token
+([Self-hosting](self-hosting.md#runner-pools-in-prometheus)).
+
+## Routes
+
+The routes are listed in
 [`crates/fctl-control/src/lib.rs`](../crates/fctl-control/src/lib.rs), and
 [`crates/fctl-client/src/api.rs`](../crates/fctl-client/src/api.rs), the
 CLI's client, calls each with its types.

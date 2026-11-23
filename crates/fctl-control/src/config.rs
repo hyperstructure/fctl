@@ -11,6 +11,7 @@
 //! | `FCTL_WEBHOOK_HTTP` | var | `1` where webhooks may post over plain `http://` too (self-hosted; never app.fctl.sh) |
 //! | `FCTL_WEBHOOK_PRIVATE_HOSTS` | var | IP ranges and host names on a private network webhooks may post to (self-hosted; never app.fctl.sh; `fctl_domain::hooks::Reach`) |
 //! | `FCTL_ADMIN_TOKENS` | var | `1` where instance admins make admin tokens, which provision people (self-hosted; never app.fctl.sh; `fctl_domain::admin_tokens`) |
+//! | `FCTL_METRICS_TOKEN` | secret | The bearer token Prometheus scrapes runner pools' demand with, at `/api/v1/metrics` (self-hosted; unset: no metrics) |
 //! | `FCTL_MASTER_KEY` | secret | 32 random bytes, base64; encrypts credentials and signs state |
 //! | `FCTL_SETUP_TOKEN` | secret | One-time token for creating the owner account |
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
@@ -136,6 +137,13 @@ fn var(env: &Env, name: &str) -> Option<String> {
         .or_else(|| env.secret(name).ok().map(|v| v.to_string()))
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
+}
+
+/// The bearer token `/api/v1/metrics` takes (`FCTL_METRICS_TOKEN`), where
+/// the deployment set one: without it, there are no metrics. Read apart
+/// from [`Config`], as only that endpoint asks.
+pub fn metrics_token(env: &Env) -> Option<String> {
+    var(env, "FCTL_METRICS_TOKEN")
 }
 
 /// Plain HTTP redirects to HTTPS (`fctl_domain::https`). Read apart from

@@ -295,6 +295,31 @@ pub struct SnapshotParts {
     pub size: u64,
 }
 
+/// Asks FleetDO what a workspace's pools need now (`POST /demand`): all of
+/// them, or those of the enrollment tokens `pools` names.
+#[derive(Serialize, Deserialize)]
+pub struct DemandOf {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub pools: Option<Vec<String>>,
+}
+
+/// What every workspace's pools need now, by workspace id (`POST
+/// /demand-all`): the workspaces with pools, and those with sessions that
+/// wait.
+#[derive(Serialize, Deserialize, Default)]
+pub struct AllDemand {
+    pub workspaces: Vec<(String, fctl_proto::api::WorkspaceDemand)>,
+}
+
+/// A pool's labels, placement or name changed (`POST /pool-changed`): its
+/// runners carry them at once, feeds show them, and sessions that wait
+/// for its labels may start.
+#[derive(Serialize, Deserialize)]
+pub struct PoolChanged {
+    pub token_id: String,
+}
+
 /// Asks FleetDO where a session's sandbox is, and whether a resume now
 /// would leave it (`POST /sandbox`).
 #[derive(Serialize, Deserialize)]
