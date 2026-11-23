@@ -325,6 +325,7 @@ pub async fn run(server: Option<&str>, cmd: RunnersCmd, json: bool) -> Result<()
             cloudwatch,
             namespace,
             json,
+            single: true,
         };
         return show
             .run(|| async {
@@ -379,6 +380,7 @@ pub async fn run(server: Option<&str>, cmd: RunnersCmd, json: bool) -> Result<()
                 cloudwatch,
                 namespace,
                 json,
+                single: pool.is_some(),
             };
             let id = w.id.as_str();
             show.run(|| async { Ok(api.workspace_demand(id, pool.as_deref()).await?) })
@@ -697,10 +699,14 @@ async fn enrollment_tokens(
                 return style::print_json(&t);
             }
             println!(
-                "{} Changed {}: its {} carry it at once.",
+                "{} Changed {}: {}",
                 style::accent("✓"),
                 style::bold(&t.name),
-                style::count(t.runners, "runner", "runners")
+                match t.runners {
+                    0 => "the runners it enrolls follow it.".to_owned(),
+                    1 => "its runner follows it at once.".to_owned(),
+                    n => format!("its {n} runners follow it at once."),
+                }
             );
             println!("  {}", style::dim(&pool_line(&t)));
             Ok(())
@@ -779,6 +785,10 @@ struct Show {
     cloudwatch: bool,
     namespace: String,
     json: bool,
+    /// One pool was asked for (`--pool`, or an enrollment token's): its
+    /// JSON is that pool's, as the token's endpoint answers, rather than
+    /// the workspace's list.
+    single: bool,
 }
 
 impl Show {
@@ -838,10 +848,11 @@ impl Show {
             return Ok(());
         }
         if self.json {
-            // One line each, so that a watch reads as JSON lines; a single
-            // pool as itself, as KEDA's metrics-api scaler reads it.
-            let line = match d.pools.as_slice() {
-                [one] if d.unpooled == 0 => serde_json::to_string(one)?,
+            // One line each, so that a watch reads as JSON lines; the pool
+            // asked for as itself, as the enrollment token's endpoint
+            // answers it.
+            let line = match (self.single, d.pools.first()) {
+                (true, Some(one)) => serde_json::to_string(one)?,
                 _ => serde_json::to_string(d)?,
             };
             println!("{line}");
@@ -933,17 +944,20 @@ fn print_pool(p: &PoolDemand, full: bool) {
         .as_ref()
         .map(|u| format!(" · {}'s", u.name))
         .unwrap_or_default();
+    let runners = match p.pool.max_runners {
+        Some(_) => format!("{enrolled}{limit} runners"),
+        None => style::count(enrolled, "runner", "runners"),
+    };
     println!(
         "{}  {}",
         style::bold(&p.pool.name),
         style::dim(&format!(
-            "{} · {}{limit} runners{whose}{closed} · {}",
+            "{} · {runners}{whose}{closed} · {}",
             if p.pool.labels.is_empty() {
                 "no labels".to_owned()
             } else {
                 p.pool.labels.join(", ")
             },
-            enrolled,
             p.pool.id
         ))
     );
@@ -1143,6 +1157,12 @@ fn print_runner(r: &Runner) {
     .flatten()
     .collect();
     println!("  {}", style::dim(&facts.join(" · ")));
+    if !r.labels.is_empty() {
+        println!(
+            "  {}",
+            style::dim(&format!("labels {}", r.labels.join(", ")))
+        );
+    }
     if let Some(d) = drain_line(r) {
         println!("  {}", style::dim(&d));
     }
