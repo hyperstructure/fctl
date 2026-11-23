@@ -277,6 +277,19 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     .run()
     .await?;
     deleted += settle(&db).await?;
+    // Limit pauses and Claude's refusals, a month on.
+    for statement in crate::claude_oversight::expire(&db, now)? {
+        deleted += statement.run().await?;
+    }
+    // People whose Claude token runs out within a month, then a week, and
+    // their admins; and the weekly emails to admins.
+    match crate::claude_oversight::warn(env, &db, now).await {
+        Ok((0, 0)) => {}
+        Ok((warned, summed)) => worker::console_log!(
+            "housekeeping: warned {warned} people of Claude tokens that run out, emailed the admins of {summed} workspaces their week"
+        ),
+        Err(e) => worker::console_error!("warning of Claude tokens: {}", e.0.message),
+    }
     // Stale notes as long as their projects keep them.
     match crate::api::memories::expire_stale(&db, now).await {
         Ok(0) => {}
