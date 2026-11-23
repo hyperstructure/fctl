@@ -59,6 +59,16 @@ pub async fn put_part(
     crate::spec::check_runs(&ctx.db, &r.id, session_id).await?;
     check_id(snapshot)?;
     let n = check_part(n)?;
+    // Only for a session whose specs carry a key, while the instance and
+    // its workspace keep snapshots: what would be refused isn't stored.
+    let settings = crate::instance::settings(&ctx.db).await?;
+    let refused = match crate::snapshots::row(&ctx.db, session_id).await? {
+        None => Some("This session saves no snapshots".to_owned()),
+        Some(_) => crate::snapshots::refusal(&ctx.db, &settings, session_id, 0).await?,
+    };
+    if let Some(why) = refused {
+        return Err(AppError(ApiError::forbidden(why)));
+    }
     if http::header(req, "Content-Length")
         .and_then(|l| l.parse::<usize>().ok())
         .is_some_and(|l| l > SNAPSHOT_PART_BYTES)
@@ -76,6 +86,10 @@ pub async fn put_part(
     let stub = internal::session_stub(&ctx.env, session_id)?;
     let path = format!("/snapshot/part?id={}&n={n}", enc(snapshot));
     let _: serde_json::Value = internal::post_body(&stub, &path, body).await?;
+    // An upload that never commits goes after a day, by the hourly job.
+    if n == 0 {
+        crate::snapshots::uploading(&ctx.db, session_id, ctx.now).await?;
+    }
     http::ok(&Done { ok: true })
 }
 
@@ -121,7 +135,9 @@ pub async fn commit(
     // Whole in SessionDO, then the session's in D1, and only then does the
     // one before go: D1 never names a snapshot whose parts are gone.
     let _: serde_json::Value = internal::post(&stub, "/snapshot/commit", &parts).await?;
-    if let Err(e) = crate::snapshots::keep(
+    // A D1 that fails keeps the parts, so that the host's retry commits
+    // them; D1 still names the one before, whose parts are still there.
+    crate::snapshots::keep(
         &ctx.db,
         session_id,
         snapshot,
@@ -129,12 +145,7 @@ pub async fn commit(
         (&r.id, &r.name),
         ctx.now,
     )
-    .await
-    {
-        let _: AppResult<serde_json::Value> =
-            internal::post(&stub, "/snapshot/delete", &parts).await;
-        return Err(e);
-    }
+    .await?;
     let pruned: AppResult<serde_json::Value> =
         internal::post(&stub, "/snapshot/prune", &parts).await;
     if let Err(e) = pruned {

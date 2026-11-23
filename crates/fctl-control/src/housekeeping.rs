@@ -196,6 +196,12 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         Ok(n) => worker::console_log!("deleted {n} session snapshots"),
         Err(e) => worker::console_error!("deleting session snapshots: {}", e.0.message),
     }
+    // And uploads of them that never committed, a day on.
+    match crate::snapshots::abandon(env, &db, now).await {
+        Ok(0) => {}
+        Ok(n) => worker::console_log!("let go of {n} unfinished snapshot uploads"),
+        Err(e) => worker::console_error!("letting go of snapshot uploads: {}", e.0.message),
+    }
     let mut deleted = 0;
     for (sql, cutoff) in [
         // Expired tokens are already refused and hidden from Settings.

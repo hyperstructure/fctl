@@ -493,6 +493,7 @@ impl DurableObject for SessionObject {
                     Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
                 }
             }
+            (worker::Method::Post, "/snapshot/abandoned") => Ok(self.snapshot_abandoned()),
             (worker::Method::Post, "/snapshot/prune") => {
                 match req.json::<internal::SnapshotParts>().await {
                     Ok(b) => Ok(self.snapshot_prune(&b.id)),
@@ -4459,6 +4460,19 @@ impl SessionObject {
             )
             .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
         Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// Lets go of every upload that never became a whole snapshot.
+    fn snapshot_abandoned(&self) -> serde_json::Value {
+        for stmt in [
+            "DELETE FROM snapshot_chunks WHERE snapshot_id IN (SELECT id FROM snapshots WHERE committed = 0)",
+            "DELETE FROM snapshots WHERE committed = 0",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, None) {
+                worker::console_error!("letting go of an unfinished snapshot: {e}");
+            }
+        }
+        serde_json::json!({ "ok": true })
     }
 
     /// Lets go of every whole snapshot but `id`, which D1 names the

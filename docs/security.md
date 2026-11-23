@@ -973,7 +973,8 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   Durable Object keeps it for 30 days after it was saved, or the days its
   workspace chooses (1 to 365), and only the newest; the hourly job
   deletes it then, and within the hour once its workspace, or the
-  instance, turns snapshots off. Deleting its project deletes it with the
+  instance, turns snapshots off; an upload that never finished goes a day
+  after it started. Deleting its project deletes it with the
   transcript. Review agents' sessions save none. With less than 2 GiB
   free, Firecracker hosts pause their running sandboxes, which keep what
   their sessions wrote in memory until there is room.

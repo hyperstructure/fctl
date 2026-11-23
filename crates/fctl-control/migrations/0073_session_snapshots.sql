@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS session_snapshots (
   runner_name TEXT,
   -- When the hourly job last failed to delete it once it expired, which
   -- puts it after the others the next time.
-  expire_tried_at INTEGER
+  expire_tried_at INTEGER,
+  -- When its runner started uploading a snapshot that hasn't committed:
+  -- the hourly job lets go of its parts a day on.
+  uploading_since INTEGER
 );
 CREATE INDEX IF NOT EXISTS session_snapshots_saved ON session_snapshots (saved_at);
 

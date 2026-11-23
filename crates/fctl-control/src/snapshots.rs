@@ -231,7 +231,7 @@ pub async fn keep(
         db,
         "UPDATE session_snapshots SET snapshot_id = ?, size = ?, sha256 = ?, parts = ?, claude_version = ?, \
          agent_seq = ?, conversation = ?, changes = ?, left_out = ?, saved_at = ?, runner_id = ?, runner_name = ?, \
-         expire_tried_at = NULL WHERE session_id = ?",
+         expire_tried_at = NULL, uploading_since = NULL WHERE session_id = ?",
         &[
             s(snapshot_id),
             n(i64::try_from(saved.size).unwrap_or(i64::MAX)),
@@ -258,6 +258,71 @@ pub async fn keep(
         )));
     }
     Ok(())
+}
+
+/// Notes that the session's runner started uploading a snapshot at `now`,
+/// which [`abandon`] lets go of a day on, should it never commit.
+pub async fn uploading(db: &D1Database, session_id: &str, now: i64) -> AppResult<()> {
+    q(
+        db,
+        "UPDATE session_snapshots SET uploading_since = ? WHERE session_id = ?",
+        &[n(now), s(session_id)],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// The sessions whose runner started uploading a snapshot over a day
+/// before `now` and never committed it: at most 200.
+pub async fn abandoned(db: &D1Database, now: i64) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Abandoned {
+        session_id: String,
+    }
+    let rows: Vec<Abandoned> = q(
+        db,
+        "SELECT session_id FROM session_snapshots WHERE uploading_since IS NOT NULL \
+         AND uploading_since <= ? ORDER BY uploading_since LIMIT 200",
+        &[n(now - 86_400_000)],
+    )?
+    .all()
+    .await?;
+    Ok(rows.into_iter().map(|r| r.session_id).collect())
+}
+
+/// Lets go of the uploads that never committed ([`abandoned`]): their
+/// parts go from their SessionDO, whatever their workspace keeps. How
+/// many sessions had one.
+pub async fn abandon(env: &worker::Env, db: &D1Database, now: i64) -> AppResult<usize> {
+    let mut gone = 0;
+    for session_id in abandoned(db, now).await? {
+        let stub = internal::session_stub(env, &session_id)?;
+        let dropped: AppResult<serde_json::Value> = internal::post(
+            &stub,
+            "/snapshot/abandoned",
+            &SnapshotParts {
+                id: String::new(),
+                parts: 0,
+                size: 0,
+            },
+        )
+        .await;
+        if let Err(e) = dropped {
+            worker::console_error!("letting go of {session_id}'s upload: {}", e.0.message);
+            continue;
+        }
+        let cleared = q(
+            db,
+            "UPDATE session_snapshots SET uploading_since = NULL WHERE session_id = ?",
+            &[s(&session_id)],
+        );
+        if let Ok(stmt) = cleared {
+            let _ = stmt.run().await;
+        }
+        gone += 1;
+    }
+    Ok(gone)
 }
 
 /// The snapshots their sessions' workspaces no longer keep, at `now`, as
@@ -519,6 +584,10 @@ mod tests {
             ["ses_1", "ses_off"]
         );
         forget(&db, "ses_off", "snp_off").await?;
+        // An upload that never commits is let go of a day on.
+        uploading(&db, "ses_1", NOW).await?;
+        assert!(abandoned(&db, NOW + DAY - 1).await?.is_empty());
+        assert_eq!(abandoned(&db, NOW + DAY).await?, ["ses_1"]);
         q(
             &db,
             "UPDATE workspaces SET snapshot_days = 3 WHERE id = 'wsp_acme'",

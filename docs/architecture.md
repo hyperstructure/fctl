@@ -1655,7 +1655,8 @@ at once, rather than after ten minutes (`SessionWants.snapshot`), on a
 runner whose host restores snapshots; where none can take it, it waits,
 or starts, as any other session does. The hourly job deletes the snapshots past their workspace's
 days, and those of workspaces, or an instance, that stopped keeping them,
-the oldest first and one whose deletion failed after the others;
+the oldest first and one whose deletion failed after the others, and the
+parts of an upload that never committed a day after it started;
 deleting a session
 or its project deletes its snapshot with its event log. `fctl show` and
 `GET /api/v1/sessions/{id}` say what the session's snapshot holds, where
