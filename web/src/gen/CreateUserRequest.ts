@@ -3,9 +3,10 @@
 /**
  * `POST /api/v1/admin/users` (admin tokens): an account for someone, as
  * an active member of the instance, whose address the allowlist admits
- * from now on. They sign in with `password`, with Google where the
- * instance has it, or with a link that sets their password
- * (`POST /api/v1/admin/users/{user}/reset-link`).
+ * from now on. They sign in with `password`, with a link that sets
+ * their password (`POST /api/v1/admin/users/{user}/reset-link`), or with
+ * Google where the instance has it and Google hosts their address
+ * (Google Workspace or Gmail): their first Google sign-in links it.
  */
 export type CreateUserRequest = { email: string, 
 /**

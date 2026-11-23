@@ -394,14 +394,8 @@ async fn sign_in(ctx: &mut Ctx, user: UserRow, return_to: &str) -> AppResult<Res
 }
 
 /// A Google sign-in with the address of `user`, whom no Google account
-/// signs in yet; Google vouches that the person holds the address.
-///
-/// Linking it by address would let a Google account take over an account
-/// someone signs in to another way: they sign in that way, then link
-/// Google from Settings. An account with no way to sign in at all (no
-/// password, passkey or linked account), though, has nobody to take it
-/// from: an admin token made it for this address (`api::provision`), and
-/// nobody has signed in to it. Its first Google sign-in links Google to it.
+/// signs in yet; Google vouches that the person holds the address
+/// ([`first`]).
 async fn first_sign_in(
     ctx: &mut Ctx,
     user: UserRow,
@@ -409,11 +403,10 @@ async fn first_sign_in(
     email: &str,
     return_to: &str,
 ) -> AppResult<Response> {
-    if !user.is_active() {
-        return fail(ctx, "/login", "disabled");
-    }
-    if !link_first(&ctx.db, &user.id, claims, email, ctx.now).await? {
-        return fail(ctx, "/login", link_required(&user));
+    match first(&ctx.db, &user, claims, email, ctx.now).await? {
+        First::Linked => {}
+        First::Signs => return sign_in(ctx, user, return_to).await,
+        First::Refused(code) => return fail(ctx, "/login", code),
     }
     let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     crate::email::notice(
@@ -430,8 +423,11 @@ async fn first_sign_in(
         adopt_picture(ctx, &user.id, claims).await;
     }
     let response = sign_in(ctx, user.clone(), return_to).await;
-    // After the sign-in, which makes it theirs in the log; linked whether
-    // or not it went through.
+    // After the sign-in, so that the log names them as who linked it, and
+    // whether or not the sign-in went through. It starts their session at
+    // once: two-factor sign-in asks for a code only of accounts with an
+    // authenticator app or a passkey, which nobody set up on an account
+    // nobody could sign in to.
     ctx.audit(
         "identity.linked",
         Some(&user.id),
@@ -440,11 +436,61 @@ async fn first_sign_in(
     response
 }
 
+/// What a Google sign-in with the address of `user`, whom no Google
+/// account signs in yet, does with the account.
+#[derive(Debug, PartialEq)]
+enum First {
+    /// It linked Google to the account, which had no way in.
+    Linked,
+    /// This Google account signs in to it already: another request's
+    /// first sign-in with it linked it a moment ago.
+    Signs,
+    /// It refuses, with the error the sign-in page explains.
+    Refused(&'static str),
+}
+
+/// Linking a Google account by address would let it take over an account
+/// someone signs in to another way: they sign in that way, then link
+/// Google from Settings. An account with no way to sign in at all (no
+/// password, passkey or linked account), though, has nobody to take it
+/// from: an admin token made it for this address (`api::provision`), and
+/// nobody has signed in to it. Its first Google sign-in links Google to it.
+async fn first(
+    db: &D1Database,
+    user: &UserRow,
+    c: &Claims,
+    email: &str,
+    now: i64,
+) -> AppResult<First> {
+    if !user.is_active() {
+        return Ok(First::Refused("disabled"));
+    }
+    if link_first(db, &user.id, c, email, now).await? {
+        return Ok(First::Linked);
+    }
+    #[derive(Deserialize)]
+    struct Owner {
+        user_id: String,
+    }
+    let owner: Option<Owner> = q(
+        db,
+        "SELECT user_id FROM identities WHERE provider = 'google' AND subject = ?",
+        &[s(&c.sub)],
+    )?
+    .first()
+    .await?;
+    if owner.is_some_and(|o| o.user_id == user.id) {
+        return Ok(First::Signs);
+    }
+    Ok(First::Refused(link_required(user)))
+}
+
 /// Links the Google account of `c` to the account `user_id` as its first
-/// way to sign in, as one statement that checks again that it has none and
-/// is active: a password, a passkey or a Google account given it since it
-/// was read (another tab's first sign-in) leaves it as it is. Whether it
-/// linked it.
+/// way to sign in, as one statement that checks again that the account is
+/// active, has no way in and has `email`, the address Google vouched for:
+/// a password, a passkey or a Google account given it since it was read,
+/// or an address an admin token changed meanwhile, leaves it as it is.
+/// Whether it linked it.
 async fn link_first(
     db: &D1Database,
     user_id: &str,
@@ -456,7 +502,8 @@ async fn link_first(
         db,
         "INSERT OR IGNORE INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at) \
          SELECT ?1, ?2, 'google', ?3, ?4, ?5, ?6, ?7 \
-         WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = ?2 AND u.status = 'active' AND u.password_hash IS NULL) \
+         WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = ?2 AND u.status = 'active' AND u.password_hash IS NULL \
+           AND (u.email = ?4 OR EXISTS (SELECT 1 FROM user_emails e WHERE e.user_id = ?2 AND e.email = ?4))) \
          AND NOT EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = ?2) \
          AND NOT EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2)",
         &[
@@ -483,7 +530,7 @@ fn link_required(user: &UserRow) -> &'static str {
     } else if user.passkeys > 0 {
         "google_link_passkey"
     } else {
-        // Another Google account, or this one a moment ago in another tab.
+        // Another Google account.
         "google_link_other"
     }
 }
@@ -647,18 +694,32 @@ mod tests {
     async fn a_provisioned_account_takes_its_first_google_sign_in() -> AppResult<()> {
         let db = testing::database();
         world(&db).await?;
-        let bob = claims("g-bob", "bob@acme.dev");
-        assert!(link_first(&db, "usr_bob", &bob, "bob@acme.dev", NOW).await?);
-        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
-        // Then it is his way in: another Google account with his address
-        // links to it only from his Settings.
-        let other = claims("g-bob-2", "bob@acme.dev");
-        assert!(!link_first(&db, "usr_bob", &other, "bob@acme.dev", NOW + 1).await?);
-        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
+        let bob = user(&db, "usr_bob").await?;
+        let google = claims("g-bob", "bob@acme.dev");
         assert_eq!(
-            link_required(&user(&db, "usr_bob").await?),
-            "google_link_other"
+            first(&db, &bob, &google, "bob@acme.dev", NOW).await?,
+            First::Linked
         );
+        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
+        // Then it is his way in: the same Google account signs in, and
+        // another with his address links to it only from his Settings.
+        assert_eq!(
+            first(&db, &bob, &google, "bob@acme.dev", NOW + 1).await?,
+            First::Signs
+        );
+        let other = claims("g-bob-2", "bob@acme.dev");
+        assert_eq!(
+            first(
+                &db,
+                &user(&db, "usr_bob").await?,
+                &other,
+                "bob@acme.dev",
+                NOW + 2
+            )
+            .await?,
+            First::Refused("google_link_other")
+        );
+        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
         Ok(())
     }
 
@@ -670,10 +731,12 @@ mod tests {
             ("usr_ada", "ada@acme.dev", "google_link_required"),
             ("usr_cy", "cy@acme.dev", "google_link_passkey"),
             ("usr_dee", "dee@acme.dev", "google_link_other"),
+            // A disabled account takes none, though nobody signs in to it.
+            ("usr_eve", "eve@acme.dev", "disabled"),
         ] {
             let c = claims(&format!("g-{id}"), email);
-            assert!(!link_first(&db, id, &c, email, NOW).await?, "{id}");
-            assert_eq!(link_required(&user(&db, id).await?), code, "{id}");
+            let found = first(&db, &user(&db, id).await?, &c, email, NOW).await?;
+            assert_eq!(found, First::Refused(code), "{id}");
         }
         assert!(googles(&db, "usr_ada").await?.is_empty());
         assert!(googles(&db, "usr_cy").await?.is_empty());
@@ -681,10 +744,65 @@ mod tests {
             googles(&db, "usr_dee").await?,
             vec!["g-dee-personal".to_owned()]
         );
-        // A disabled account takes none, though nobody signs in to it.
-        let eve = claims("g-eve", "eve@acme.dev");
-        assert!(!link_first(&db, "usr_eve", &eve, "eve@acme.dev", NOW).await?);
         assert!(googles(&db, "usr_eve").await?.is_empty());
+        // Nor does one that had no way in a moment ago, and has one now.
+        let bob = user(&db, "usr_bob").await?;
+        q(
+            &db,
+            "UPDATE users SET password_hash = 'hash' WHERE id = 'usr_bob'",
+            &[],
+        )?
+        .run()
+        .await?;
+        let c = claims("g-bob", "bob@acme.dev");
+        assert!(matches!(
+            first(&db, &bob, &c, "bob@acme.dev", NOW).await?,
+            First::Refused(_)
+        ));
+        assert!(googles(&db, "usr_bob").await?.is_empty());
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    async fn the_link_holds_to_the_address_google_vouched_for() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        // An admin token gives Bob a new address after the sign-in found
+        // his account by the old one: the old one's Google account gets
+        // nothing.
+        let bob = user(&db, "usr_bob").await?;
+        for sql in [
+            "UPDATE users SET email = 'bob@new.acme.dev' WHERE id = 'usr_bob'",
+            "UPDATE user_emails SET email = 'bob@new.acme.dev' WHERE email = 'bob@acme.dev'",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        let old = claims("g-bob-old", "bob@acme.dev");
+        assert!(matches!(
+            first(&db, &bob, &old, "bob@acme.dev", NOW).await?,
+            First::Refused(_)
+        ));
+        assert!(googles(&db, "usr_bob").await?.is_empty());
+        // Any address of his signs in, the ones connected to his account too.
+        q(
+            &db,
+            "INSERT INTO user_emails (email, user_id, created_at) VALUES ('bob@acme.io', 'usr_bob', 0)",
+            &[],
+        )?
+        .run()
+        .await?;
+        let connected = claims("g-bob-io", "bob@acme.io");
+        assert_eq!(
+            first(
+                &db,
+                &user(&db, "usr_bob").await?,
+                &connected,
+                "bob@acme.io",
+                NOW
+            )
+            .await?,
+            First::Linked
+        );
         Ok(())
     }
 
@@ -692,15 +810,20 @@ mod tests {
     async fn two_first_sign_ins_at_once_link_one_google_account() -> AppResult<()> {
         let db = testing::database();
         world(&db).await?;
+        let bob = user(&db, "usr_bob").await?;
+        // Two Google accounts with his address: one links, the other is
+        // turned away.
         let (one, two) = (
             claims("g-bob", "bob@acme.dev"),
             claims("g-bob-2", "bob@acme.dev"),
         );
         let (a, b) = futures::join!(
-            link_first(&db, "usr_bob", &one, "bob@acme.dev", NOW),
-            link_first(&db, "usr_bob", &two, "bob@acme.dev", NOW),
+            first(&db, &bob, &one, "bob@acme.dev", NOW),
+            first(&db, &bob, &two, "bob@acme.dev", NOW),
         );
-        assert_ne!(a?, b?);
+        let mut both = [a?, b?];
+        both.sort_by_key(|f| format!("{f:?}"));
+        assert_eq!(both, [First::Linked, First::Refused("google_link_other")]);
         let linked: Option<Count> = q(
             &db,
             "SELECT COUNT(*) AS n FROM identities WHERE user_id = 'usr_bob'",
@@ -709,6 +832,23 @@ mod tests {
         .first()
         .await?;
         assert_eq!(linked.map(|c| c.n), Some(1));
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    async fn the_same_google_account_twice_at_once_signs_in_both_times() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        let bob = user(&db, "usr_bob").await?;
+        let google = claims("g-bob", "bob@acme.dev");
+        let (a, b) = futures::join!(
+            first(&db, &bob, &google, "bob@acme.dev", NOW),
+            first(&db, &bob, &google, "bob@acme.dev", NOW),
+        );
+        let mut both = [a?, b?];
+        both.sort_by_key(|f| format!("{f:?}"));
+        assert_eq!(both, [First::Linked, First::Signs]);
+        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
         Ok(())
     }
 }
