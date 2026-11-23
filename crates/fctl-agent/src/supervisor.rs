@@ -3083,9 +3083,19 @@ impl Supervisor {
             return None;
         };
         let claude_bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
-        let scratch = self.state_dir.join("snapshot");
+        // Where the session's user writes: fctl-agent works as that user
+        // where it protects itself from it, and its own state is root's.
+        let scratch = self.user_state.join("snapshot");
         if let Err(e) = std::fs::create_dir_all(&scratch) {
             tracing::warn!("making {}: {e}", scratch.display());
+            self.notice(
+                NoticeLevel::Warn,
+                "snapshot_unusable",
+                &fctl_domain::snapshots::unusable_words(&format!(
+                    "the sandbox had nowhere to put it ({e})"
+                )),
+                None,
+            );
             return None;
         }
         let (done, file) = oneshot::channel();
@@ -3167,6 +3177,7 @@ impl Supervisor {
                 ),
             );
         }
+        let mut notes = Vec::new();
         if !done.moved.is_empty()
             && let Some(config) = &self.config
         {
@@ -3180,7 +3191,23 @@ impl Supervisor {
                 ),
                 None,
             );
-            self.persisted.snapshot_note = Some(prompt::snapshot_work_aside(&done.moved, &at));
+            notes.push(prompt::snapshot_work_aside(&done.moved, &at));
+        }
+        if !done.failed.is_empty() {
+            self.notice(
+                NoticeLevel::Warn,
+                "snapshot_work_lost",
+                &format!(
+                    "The snapshot's uncommitted work in {} couldn't be put back: the agent starts there from the branch",
+                    failures(&done.failed)
+                ),
+                None,
+            );
+            let names: Vec<String> = done.failed.iter().map(|(n, _)| n.clone()).collect();
+            notes.push(prompt::snapshot_work_lost(&names));
+        }
+        if !notes.is_empty() {
+            self.persisted.snapshot_note = Some(notes.join("\n\n"));
             self.persist();
         }
     }
@@ -3202,7 +3229,8 @@ impl Supervisor {
         let Ok(key) = STANDARD.decode(snap.key.as_bytes()) else {
             return;
         };
-        let dir = self.state_dir.join("snapshot");
+        // Where the session's user writes, as for a restore.
+        let dir = self.user_state.join("snapshot");
         let version = self.claude_version.map(|v| v.to_string());
         let seq = self.journal.last_seq();
         match crate::snapshot::save(
@@ -3216,7 +3244,17 @@ impl Supervisor {
         )
         .await
         {
-            Ok(Some(saved)) => self.send_snapshot(saved),
+            Ok(Some(saved)) => {
+                if !saved.failed.is_empty() {
+                    let msg = format!(
+                        "The session's snapshot left out the work in {}: a resume on another runner starts there from the branch.",
+                        failures(&saved.failed)
+                    );
+                    self.notice(NoticeLevel::Warn, "snapshot_work_left_out", &msg, None);
+                    self.flush();
+                }
+                self.send_snapshot(saved);
+            }
             Ok(None) => {}
             Err(e) => {
                 let msg = format!(
@@ -3353,6 +3391,16 @@ impl Supervisor {
         // Give the host a moment to read everything.
         self.exit_after = Some(Instant::now() + Duration::from_secs(3));
     }
+}
+
+/// Repositories and why their work didn't come along, for the transcript:
+/// `acme/api (its bundle's history is missing)`.
+fn failures(failed: &[(String, String)]) -> String {
+    failed
+        .iter()
+        .map(|(name, why)| format!("{name} ({})", why.trim().trim_end_matches('.')))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// How long a sandbox waits for the snapshot it asked for before Claude

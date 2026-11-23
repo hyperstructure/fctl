@@ -1025,6 +1025,15 @@ pub fn snapshot_work_aside(repos: &[String], at: &str) -> String {
     )
 }
 
+/// What Claude hears of the repositories whose uncommitted work a
+/// restored snapshot couldn't put back.
+pub fn snapshot_work_lost(repos: &[String]) -> String {
+    format!(
+        "(fctl: this session resumed in a new sandbox from its snapshot, but the uncommitted work you had in {} couldn't be put back: the working tree there is the branch as pushed. Check what you need to do again before you carry on.)",
+        repos.join(", ")
+    )
+}
+
 /// What comes before the first message after the session stopped while
 /// background tasks ran: they didn't finish. Claude Code reports the tasks
 /// it lost when it resumes the conversation too, in its own words.

@@ -12,15 +12,17 @@
 //!   Claude Code's conversation and what it keeps beside it (subagents'
 //!   conversations, long tool results), and `claude/todos/<session>…`;
 //! - `repos/<n>.bundle`: each repository's work that isn't on GitHub, as a
-//!   git bundle of a commit of its working tree (`refs/fctl/wip/<session>`)
+//!   git bundle of a commit of its working tree (`refs/fctl/snapshot/<session>`)
 //!   on top of its commits not pushed. Git keeps what a tarball wouldn't:
 //!   deletions, modes, binary files, which files were untracked.
 //!
 //! Restoring fetches each bundle into the fresh clone and, where the
 //! branch is where the snapshot left it or behind it, checks the work out
 //! and resets to the commit before it, so that uncommitted work is
-//! uncommitted again. Where the branch moved on elsewhere, the work stays
-//! at `refs/fctl/wip/<session>`, and Claude hears where.
+//! uncommitted again. Where the branch moved on elsewhere, the work waits
+//! at `refs/fctl/wip/<session>`, and Claude hears where; the snapshots
+//! saved after that carry it on, as their work commit's second parent,
+//! until it is part of the branch.
 
 use crate::workspace::Paths;
 use anyhow::{Context, Result, anyhow, bail};
@@ -62,9 +64,29 @@ pub struct RepoMeta {
     pub bundle: String,
 }
 
-/// The ref a session's work in progress is kept at.
+/// The ref a session's work waits at when a restore couldn't put it back,
+/// its branch having moved on: Claude hears where.
 pub fn wip_ref(session: &str) -> String {
     format!("refs/fctl/wip/{session}")
+}
+
+/// The ref a snapshot's bundle carries a repository's work in, which is
+/// there only while a snapshot is saved or restored.
+fn carried_ref(session: &str) -> String {
+    format!("refs/fctl/snapshot/{session}")
+}
+
+/// What a repository is called in what the transcript and Claude hear:
+/// the project's repository, or its directory under `~/repos`.
+fn repo_name(spec: &SessionSpec, dir: &str) -> String {
+    if dir.is_empty() {
+        spec.project
+            .repo
+            .as_ref()
+            .map_or_else(|| "the working directory".to_owned(), |r| r.full_name())
+    } else {
+        dir.trim_start_matches("repos/").to_owned()
+    }
 }
 
 /// Claude Code's directory for conversations in `workdir`: the path with
@@ -160,6 +182,35 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
     let changed = !git(home, repo, &["status", "--porcelain"], &[])
         .await?
         .is_empty();
+    // Work an earlier restore couldn't put back, which Claude may not have
+    // taken back yet: carried on as the new commit's second parent, unless
+    // the branch has it by now.
+    let parked = match git_text(
+        home,
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("{}^{{commit}}", wip_ref(session)),
+        ],
+    )
+    .await
+    {
+        Ok(p) if !p.is_empty() => {
+            let merged = head.is_some()
+                && git(
+                    home,
+                    repo,
+                    &["merge-base", "--is-ancestor", &p, "HEAD"],
+                    &[],
+                )
+                .await
+                .is_ok();
+            (!merged).then_some(p)
+        }
+        _ => None,
+    };
     let unpushed = match head {
         Some(_) => {
             git_text(
@@ -174,7 +225,7 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
         }
         None => false,
     };
-    if !changed && !unpushed {
+    if !changed && !unpushed && parked.is_none() {
         return Ok(None);
     }
     // An index of its own, so that the repository's stays as it is.
@@ -194,6 +245,9 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
         if let Some(h) = &head {
             args.extend(["-p", h.as_str()]);
         }
+        if let Some(p) = &parked {
+            args.extend(["-p", p.as_str()]);
+        }
         args.extend(["-m", message.as_str()]);
         let wip = String::from_utf8_lossy(&git(home, repo, &args, &env).await?)
             .trim()
@@ -203,7 +257,7 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
     .await;
     let _ = std::fs::remove_file(&index);
     let wip = made?;
-    let r = wip_ref(session);
+    let r = carried_ref(session);
     git(home, repo, &["update-ref", &r, &wip], &[]).await?;
     let bundle = git(
         home,
@@ -211,7 +265,9 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
         &["bundle", "create", "-", &r, "--not", "--remotes"],
         &[],
     )
-    .await?;
+    .await;
+    let _ = git(home, repo, &["update-ref", "-d", &r], &[]).await;
+    let bundle = bundle?;
     Ok(Some((
         RepoMeta {
             dir: String::new(),
@@ -229,6 +285,8 @@ struct Parts {
     /// The conversation's files, by their path in the snapshot.
     files: Vec<(String, Vec<u8>)>,
     bundles: Vec<(String, Vec<u8>)>,
+    /// The repositories whose work it couldn't take, and why.
+    failed: Vec<(String, String)>,
 }
 
 /// Collects what a snapshot of the session holds.
@@ -266,6 +324,7 @@ async fn collect(paths: &Paths, spec: &SessionSpec, claude_version: Option<&str>
         }
     }
     let mut bundles = Vec::new();
+    let mut failed = Vec::new();
     for (dir, path) in repos(paths, spec) {
         match work_of(&paths.home, &path, spec.session_id.as_str()).await {
             Ok(Some((mut repo, bundle))) => {
@@ -275,13 +334,17 @@ async fn collect(paths: &Paths, spec: &SessionSpec, claude_version: Option<&str>
                 meta.repos.push(repo);
             }
             Ok(None) => {}
-            Err(e) => tracing::warn!("saving the work in {}: {e:#}", path.display()),
+            Err(e) => {
+                tracing::warn!("saving the work in {}: {e:#}", path.display());
+                failed.push((repo_name(spec, &dir), format!("{e:#}")));
+            }
         }
     }
     Ok(Parts {
         meta,
         files,
         bundles,
+        failed,
     })
 }
 
@@ -379,6 +442,9 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
 pub struct Saved {
     pub file: PathBuf,
     pub saved: SnapshotSaved,
+    /// The repositories whose work it couldn't take, and why: the
+    /// transcript says so.
+    pub failed: Vec<(String, String)>,
 }
 
 /// Saves a snapshot of the session into `dir`, sealed with `key`, within
@@ -396,6 +462,9 @@ pub async fn save(
 ) -> Result<Option<Saved>> {
     let mut parts = collect(paths, spec, claude_version).await?;
     if parts.meta.conversation_dir.is_none() && parts.bundles.is_empty() {
+        if let Some((name, why)) = parts.failed.first() {
+            bail!("saving the work in {name} failed: {why}");
+        }
         return Ok(None);
     }
     std::fs::create_dir_all(dir)?;
@@ -449,6 +518,7 @@ pub async fn save(
             left_out,
         },
         file: sealed,
+        failed: parts.failed,
     }))
 }
 
@@ -538,6 +608,8 @@ pub struct Restored {
     pub moved: Vec<String>,
     /// Images the snapshot had left out of the conversation.
     pub images_left_out: usize,
+    /// The repositories whose work it couldn't put back, and why.
+    pub failed: Vec<(String, String)>,
 }
 
 /// Unpacks the sealed snapshot at `file` into `into`: its `meta.json`.
@@ -646,18 +718,14 @@ pub async fn restore(
         } else {
             paths.home.join(&repo.dir)
         };
-        let name = if repo.dir.is_empty() {
-            spec.project
-                .repo
-                .as_ref()
-                .map_or_else(|| "the working directory".to_owned(), |r| r.full_name())
-        } else {
-            repo.dir.trim_start_matches("repos/").to_owned()
-        };
+        let name = repo_name(spec, &repo.dir);
         match put_back(&paths.home, &path, &into.join(&repo.bundle), repo, session).await {
             Ok(true) => restored.changes.push(name),
             Ok(false) => restored.moved.push(name),
-            Err(e) => tracing::warn!("putting the work back in {}: {e:#}", path.display()),
+            Err(e) => {
+                tracing::warn!("putting the work back in {}: {e:#}", path.display());
+                restored.failed.push((name, format!("{e:#}")));
+            }
         }
     }
     let _ = std::fs::remove_dir_all(&into);
@@ -683,7 +751,8 @@ async fn put_back(
     let here = repo.join(".git/fctl-snapshot.bundle");
     std::fs::copy(bundle, &here)?;
     give_to_user(&here);
-    let r = wip_ref(session);
+    let r = carried_ref(session);
+    let parked = wip_ref(session);
     let fetched = git(
         home,
         repo,
@@ -715,6 +784,9 @@ async fn put_back(
             .await
             .is_ok());
     if !behind {
+        // It waits, with what waited before it as its second parent.
+        git(home, repo, &["update-ref", &parked, &meta.wip], &[]).await?;
+        let _ = git(home, repo, &["update-ref", "-d", &r], &[]).await;
         return Ok(false);
     }
     git(home, repo, &["reset", "--hard", &meta.wip], &[]).await?;
@@ -726,6 +798,22 @@ async fn put_back(
     } else {
         git(home, repo, &["reset", "--mixed", &meta.head], &[]).await?;
     }
+    // Work that waited when this snapshot was saved still does.
+    match git_text(
+        home,
+        repo,
+        &["rev-parse", "--verify", "-q", &format!("{}^2", meta.wip)],
+    )
+    .await
+    {
+        Ok(p) if !p.is_empty() => {
+            git(home, repo, &["update-ref", &parked, &p], &[]).await?;
+        }
+        _ => {
+            let _ = git(home, repo, &["update-ref", "-d", &parked], &[]).await;
+        }
+    }
+    let _ = git(home, repo, &["update-ref", "-d", &r], &[]).await;
     Ok(true)
 }
 
@@ -1028,6 +1116,103 @@ mod tests {
         )
         .await?;
         assert_eq!(kept, "mine");
+        // Stopped again with a clean tree, before Claude took it back: the
+        // next snapshot carries the waiting work on, and a restore where
+        // the branch is as it was saved puts the tree back and keeps the
+        // work waiting.
+        let again = save(&b, &s, &key, 10_000_000, None, 2, &root.path().join("out4"))
+            .await?
+            .ok_or_else(|| anyhow!("the waiting work wasn't carried on"))?;
+        assert!(again.saved.changes && again.failed.is_empty());
+        assert_eq!(
+            sh(
+                &b.workdir,
+                "git for-each-ref --format='%(refname)' refs/fctl/snapshot"
+            )
+            .await?,
+            ""
+        );
+        let d = sandbox(root.path(), "d", &origin).await?;
+        let restored = restore(
+            &d,
+            &s,
+            &again.file,
+            &key,
+            &again.saved.sha256,
+            None,
+            &root.path().join("scratch4"),
+        )
+        .await
+        .map_err(|e| anyhow!(e))?;
+        assert_eq!((restored.changes.len(), restored.moved.len()), (1, 0));
+        assert_eq!(sh(&d.workdir, "git status --porcelain").await?, "");
+        let kept = sh(
+            &d.workdir,
+            &format!("git show {}:a.txt", wip_ref(s.session_id.as_str())),
+        )
+        .await?;
+        assert_eq!(kept, "mine");
+        // Once the branch has it, it no longer comes along.
+        sh(
+            &d.workdir,
+            &format!(
+                "git merge -q --no-edit -X theirs {} -m merged",
+                wip_ref(s.session_id.as_str())
+            ),
+        )
+        .await?;
+        sh(
+            &d.workdir,
+            &format!("git push -q {} HEAD:main", origin.display()),
+        )
+        .await?;
+        sh(&d.workdir, "git fetch -q origin").await?;
+        assert!(
+            save(&d, &s, &key, 10_000_000, None, 3, &root.path().join("out5"))
+                .await?
+                .is_none()
+        );
+        // A branch force-pushed without the history the work sits on: the
+        // work can't be put back, and the restore says so.
+        let e = sandbox(root.path(), "e", &origin).await?;
+        sh(&e.workdir, "echo late > c.txt && git add c.txt && git commit -qm late && git push -q origin HEAD:main && echo draft > d.txt").await?;
+        let late = save(&e, &s, &key, 10_000_000, None, 4, &root.path().join("out6"))
+            .await?
+            .ok_or_else(|| anyhow!("nothing saved"))?;
+        sh(
+            &seed,
+            &format!(
+                "git checkout -q --orphan fresh && git rm -rqf . && echo anew > n.txt && git add n.txt && git commit -qm anew && git push -qf {} fresh:main",
+                origin.display()
+            ),
+        )
+        .await?;
+        // A local clone would take the commits the force-push left behind.
+        sh(
+            &origin,
+            "git reflog expire --expire=now --all && git gc -q --prune=now",
+        )
+        .await?;
+        let f = sandbox(root.path(), "f", &origin).await?;
+        let restored = restore(
+            &f,
+            &s,
+            &late.file,
+            &key,
+            &late.saved.sha256,
+            None,
+            &root.path().join("scratch6"),
+        )
+        .await
+        .map_err(|e| anyhow!(e))?;
+        assert_eq!(
+            (
+                restored.changes.len(),
+                restored.moved.len(),
+                restored.failed.len()
+            ),
+            (0, 0, 1)
+        );
         // Nothing to save: no conversation, nothing changed.
         let c = sandbox(root.path(), "c", &origin).await?;
         assert!(
