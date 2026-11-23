@@ -500,12 +500,13 @@ ORDER BY findings DESC;
 ```
 
 Tokens and changed lines, by project, from each session's last finished
-turn, whose numbers count all its turns until then:
+turn that has them, whose numbers count all its turns until then (a row
+whose read of the session failed has none):
 
 ```sql
 WITH latest AS (
   SELECT * FROM fctl.events
-  WHERE type = 'session.finished'
+  WHERE type = 'session.finished' AND output_tokens IS NOT NULL
   QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY occurred_at DESC) = 1)
 SELECT project, COUNT(*) AS sessions, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
   SUM(additions) AS additions, SUM(deletions) AS deletions

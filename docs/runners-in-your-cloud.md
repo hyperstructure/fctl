@@ -103,7 +103,7 @@ and 8 GiB each: 24 GiB for sandboxes, 8 GiB for the rest.
 
 | | AWS | Google Cloud | Azure |
 |---|---|---|---|
-| 8 vCPUs, 32 GiB | `m7i.2xlarge` | `n2-standard-8` | `Standard_D8s_v6` |
+| 8 vCPUs, 32 GiB | `m7i.2xlarge` | `n2-standard-8` | `Standard_D8s_v5` |
 | The disk | 200 GB `gp3` | 200 GB `pd-balanced` | 256 GB Premium SSD |
 
 A project that sets more for its sandboxes (`fctl projects set --cpus 8
@@ -313,7 +313,7 @@ source "azure-arm" "fctl-runner" {
   use_azure_cli_auth = true
   subscription_id    = var.azure_subscription
   location           = var.azure_location
-  vm_size            = "Standard_D2s_v6"
+  vm_size            = "Standard_D2s_v5"
   os_type            = "Linux"
   image_publisher    = "Canonical"
   image_offer        = "ubuntu-24_04-lts"
@@ -619,7 +619,10 @@ packer build -only='azure-arm.fctl-runner' -var "fctl_version=$FCTL_VERSION" \
 ```
 
 It takes about 20 minutes, and adds the version `$FCTL_VERSION` to the
-image definition `fctl-runner`.
+image definition `fctl-runner`. The guide uses Dsv5 machines, whose disks
+are SCSI: Dsv6 and later take only NVMe disks, which need an image
+definition marked for them (`DiskControllerTypes=SCSI,NVMe` in
+`--features`) and a scale set that asks for them.
 
 `runner/fctl-scale-in-azure-arm`, the watcher, waits for the scale
 set's terminate notification, or a Spot machine's eviction, in the
@@ -650,8 +653,15 @@ set's identity reads and nothing else does:
 
 ```sh
 az keyvault create -g "$RG" -n "$VAULT" -l "$LOCATION" --enable-rbac-authorization true
+az role assignment create --role "Key Vault Secrets Officer" \
+  --assignee "$(az ad signed-in-user show --query id -o tsv)" --scope "$(az keyvault show -n "$VAULT" --query id -o tsv)"
 az keyvault secret set --vault-name "$VAULT" --name enroll-token --file enroll-token
 ```
+
+A vault that uses Azure's roles lets nobody at its secrets, its
+subscription's owners included, until a role says so: the second
+command lets you write them. It can take a minute to apply, so a
+`Forbidden` from the third command goes away if you run it again.
 
 Then delete `enroll-token` from your machine. The scale set gets its
 identity, and the role on the vault, as it's created below.
@@ -683,7 +693,7 @@ the machines:
 ```sh
 az vmss create -g "$RG" -n "$GROUP" \
   --image "/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Compute/galleries/acme_runners/images/fctl-runner/versions/$FCTL_VERSION" \
-  --security-type TrustedLaunch --vm-sku Standard_D8s_v6 --instance-count 2 \
+  --security-type TrustedLaunch --vm-sku Standard_D8s_v5 --instance-count 2 \
   --os-disk-size-gb 256 --storage-sku Premium_LRS --subnet "$SUBNET_ID" --load-balancer "" \
   --admin-username acme --generate-ssh-keys \
   --custom-data cloud-init.sh --terminate-notification-time 15 \
