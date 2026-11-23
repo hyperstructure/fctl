@@ -221,8 +221,9 @@ never talks to the cloud, and holds none of its credentials.
 
 The project's own variables come after the clouds' and win
 (`AWS_ROLE_SESSION_NAME`, say), and the setup script gets them too, so it
-can install packages from a private registry: it waits up to 15 seconds
-for the first tokens. A session started before a change of the clouds
+can install packages from a private registry
+([Secrets for the setup script](#secrets-for-the-setup-script)): it
+waits up to 15 seconds for the first tokens. A session started before a change of the clouds
 takes it when it next starts or resumes.
 
 ### AWS
@@ -361,6 +362,34 @@ SDKs' `DefaultAzureCredential` signs in with. The Azure CLI signs in with
 `az login --service-principal -u "$AZURE_CLIENT_ID" -t "$AZURE_TENANT_ID"
 --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")"`.
 
+### Secrets for the setup script
+
+A project's setup script has the clouds' credentials, as its agents do,
+so it can read a secret that your cloud keeps, such as a private
+registry's token, without that secret becoming one of the project's.
+Give the project's role, service account or application read access to
+that secret alone. On AWS, with the project's role allowed
+`secretsmanager:GetSecretValue` on it:
+
+```sh
+# the project's setup script
+NPM_TOKEN=$(uvx --from awscli aws secretsmanager get-secret-value \
+  --secret-id web/npm-token --query SecretString --output text)
+printf '//npm.pkg.github.com/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
+npm ci
+```
+
+The default image has none of the clouds' CLIs: `uvx` runs the AWS CLI
+without installing it, and a project's own image can have the one it
+needs ([Your own image](sandbox-images.md#your-own-image)). On Google
+Cloud, `gcloud secrets versions access latest --secret=npm-token
+--project=acme-prod` reads one from Secret Manager; on Azure, `az
+keyvault secret show --vault-name acme --name npm-token --query value -o
+tsv` reads one from Key Vault, after the `az login` above.
+
+The project's agents have the same credentials, and read what the setup
+script writes: keep there only secrets the agents may hold too.
+
 ### HashiCorp Vault and others
 
 Anything that takes OpenID Connect ID tokens takes an agent's, with the
@@ -386,6 +415,12 @@ EOF
 # in a session
 vault write auth/fctl/login role=web-agents jwt="$(fctl id-token -a https://vault.acme.dev)"
 ```
+
+`fctl id-token` doesn't work in a setup script, so neither does this
+login there: it reaches fctl-agent through the session's socket, which
+only the agent's environment has. Log in to Vault in the session, or
+keep what the setup script needs in a cloud the project connects
+([above](#secrets-for-the-setup-script)).
 
 ## What a token proves
 

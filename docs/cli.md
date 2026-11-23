@@ -1613,10 +1613,10 @@ an active admin. It changes no roles, nor the primary instance owner's
 account, and only the primary instance owner's tokens change admins'.
 `--claude-token -` reads the token from stdin, so that it stays out of
 your shell's history. A new account has no password until someone sets
-one: `--password-stdin`, or the link `fctl admin reset-link` makes. Where
-the instance has Google sign-in and Google hosts the address (Google
-Workspace or Gmail), the person's first Google sign-in links Google to
-the account instead.
+one: `--password-stdin`, or the link `fctl admin reset-link` makes, which
+works for an hour. Where the instance has Google sign-in and Google hosts
+the address (Google Workspace or Gmail), the person's first Google
+sign-in links Google to the account instead.
 
 A new workspace or project takes the slug its name makes, and when
 another has it or it is reserved, that slug with a random ending of six
