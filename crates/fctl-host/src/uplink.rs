@@ -25,6 +25,8 @@ pub enum Up {
     Diffs(Vec<FileDiff>),
 }
 
+/// A session's link to the control plane: each clone sends on it.
+#[derive(Clone)]
 pub struct Uplink {
     tx: mpsc::UnboundedSender<Up>,
 }

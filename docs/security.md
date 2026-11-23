@@ -348,6 +348,30 @@ its VM, and nothing outside it except through these channels:
   reach neither each other nor the host's loopback. Apple's `container`
   VMs share its network: on a runner that serves more than one workspace,
   keep to Docker or Firecracker where that matters.
+- **Cloud metadata.** A cloud machine's instance metadata service
+  (`169.254.169.254`, and the addresses of ECS's task credentials, EKS Pod
+  Identity, Alibaba Cloud and Tencent Cloud: `fctl_domain::metadata`)
+  hands out the machine's own credentials and its user data, where boot
+  scripts keep secrets such as an enrollment token, to whatever asks from
+  the machine. Sandboxes don't reach it unless the host lets them
+  (`allow_cloud_metadata = true` in `host.toml`; [ADR
+  0093](adr/0093-hosts-keep-sandboxes-off-cloud-metadata-services.md)). A
+  Docker sandbox gets routes that make those addresses unreachable in its
+  network namespace, which a helper container adds with the host's own
+  fctl-agent, alone in that namespace with `NET_ADMIN` alone; the sandbox
+  runs without `NET_RAW`, so not even its root, which has neither, takes
+  the routes out or sends raw frames around them. A Firecracker VM's
+  frames to them are dropped on the host, between the VM and its `passt`,
+  where the VM's root can't reach, but for DNS, which Google Cloud's
+  metadata server answers as the machine's nameserver. A run whose sandbox
+  can't be kept off them doesn't start, and says why; a Docker sandbox
+  made before, with raw sockets, is replaced as its session next starts.
+  Apple container and Lima VMs, whose root could take out anything the
+  host set inside them, and the process driver aren't kept off them: on a
+  cloud machine, use Docker or Firecracker. Image builds
+  (`allowed_builds`) aren't kept off them either: build only repositories
+  you trust. Agents that should use a cloud get credentials of their own
+  through [identity tokens](identity-tokens.md).
 - **GitHub.** Installation tokens for the project's repositories and no
   others, within the GitHub accounts and repositories its workspace may use,
   valid for an hour and refreshed on demand

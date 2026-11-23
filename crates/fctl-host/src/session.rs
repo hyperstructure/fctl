@@ -1005,6 +1005,14 @@ async fn prepare(
 ) -> Result<(Sandbox, Option<SandboxCache>)> {
     let name = sandbox_name(spec.session_id.as_str());
     let log_uplink = |line: String| host_log(uplink, LogLevel::Info, line);
+    // A sandbox that could send around what keeps it off cloud metadata
+    // services goes before anything goes by its being here, as the image
+    // below does: the run makes a new one, its project's build too.
+    if ctx.driver.retire_raw_sandbox(&name).await? {
+        log_uplink(format!(
+            "Starting in a new sandbox: {name} was made with raw sockets, with which it could reach the cloud's metadata service, so Claude starts a new conversation on the session's branch"
+        ));
+    }
     let want = ImageWant::of(&spec.project.settings, spec.project.repo.as_ref());
     let (image, fallback_image) = match want {
         // A sandbox that is here already keeps the image it was made from.
@@ -1081,10 +1089,21 @@ async fn prepare(
             .await
             .context("getting fctl-agent for the sandbox")?;
         ctx.driver.install_agent(&sb, &bin).await?;
+        // Before anything of the session's runs: a run that can't be kept
+        // off them doesn't start.
+        ctx.driver
+            .keep_off_metadata(&sb, &bin)
+            .await
+            .context(KEEP_OFF_FAILED)?;
     }
     ctx.driver.start_agent(&sb).await?;
     Ok((sb, for_agent))
 }
+
+/// Why a run doesn't start when its sandbox can't be kept off cloud
+/// metadata services ([`crate::driver::Driver::keep_off_metadata`]), and
+/// the way round it for a runner that should let it reach them.
+const KEEP_OFF_FAILED: &str = "Couldn't keep the sandbox off the cloud's metadata service, which hands out the runner's own credentials (allow_cloud_metadata = true in the runner's host.toml lets sandboxes reach it)";
 
 /// Why this host takes no session now: `studio's docker driver isn't ready:
 /// the Docker daemon isn't running`.
@@ -1108,16 +1127,32 @@ fn stop_asked(cmds: &mut mpsc::UnboundedReceiver<SessionCmd>) -> bool {
 /// Starts fctl-agent in a sandbox that has one, perhaps of an older host,
 /// which may not run as root (`serve --user`): this host's goes in first.
 /// One that runs keeps running.
-async fn start_again(ctx: &HostCtx, sb: &Sandbox) -> Result<()> {
+async fn start_again(ctx: &HostCtx, sb: &Sandbox, uplink: &Uplink) -> Result<()> {
     if ctx.driver.needs_linux_agent() {
-        let installed = async {
-            let bin = crate::agentbin::linux_agent(&ctx.cfg)
-                .await
-                .context("getting fctl-agent for the sandbox")?;
-            ctx.driver.install_agent(sb, &bin).await
-        };
-        if let Err(e) = installed.await {
-            tracing::warn!("putting this host's fctl-agent in {}: {e:#}", sb.name);
+        match crate::agentbin::linux_agent(&ctx.cfg).await {
+            Ok(bin) => {
+                if let Err(e) = ctx.driver.install_agent(sb, &bin).await {
+                    tracing::warn!("putting this host's fctl-agent in {}: {e:#}", sb.name);
+                }
+                // A sandbox from before hosts kept sandboxes off cloud
+                // metadata services is kept off them from now on. Its run
+                // is under way: it carries on, and the session hears why
+                // it may reach them, which its next run won't.
+                if let Err(e) = ctx.driver.keep_off_metadata(sb, &bin).await {
+                    tracing::warn!("{} may reach cloud metadata services: {e:#}", sb.name);
+                    host_log(
+                        uplink,
+                        LogLevel::Warn,
+                        format!(
+                            "This sandbox may reach the cloud's metadata service, which hands out the runner's own credentials, until the session's next run, which keeps it off it or doesn't start: {e:#}"
+                        ),
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                "putting this host's fctl-agent in {}: getting fctl-agent for the sandbox: {e:#}",
+                sb.name
+            ),
         }
     }
     ctx.driver.start_agent(sb).await
@@ -1266,7 +1301,7 @@ async fn run(
             if ctx.driver.pauses() && ctx.driver.paused(&sb).await {
                 tracing::info!("{} is paused until there is room on the disk", sb.name);
                 found_paused = true;
-            } else if let Err(e) = start_again(&ctx, &sb).await {
+            } else if let Err(e) = start_again(&ctx, &sb, &uplink).await {
                 tracing::warn!("restarting fctl-agent in {}: {e:#}", sb.name);
             }
             sb
@@ -1390,10 +1425,10 @@ async fn run(
                 uplink.send(UplinkUp::Notice { notice: n });
                 told_restart = true;
             }
-            let (ctx, sb) = (ctx.clone(), sb.clone());
+            let (ctx, sb, up) = (ctx.clone(), sb.clone(), uplink.clone());
             attaching = Some(tokio::spawn(async move {
                 let started = if restart {
-                    start_again(&ctx, &sb).await.err()
+                    start_again(&ctx, &sb, &up).await.err()
                 } else {
                     None
                 };
