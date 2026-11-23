@@ -129,6 +129,7 @@ export const keys = {
   shares: (id: string) => ["shares", id] as const,
   audit: ["audit"] as const,
   instanceSettings: ["admin", "settings"] as const,
+  signIn: ["admin", "sign-in"] as const,
   reservedSlugs: ["admin", "reserved-slugs"] as const,
   adminTokens: ["admin", "tokens"] as const,
   accountDeletion: ["me", "deletion"] as const,

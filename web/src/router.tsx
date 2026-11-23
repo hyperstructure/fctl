@@ -70,6 +70,8 @@ const login = createRoute({
     next: str(s.next),
     error: str(s.error),
     deleted: flag(s.deleted),
+    // A Google sign-in an account's domain refused: the domains it signs in as (api::sign_in::wrong_account).
+    ...(str(s.domains) ? { domains: str(s.domains) } : {}),
   }),
   beforeLoad: async () => {
     const info = await instance();
@@ -231,6 +233,7 @@ const admin = createRoute({
         : oneOf(s.tab, [
             "people",
             "access",
+            "sign-in",
             "early-access",
             "workspaces",
             "github",

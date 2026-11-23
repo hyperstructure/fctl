@@ -616,6 +616,11 @@ export const api = {
     request<G.GithubInstallations>("DELETE", `/admin/github/${enc(account)}/workspaces/${enc(workspace)}`),
   audit: (before?: number) => request<G.AuditList>("GET", `/admin/audit${before ? `?before=${before}` : ""}`),
   instanceSettings: () => request<G.InstanceSettings>("GET", "/admin/settings"),
+  /** How people sign in: the providers, the domains that require one and whom they cover (admins). */
+  signIn: () => request<G.SignInOverview>("GET", "/admin/sign-in"),
+  /** What saving `rules` as the instance's sign-in rules would do, before anything changes (admins). */
+  signInPreview: (rules: G.SignInRule[]) =>
+    request<G.SignInPreview>("POST", "/admin/sign-in/preview", { rules } satisfies G.SignInPreviewRequest),
   updateInstanceSettings: (b: G.UpdateInstanceSettingsRequest) =>
     request<G.InstanceSettings>("PATCH", "/admin/settings", b),
 };
