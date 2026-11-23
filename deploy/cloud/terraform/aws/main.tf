@@ -95,6 +95,7 @@ resource "aws_launch_template" "runner" {
     cpus     = var.cpus
     memory   = var.memory
     retire   = var.retire_idle_minutes
+    deadline = var.drain_hours * 3600 - 300
   }))
 
   iam_instance_profile {
@@ -159,6 +160,9 @@ resource "aws_autoscaling_group" "runners" {
   lifecycle {
     ignore_changes = [desired_capacity]
   }
+
+  # A machine reads its token as it boots, with its role.
+  depends_on = [aws_secretsmanager_secret_version.token, aws_iam_role_policy.runner]
 
   dynamic "tag" {
     for_each = merge(var.tags, { Name = var.name })

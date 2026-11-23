@@ -5,6 +5,7 @@ set -eu
 . /etc/default/fctl-size-group # SERVER and MIN, from the boot script
 md() { curl -sf -H Metadata:true --noproxy '*' "http://169.254.169.254/metadata/$1"; }
 wanted=$(curl -sf -H "Authorization: Bearer $(cat /etc/fctl/enroll-token)" "$SERVER/api/v1/runner/enroll/demand" | jq .wanted)
+case "$wanted" in '' | *[!0-9]*) exit 1 ;; esac # no answer: the size stays as it is
 [ "$wanted" -ge "$MIN" ] || wanted=$MIN
 api="https://management.azure.com$(md 'instance/compute?api-version=2021-02-01' |
   jq -r '"/subscriptions/\(.subscriptionId)/resourceGroups/\(.resourceGroupName)/providers/Microsoft.Compute/virtualMachineScaleSets/\(.vmScaleSetName)"')?api-version=2024-07-01"

@@ -1,6 +1,5 @@
 [Unit]
 Description=Size this fctl runner's group every minute
-ConditionPathExists=/etc/default/fctl-size-group
 
 [Timer]
 OnBootSec=2min

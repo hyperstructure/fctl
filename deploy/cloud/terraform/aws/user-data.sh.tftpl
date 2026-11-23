@@ -2,16 +2,23 @@
 # Runs once, as root, as the machine first boots: reads the enrollment token
 # and enrolls the machine as one of the pool's runners.
 set -eu
-printf 'GROUP=%s\nHOOK=fctl-drain\n' '${group}' > /etc/default/fctl-scale-in # for the watcher
+printf 'GROUP=%s\nHOOK=fctl-drain\nDEADLINE=%s\n' '${group}' '${deadline}' > /etc/default/fctl-scale-in # for the watcher
 md() {
   t=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') &&
     curl -sf -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
 }
-for try in 1 2 3 4 5 6 7 8 9 10; do # the role can take a minute to reach a new machine
+for _ in 1 2 3 4 5 6 7 8 9 10; do # the role can take a minute to reach a new machine
   token=$(aws secretsmanager get-secret-value --region "$(md placement/region)" --secret-id '${secret}' \
     --query SecretString --output text) && break
   sleep 15
 done
+# Without its token, it would count in the group and run nothing: it goes,
+# and the group starts another.
+if [ -z "$${token:-}" ]; then
+  echo "fctl: couldn't read the enrollment token from ${secret}" >&2
+  shutdown -h now
+  exit 1
+fi
 printf %s "$token" | fctl-enroll '${server}' "aws-$(md instance-id)" \
   --capacity ${capacity} --cpus ${cpus} --memory ${memory}%{ if retire > 0 } \
   --retire-when-idle ${retire}m --retire-command /usr/local/sbin/fctl-retire%{ endif }

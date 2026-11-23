@@ -85,9 +85,14 @@ variable "retire_idle_minutes" {
 }
 
 variable "drain_hours" {
-  description = "How long a machine the group takes may drain: its turns under way finish within it (at most 2: the drain hook's heartbeat)."
+  description = "How long a machine the group takes may drain, 1 or 2 hours (the drain hook's longest heartbeat): its turns under way finish within it, less 5 minutes for what follows."
   type        = number
   default     = 2
+
+  validation {
+    condition     = contains([1, 2], var.drain_hours)
+    error_message = "drain_hours is 1 or 2: the drain hook holds a machine for 2 hours at most."
+  }
 }
 
 variable "tags" {

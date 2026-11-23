@@ -283,7 +283,6 @@ ExecStart=/usr/local/sbin/fctl-size-group
 ```ini
 [Unit]
 Description=Size this fctl runner's group every minute
-ConditionPathExists=/etc/default/fctl-size-group
 
 [Timer]
 OnBootSec=2min
@@ -440,14 +439,14 @@ below, or for a Spot reclaim's two minutes' notice:
 # Drains this runner when Auto Scaling takes the machine, then lets it go on.
 set -u
 until [ -f /etc/default/fctl-scale-in ]; do sleep 5; done
-. /etc/default/fctl-scale-in # GROUP and HOOK, from the boot script
+. /etc/default/fctl-scale-in # GROUP, HOOK and DEADLINE, from the boot script
 md() {
   t=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') &&
     curl -sf -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
 }
 while :; do
   if md spot/instance-action >/dev/null; then deadline=45; break; fi # two minutes' notice
-  if [ "$(md autoscaling/target-lifecycle-state)" = Terminated ]; then deadline=6900; break; fi # the hook's two hours
+  if [ "$(md autoscaling/target-lifecycle-state)" = Terminated ]; then deadline=${DEADLINE:-6900}; break; fi # under the hook's timeout
   sleep 5
 done
 fctl-drain "$deadline"
@@ -887,6 +886,7 @@ set -eu
 . /etc/default/fctl-size-group # SERVER and MIN, from the startup script
 md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1"; }
 wanted=$(curl -sf -H "Authorization: Bearer $(cat /etc/fctl/enroll-token)" "$SERVER/api/v1/runner/enroll/demand" | jq .wanted)
+case "$wanted" in '' | *[!0-9]*) exit 1 ;; esac # no answer: the size stays as it is
 [ "$wanted" -ge "$MIN" ] || wanted=$MIN
 api="https://compute.googleapis.com/compute/v1/projects/$(md project/project-id)/$(md instance/attributes/created-by | sed 's|^projects/[^/]*/||')"
 access=$(md instance/service-accounts/default/token | jq -r .access_token)
@@ -904,6 +904,7 @@ set -eu
 . /etc/default/fctl-size-group # SERVER and MIN, from the boot script
 md() { curl -sf -H Metadata:true --noproxy '*' "http://169.254.169.254/metadata/$1"; }
 wanted=$(curl -sf -H "Authorization: Bearer $(cat /etc/fctl/enroll-token)" "$SERVER/api/v1/runner/enroll/demand" | jq .wanted)
+case "$wanted" in '' | *[!0-9]*) exit 1 ;; esac # no answer: the size stays as it is
 [ "$wanted" -ge "$MIN" ] || wanted=$MIN
 api="https://management.azure.com$(md 'instance/compute?api-version=2021-02-01' |
   jq -r '"/subscriptions/\(.subscriptionId)/resourceGroups/\(.resourceGroupName)/providers/Microsoft.Compute/virtualMachineScaleSets/\(.vmScaleSetName)"')?api-version=2024-07-01"

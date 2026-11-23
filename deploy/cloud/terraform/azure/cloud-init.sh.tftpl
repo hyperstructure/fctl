@@ -4,12 +4,16 @@
 # fctl-size-group.timer size the scale set every minute.
 set -eu
 md() { curl -sf -H Metadata:true --noproxy '*' "http://169.254.169.254/metadata/$1"; }
-for try in 1 2 3 4 5 6 7 8 9 10; do # the role can take minutes to reach a new machine
+for _ in 1 2 3 4 5 6 7 8 9 10; do # the role can take minutes to reach a new machine
   access=$(md 'identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' | jq -r .access_token)
   token=$(curl -sf -H "Authorization: Bearer $access" \
     '${vault_uri}secrets/enroll-token?api-version=7.4' | jq -r .value) && [ -n "$token" ] && break
   sleep 30
 done
+if [ -z "$${token:-}" ]; then
+  echo "fctl: couldn't read the enrollment token from ${vault_uri}" >&2
+  exit 1
+fi
 mkdir -p /etc/fctl && (umask 077 && printf %s "$token" > /etc/fctl/enroll-token)
 printf 'SERVER=%s\nMIN=%s\n' '${server}' '${min_size}' > /etc/default/fctl-size-group
 printf %s "$token" | fctl-enroll '${server}' "$(md 'instance/compute/name?api-version=2021-02-01&format=text')" \

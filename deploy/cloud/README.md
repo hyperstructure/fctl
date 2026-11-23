@@ -21,6 +21,6 @@ The guide shows each file of `runner/` and the template as they are here:
 you push a change here:
 
 ```sh
-shellcheck -s sh -S warning deploy/cloud/runner/provision.sh deploy/cloud/runner/fctl-[!f]*[!e] deploy/cloud/runner/fctl-*-*
+find deploy/cloud/runner -type f ! -name '*.service' ! -name '*.timer' -exec shellcheck -s sh -S warning {} +
 for d in deploy/cloud/terraform/*/; do (cd "$d" && terraform fmt -check && terraform init -backend=false && terraform validate); done
 ```
