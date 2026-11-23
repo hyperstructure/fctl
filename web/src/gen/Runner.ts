@@ -5,6 +5,7 @@ import type { RunnerClaudeToken } from "./RunnerClaudeToken";
 import type { RunnerDrain } from "./RunnerDrain";
 import type { RunnerEnrollment } from "./RunnerEnrollment";
 import type { RunnerId } from "./RunnerId";
+import type { RunnerPool } from "./RunnerPool";
 import type { RunnerStatus } from "./RunnerStatus";
 import type { SandboxLimits } from "./SandboxLimits";
 import type { UserRef } from "./UserRef";
@@ -50,7 +51,20 @@ allowed_images?: Array<string>,
 /**
  * The repositories it builds images from. Absent: none.
  */
-allowed_builds?: Array<string>, labels: Array<string>, last_seen_at?: number, created_at: number, created_by?: UserRef, 
+allowed_builds?: Array<string>, 
+/**
+ * Its labels: those of its pool ([`EnrollmentToken::labels`]) and
+ * those its host sets in `host.toml`. Projects that ask for labels
+ * (`ProjectSettings::runner_labels`) run only on runners with them all.
+ */
+labels: Array<string>, 
+/**
+ * The pool it is in: the enrollment token it enrolled with, whose
+ * labels it carries and whose placement it follows. Absent for
+ * runners that were registered rather than enrolled, once that token
+ * is deleted, and from control planes before pools.
+ */
+pool?: RunnerPool, last_seen_at?: number, created_at: number, created_by?: UserRef, 
 /**
  * Set while the runner drains: no new session starts on it, and the
  * sessions it has carry on there. Absent otherwise, and from control

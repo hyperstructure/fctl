@@ -199,6 +199,20 @@ pub(crate) fn changed(ctx: &Ctx, runner_id: &str, approved: bool) {
     });
 }
 
+/// Tells FleetObject that a pool (enrollment token `token_id`) changed its
+/// labels, placement or name: its runners carry them at once, feeds show
+/// them, and sessions that wait for its labels may start.
+pub(crate) fn pool_changed(ctx: &Ctx, token_id: &str) {
+    let env = ctx.env.clone();
+    let token_id = token_id.to_owned();
+    ctx.defer(async move {
+        let stub = internal::fleet_stub(&env)?;
+        let _: serde_json::Value =
+            internal::post(&stub, "/pool-changed", &internal::PoolChanged { token_id }).await?;
+        Ok(())
+    });
+}
+
 /// Tells FleetObject that a runner is gone: its control connection and
 /// uplinks close, the sessions it ran stop, saying `reason`, and lists
 /// drop it. Call it once its row is deleted, which is what decides: a host

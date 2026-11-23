@@ -7,7 +7,9 @@
 //! it enrolled are removed.
 
 use crate::validate::Result;
-use fctl_proto::api::{CreateEnrollmentTokenRequest, PushMessage, RunnerFacts};
+use fctl_proto::api::{
+    CreateEnrollmentTokenRequest, Placement, PushMessage, RunnerFacts, UpdateEnrollmentTokenRequest,
+};
 use fctl_proto::{ApiError, Millis};
 
 pub const MINUTE_MS: i64 = 60_000;
@@ -46,6 +48,9 @@ pub struct NewToken {
     pub max_runners: Option<u32>,
     pub approval: bool,
     pub remove_offline_after_minutes: Option<u32>,
+    /// The labels its runners carry: they are a pool (`crate::pools`).
+    pub labels: Vec<String>,
+    pub placement: Placement,
 }
 
 /// Checks what a new enrollment token is to be made with, at `now`, for its
@@ -62,16 +67,7 @@ pub fn check_new(req: &CreateEnrollmentTokenRequest, personal: bool, now: i64) -
             ));
         }
     };
-    let max_runners = match req.max_runners {
-        None => None,
-        Some(n) if (1..=MAX_RUNNERS).contains(&n) => Some(n),
-        Some(_) => {
-            return Err(ApiError::validation(
-                "max_runners",
-                format!("Allow between 1 and {MAX_RUNNERS} runners at once, or leave it empty"),
-            ));
-        }
-    };
+    let max_runners = check_max_runners(req.max_runners)?;
     let remove_offline_after_minutes = match req.remove_offline_after_minutes {
         None => None,
         Some(m) if (1..=MAX_REMOVE_OFFLINE_MINUTES).contains(&m) => Some(m),
@@ -82,6 +78,7 @@ pub fn check_new(req: &CreateEnrollmentTokenRequest, personal: bool, now: i64) -
             ));
         }
     };
+    let labels = crate::pools::check_labels("labels", req.labels.as_deref().unwrap_or_default())?;
     Ok(NewToken {
         name,
         personal,
@@ -89,6 +86,60 @@ pub fn check_new(req: &CreateEnrollmentTokenRequest, personal: bool, now: i64) -
         max_runners,
         approval: req.approval.unwrap_or(false),
         remove_offline_after_minutes,
+        labels,
+        placement: req
+            .placement
+            .unwrap_or_else(|| crate::pools::default_placement(remove_offline_after_minutes)),
+    })
+}
+
+fn check_max_runners(max: Option<u32>) -> Result<Option<u32>> {
+    match max {
+        None => Ok(None),
+        Some(n) if (1..=MAX_RUNNERS).contains(&n) => Ok(Some(n)),
+        Some(_) => Err(ApiError::validation(
+            "max_runners",
+            format!("Allow between 1 and {MAX_RUNNERS} runners at once, or leave it empty"),
+        )),
+    }
+}
+
+/// What an update changes of an enrollment token, checked: `None` leaves a
+/// field as it is. `max_runners` is `Some(None)` for no limit (0 in the
+/// request).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TokenChange {
+    pub name: Option<String>,
+    pub labels: Option<Vec<String>>,
+    pub placement: Option<Placement>,
+    pub max_runners: Option<Option<u32>>,
+}
+
+impl TokenChange {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Checks an update of an enrollment token.
+pub fn check_change(req: &UpdateEnrollmentTokenRequest) -> Result<TokenChange> {
+    Ok(TokenChange {
+        name: req
+            .name
+            .as_deref()
+            .map(|n| crate::validate::name("name", n))
+            .transpose()?,
+        labels: req
+            .labels
+            .as_deref()
+            .map(|l| crate::pools::check_labels("labels", l))
+            .transpose()?,
+        placement: req.placement,
+        max_runners: match req.max_runners {
+            None => None,
+            Some(0) => Some(None),
+            n => Some(check_max_runners(n)?),
+        },
     })
 }
 
@@ -538,6 +589,7 @@ mod tests {
                 max_runners: Some(20),
                 approval: Some(true),
                 remove_offline_after_minutes: Some(5),
+                labels: Some(vec!["AWS".into(), "large".into()]),
                 ..Default::default()
             },
             true,
@@ -553,18 +605,46 @@ mod tests {
                 max_runners: Some(20),
                 approval: true,
                 remove_offline_after_minutes: Some(5),
+                labels: vec!["aws".into(), "large".into()],
+                // It removes runners that go: they come and go, and pack.
+                placement: Placement::Packed,
             })
         );
-        // Without settings: never expires, no limit, no approval, kept.
+        // Without settings: never expires, no limit, no approval, kept,
+        // no labels, spread.
         let t = check_new(&request("CI"), false, NOW).ok();
         assert_eq!(
             t.map(|t| (
                 t.expires_at,
                 t.max_runners,
                 t.approval,
-                t.remove_offline_after_minutes
+                t.remove_offline_after_minutes,
+                t.labels.len(),
+                t.placement
             )),
-            Some((None, None, false, None))
+            Some((None, None, false, None, 0, Placement::Spread))
+        );
+        // A placement it asks for wins.
+        let t = check_new(
+            &CreateEnrollmentTokenRequest {
+                remove_offline_after_minutes: Some(5),
+                placement: Some(Placement::Spread),
+                ..request("CI")
+            },
+            false,
+            NOW,
+        );
+        assert_eq!(t.map(|t| t.placement).ok(), Some(Placement::Spread));
+        let bad_labels = CreateEnrollmentTokenRequest {
+            labels: Some(vec!["has space".into()]),
+            ..request("CI")
+        };
+        assert_eq!(
+            check_new(&bad_labels, false, NOW)
+                .err()
+                .and_then(|e| e.field)
+                .as_deref(),
+            Some("labels")
         );
         let field =
             |r: CreateEnrollmentTokenRequest| check_new(&r, false, NOW).err().and_then(|e| e.field);
@@ -590,6 +670,42 @@ mod tests {
             };
             assert_eq!(field(r).as_deref(), Some(which));
         }
+    }
+
+    #[test]
+    fn a_change_to_a_token_takes_what_it_names() -> Result<()> {
+        let none = check_change(&UpdateEnrollmentTokenRequest::default())?;
+        assert!(none.is_empty());
+        let change = check_change(&UpdateEnrollmentTokenRequest {
+            name: Some(" GPU  pool ".into()),
+            labels: Some(vec!["GPU".into()]),
+            placement: Some(Placement::Packed),
+            max_runners: Some(0),
+        })?;
+        assert_eq!(
+            change,
+            TokenChange {
+                name: Some("GPU pool".into()),
+                labels: Some(vec!["gpu".into()]),
+                placement: Some(Placement::Packed),
+                max_runners: Some(None),
+            }
+        );
+        let limit = check_change(&UpdateEnrollmentTokenRequest {
+            max_runners: Some(8),
+            labels: Some(vec![]),
+            ..Default::default()
+        })?;
+        assert_eq!(limit.max_runners, Some(Some(8)));
+        assert_eq!(limit.labels, Some(vec![]));
+        assert!(
+            check_change(&UpdateEnrollmentTokenRequest {
+                max_runners: Some(MAX_RUNNERS + 1),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        Ok(())
     }
 
     #[test]
