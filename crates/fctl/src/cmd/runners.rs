@@ -918,7 +918,7 @@ fn put_metrics(namespace: &str, p: &PoolDemand) -> Result<()> {
 /// A pool's Pool dimension in CloudWatch: its name, or its id where
 /// CloudWatch wouldn't take the name, which it takes only as printable
 /// ASCII, not all spaces, of at most 1,024 characters: a pool named "Büro"
-/// is `et_…` there.
+/// is `enr_…` there.
 fn cloudwatch_pool<'a>(id: &'a str, name: &'a str) -> &'a str {
     let takes = !name.trim().is_empty()
         && name.len() <= 1024
@@ -1274,11 +1274,11 @@ mod tests {
     #[test]
     fn cloudwatch_takes_a_pools_name_only_in_ascii() {
         use super::cloudwatch_pool;
-        assert_eq!(cloudwatch_pool("et_1", "AWS large"), "AWS large");
+        assert_eq!(cloudwatch_pool("enr_1", "AWS large"), "AWS large");
         for name in ["Büro", "東京", "", "   ", "tab\there"] {
-            assert_eq!(cloudwatch_pool("et_1", name), "et_1", "{name:?}");
+            assert_eq!(cloudwatch_pool("enr_1", name), "enr_1", "{name:?}");
         }
-        assert_eq!(cloudwatch_pool("et_1", &"a".repeat(1025)), "et_1");
+        assert_eq!(cloudwatch_pool("enr_1", &"a".repeat(1025)), "enr_1");
     }
 
     #[test]
