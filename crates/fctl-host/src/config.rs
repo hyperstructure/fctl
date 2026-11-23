@@ -25,6 +25,13 @@
 //! auto_update = true      # update fctl to the version the control plane runs
 //! agent_as_root = true    # fctl-agent as root in sandboxes, out of the agent's reach
 //! allow_cloud_metadata = false  # sandboxes reach the cloud's instance metadata service
+//! # A machine of a pool that grows and shrinks: once its runner has run nothing
+//! # for this long, it drains, runs retire_command, and leaves (0: never).
+//! retire_idle_minutes = 20
+//! retire_command = "systemctl poweroff"
+//!
+//! [kubernetes]             # a host in a Kubernetes pod
+//! pod_deletion_cost = true # keep the pod's deletion cost at its number of sessions
 //!
 //! [firecracker]            # the firecracker driver
 //! firecracker = "/usr/local/bin/firecracker"  # unset: the release fctl pins, downloaded
@@ -148,9 +155,47 @@ pub struct HostConfig {
     /// Apple container and Lima VMs, and the process driver, aren't kept
     /// off them either way.
     pub allow_cloud_metadata: bool,
+    /// Minutes the runner runs nothing before this machine retires: it
+    /// drains, runs `retire_command`, which takes the machine away (an
+    /// autoscaling group's terminate call, `systemctl poweroff`), and
+    /// once that worked leaves its workspace ([`crate::retire`]). 0, the
+    /// default, never: for machines in a pool that grows and shrinks.
+    pub retire_idle_minutes: u32,
+    /// What retires this machine, run with `sh -c` as the host's user.
+    /// Unset with `retire_idle_minutes`: the host drains, leaves and
+    /// stops, and whatever runs it takes the machine away.
+    pub retire_command: Option<String>,
+    /// For a host that runs in a Kubernetes pod.
+    #[serde(skip_serializing_if = "KubernetesConfig::is_default")]
+    pub kubernetes: KubernetesConfig,
     /// The `firecracker` driver's settings.
     #[serde(skip_serializing_if = "FirecrackerConfig::is_default")]
     pub firecracker: FirecrackerConfig,
+}
+
+/// A host in a Kubernetes pod: `[kubernetes]` in `host.toml`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KubernetesConfig {
+    /// Keep the pod's `controller.kubernetes.io/pod-deletion-cost` at the
+    /// number of sessions it runs, so that a Deployment that scales down
+    /// removes the pods that run none first ([`crate::kube`]). Its
+    /// service account needs to patch its pod. Outside a pod, nothing.
+    pub pod_deletion_cost: bool,
+}
+
+impl Default for KubernetesConfig {
+    fn default() -> Self {
+        Self {
+            pod_deletion_cost: true,
+        }
+    }
+}
+
+impl KubernetesConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// The `firecracker` driver's settings: `[firecracker]` in `host.toml`.
@@ -231,6 +276,9 @@ impl Default for HostConfig {
             auto_update: true,
             agent_as_root: true,
             allow_cloud_metadata: false,
+            retire_idle_minutes: 0,
+            retire_command: None,
+            kubernetes: KubernetesConfig::default(),
             firecracker: FirecrackerConfig::default(),
         }
     }
@@ -381,6 +429,13 @@ impl HostConfig {
 
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.clone().unwrap_or_else(default_data_dir)
+    }
+
+    /// How long the runner runs nothing before this machine retires, or
+    /// `None` when it never does (`retire_idle_minutes`).
+    pub fn retire_after(&self) -> Option<std::time::Duration> {
+        (self.retire_idle_minutes > 0)
+            .then(|| std::time::Duration::from_secs(u64::from(self.retire_idle_minutes) * 60))
     }
 
     /// `min_free_disk_gb` in MiB, or `None` when the host keeps none.
@@ -572,6 +627,27 @@ mod tests {
         assert!(HostConfig::default().agent_as_root);
         assert!(HostConfig::from_toml("capacity = 2\n")?.agent_as_root);
         assert!(!HostConfig::from_toml("agent_as_root = false\n")?.agent_as_root);
+        Ok(())
+    }
+
+    #[test]
+    fn hosts_retire_only_when_told_to() -> Result<()> {
+        assert_eq!(HostConfig::default().retire_after(), None);
+        let cfg = HostConfig::from_toml(
+            "retire_idle_minutes = 20\nretire_command = \"systemctl poweroff\"\n",
+        )?;
+        assert_eq!(
+            cfg.retire_after(),
+            Some(std::time::Duration::from_secs(20 * 60))
+        );
+        assert_eq!(cfg.retire_command.as_deref(), Some("systemctl poweroff"));
+        // A pod's deletion cost follows its sessions unless the host says not.
+        assert!(cfg.kubernetes.pod_deletion_cost);
+        let off = HostConfig::from_toml("[kubernetes]\npod_deletion_cost = false\n")?;
+        assert!(!off.kubernetes.pod_deletion_cost);
+        // What install writes leaves the defaults out.
+        let text = toml::to_string_pretty(&HostConfig::default())?;
+        assert!(!text.contains("[kubernetes]"), "{text}");
         Ok(())
     }
 
