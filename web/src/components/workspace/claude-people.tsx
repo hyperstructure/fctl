@@ -265,13 +265,16 @@ function Introduction({
           </span>
         </div>
       </div>
-      <Preview />
+      <Preview workspace={w.name} />
     </section>
   );
 }
 
-/** Two made-up people as the tab will show them, drawn with the facts line's own words. */
-function Preview() {
+/**
+ * Two made-up people as the tab will show them here, drawn with the facts line's own words and the
+ * workspace's name. A long-lived token never says its plan, so the one an admin token set says none.
+ */
+function Preview({ workspace }: { workspace: string }) {
   const now = Date.now();
   const day = 86_400_000;
   const rows: G.MemberClaude[] = [
@@ -284,7 +287,6 @@ function Preview() {
       connection: {
         kind: "token",
         set_by_admin_token: true,
-        plan: "team",
         connected_at: now - 344 * day,
         answered_at: now - 2 * 3_600_000,
       },
@@ -293,7 +295,12 @@ function Preview() {
       user: { id: "usr_preview_ada", name: "Ada Lovelace" },
       email: "ada@example.com",
       state: "works",
-      connection: { kind: "login", plan: "max", connected_at: now - 40 * day, answered_at: now - 5 * 60_000 },
+      connection: {
+        kind: "login",
+        plan: "team",
+        connected_at: now - 40 * day,
+        answered_at: now - 5 * 60_000,
+      },
     },
   ];
   return (
@@ -301,7 +308,7 @@ function Preview() {
       aria-hidden="true"
       className="w-full shrink-0 select-none rounded-xl border border-line bg-surface p-4 shadow-[0_18px_50px_-24px_rgb(0_0_0/0.35)] max-md:max-w-sm md:w-[310px]"
     >
-      <p className="text-[12px] text-ink-3">{summary(rows, "Acme", now)}</p>
+      <p className="text-[12px] text-ink-3">{summary(rows, workspace, now)}</p>
       <ul className="mt-3 divide-y divide-line border-t border-line">
         {rows.map((m) => (
           <li key={m.user.id} className="flex gap-2.5 py-2.5">
@@ -309,7 +316,7 @@ function Preview() {
             <div className="min-w-0">
               <div className="text-[13px] text-ink">{m.user.name}</div>
               <div className="text-[11.5px] leading-snug text-ink-4">
-                <FactsLine list={facts(m, "Acme", now)} />
+                <FactsLine list={facts(m, workspace, now)} />
               </div>
             </div>
           </li>
@@ -388,7 +395,8 @@ export function ClaudeDetail({
         description={factsText(member, w.name)}
         onClose={onClose}
       >
-        {body}
+        {/* As wide as the sheet's header: the sheet pads only that. */}
+        <div className="px-5 pt-4 pb-6">{body}</div>
       </Sheet>
     );
   return (

@@ -166,10 +166,10 @@ export function runsOutWords(at: number, estimated: boolean | undefined, now = D
   return `runs out ${how} ${shortDay(at, now)}`;
 }
 
-/** When a reset comes, briefly: "14:00" today, else "Thu 14:00"-like ("Nov 26"). */
+/** When a reset comes, briefly: "at 14:00" today, else "on Nov 26". */
 function resetsWords(at: number, now: number): string {
-  if (at - now < DAY && new Date(at).getDate() === new Date(now).getDate()) return clock(at);
-  return shortDay(at, now);
+  if (at - now < DAY && new Date(at).getDate() === new Date(now).getDate()) return `at ${clock(at)}`;
+  return `on ${shortDay(at, now)}`;
 }
 
 /** One fact of a line, with its tone. */
@@ -217,7 +217,7 @@ export function facts(m: G.MemberClaude, workspace: string, now = Date.now()): F
     });
   if (m.paused_until !== undefined && m.paused_until > now)
     out.push({
-      text: `waiting for ${theLimit(m.paused_limit)} to reset at ${resetsWords(m.paused_until, now)}`,
+      text: `waiting for ${theLimit(m.paused_limit)} to reset ${resetsWords(m.paused_until, now)}`,
       tone: "plain",
     });
   else if (m.pauses && m.pauses.week > 0)

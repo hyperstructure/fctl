@@ -496,7 +496,9 @@ fctl projects set -p ml --runners large
 ## Claude seats
 
 Sessions run on each person's own Claude subscription: give your people
-Team or Enterprise seats, which Claude's organization admins assign, and
+Team or Enterprise seats, which Claude's organization admins assign
+([Manage members on Team and Enterprise
+plans](https://support.claude.com/en/articles/13133750-manage-members-on-team-and-enterprise-plans)), and
 each connects theirs in **Settings → Claude**, or your sync sets it for
 them ([above](#people-from-your-directory)). A workspace's admins then see
 on its **People** tab whether everyone can run sessions this week and

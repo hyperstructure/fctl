@@ -95,6 +95,9 @@ describe("the facts line under each person", () => {
   it("says who waits for a limit to reset now", () => {
     const waiting = { ...ada, paused_until: NOW + 2 * HOUR, paused_limit: "five_hour" };
     expect(factsText(waiting, "Acme", NOW)).toContain("waiting for the 5-hour limit to reset at");
+    // Another day's reset is on its day.
+    const weekly = { ...ada, paused_until: NOW + 2 * DAY, paused_limit: "seven_day" };
+    expect(factsText(weekly, "Acme", NOW)).toMatch(/waiting for the weekly limit to reset on \w+ \d+/);
   });
 });
 
