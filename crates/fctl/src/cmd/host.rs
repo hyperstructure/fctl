@@ -220,7 +220,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 eprintln!(
                     "This machine retired at {at} (retire_idle_minutes): the host runs nothing here until `fctl host install` makes it a runner again."
                 );
-                tokio::signal::ctrl_c().await.ok();
+                // Until stopped: SIGTERM too, as a container's PID 1 is.
+                fctl_host::daemon::signalled().await;
                 return Ok(());
             }
             let token = HostConfig::load_token()?;
@@ -305,8 +306,6 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             if let Some(RetireAfter(minutes)) = retire_when_idle {
                 cfg.retire_idle_minutes = minutes;
             }
-            // Installed again, it is a runner again.
-            let _ = std::fs::remove_file(fctl_host::retire::retired_marker(&cfg.data_dir()));
             if let Some(c) = retire_command {
                 cfg.retire_command = Some(c.trim().to_owned()).filter(|c| !c.is_empty());
             }
@@ -405,6 +404,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             cfg.driver = d.name().into();
             cfg.save()?;
             HostConfig::save_token(&token)?;
+            // Installed again, it is a runner again.
+            let _ = std::fs::remove_file(fctl_host::retire::retired_marker(&cfg.data_dir()));
             println!(
                 "{} Wrote {}",
                 style::accent("✓"),

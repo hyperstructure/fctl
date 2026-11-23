@@ -865,7 +865,13 @@ impl Daemon {
             // `serve` sends them as it loops.
             Chore::Drivers => {}
             Chore::RetireDrained(Ok((drained, sessions))) => {
-                if sessions == 0 && self.sessions.is_empty() && self.pending_starts.is_empty() {
+                // A sign-in that ended dropped what takes its codes.
+                self.logins.retain(|_, tx| !tx.is_closed());
+                if sessions == 0
+                    && self.sessions.is_empty()
+                    && self.pending_starts.is_empty()
+                    && self.logins.is_empty()
+                {
                     self.run_retire_command(drained);
                 } else {
                     tracing::info!("{}", retire::Kept::Busy.words());
@@ -1762,6 +1768,19 @@ impl Daemon {
                 }
             }
             FleetToHost::ClaudeLoginStart { job_id, user } => {
+                // A machine that retires takes no sign-in either: the
+                // control plane passes it on to another runner.
+                if self.retiring.is_some() {
+                    self.outbox.push_back(HostToFleet::ClaudeLogin {
+                        job_id,
+                        update: ClaudeLoginUpdate::Failed {
+                            error: "This runner's machine is retiring: it takes no Claude sign-in"
+                                .into(),
+                            unready: Some(true),
+                        },
+                    });
+                    return;
+                }
                 let (tx, rx) = mpsc::unbounded_channel();
                 self.logins.insert(job_id.clone(), tx);
                 tracing::info!("starting a Claude sign-in for {}", user.name);
@@ -2062,7 +2081,8 @@ fn shutdown_signal() -> oneshot::Receiver<()> {
     rx
 }
 
-async fn signalled() {
+/// Signalled to stop: SIGTERM, or Ctrl-C (SIGINT).
+pub async fn signalled() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -2182,6 +2202,26 @@ mod tests {
                 ..
             })
         ));
+        // So are Claude sign-ins, which the control plane passes on.
+        d.on_fleet(FleetToHost::ClaudeLoginStart {
+            job_id: LoginJobId("ljb_late".into()),
+            user: fctl_proto::session::UserRef {
+                id: fctl_proto::UserId("usr_ada".into()),
+                name: "Ada".into(),
+                avatar_url: None,
+            },
+        });
+        assert!(d.logins.is_empty());
+        assert!(matches!(
+            d.outbox.back(),
+            Some(HostToFleet::ClaudeLogin {
+                update: ClaudeLoginUpdate::Failed {
+                    unready: Some(true),
+                    ..
+                },
+                ..
+            })
+        ));
         // The drain failed after the runner was known: it may have
         // happened, so the runner takes sessions again, asked until heard.
         d.on_chore(Chore::RetireDrained(Err(("timed out".into(), Some(ours)))));
@@ -2200,6 +2240,14 @@ mod tests {
         d.on_chore(Chore::RetireDrained(Ok((ours, 1))));
         assert_eq!((d.retiring, d.owe_undrain), (None, true));
         d.on_chore(Chore::Undrained(Ok(())));
+        // So with a sign-in that began before it drained.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        d.logins.insert(LoginJobId("ljb_early".into()), tx);
+        d.retiring = Some(Retiring::Draining);
+        d.on_chore(Chore::RetireDrained(Ok((ours, 0))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, true));
+        d.on_chore(Chore::Undrained(Ok(())));
+        d.logins.clear();
         // Drained and idle: the command runs.
         let theirs = retire::Drained {
             before: true,
