@@ -454,15 +454,13 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                 "{} Connected. New sessions run on this subscription.",
                 style::accent("✓")
             );
-            // The newest token is the one just connected.
-            if let Some(c) = me
-                .claude
-                .iter()
-                .filter(|c| {
-                    c.kind == fctl_proto::runner::ClaudeCredentialKind::SetupToken && !c.on_runners
-                })
-                .max_by_key(|c| c.created_at)
-                && let Some(at) = c.expires_at
+            // The one just connected is the default now: a new one, or the
+            // one that had the same token, which runs out when it did.
+            if let Some(c) = me.claude.iter().find(|c| {
+                c.is_default
+                    && c.kind == fctl_proto::runner::ClaudeCredentialKind::SetupToken
+                    && !c.on_runners
+            }) && let Some(at) = c.expires_at
             {
                 let now = style::now_ms();
                 println!(
@@ -471,7 +469,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                         "It runs out {}{}: fctl tells you 30 and 7 days before.",
                         super::claude_overview::runs_out_words(at, c.expiry_estimated, now),
                         if c.expiry_estimated {
-                            ", a year from now (`--made-at` says when `claude setup-token` made it)"
+                            ", a year after fctl first got it (`--made-at` says when `claude setup-token` made it)"
                         } else {
                             ""
                         }

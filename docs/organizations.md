@@ -138,6 +138,13 @@ them.
   instance's admins choose (`fctl admin set --max-workspaces`), the primary
   instance owner in any number. A workspace that requires two-factor
   sign-in stays closed to someone until they set it up.
+- **Their Claude seat.** A long-lived token works until a year after
+  `claude setup-token` made it, which fctl can't read from the token: say
+  when with `--claude-made-at 2026-11-20` (`made_at`), or fctl counts the
+  year from when you set it and says "around". Setting the same token
+  again keeps its date, so a sync can set it on every run. Its person and
+  their workspaces' admins hear before it runs out ([Claude
+  seats](#claude-seats)).
 - **Workspaces of their own.** People create workspaces of their own
   unless you keep that to your admins (`fctl admin set
   --members-create-workspaces off`, or **Admin → Settings → Workspaces**):
@@ -486,6 +493,59 @@ fctl runners enrollment-tokens create "AWS large" -w acme --labels aws,large --m
 fctl projects set -p ml --runners large
 ```
 
+## Claude seats
+
+Sessions run on each person's own Claude subscription: give your people
+Team or Enterprise seats, which Claude's organization admins assign, and
+each connects theirs in **Settings → Claude**, or your sync sets it for
+them ([above](#people-from-your-directory)). A workspace's admins then see
+on its **People** tab whether everyone can run sessions this week and
+next: who has Claude connected for it and on which plan, whose
+connection Claude stopped taking, whose long-lived token runs out within a
+month, and whose sessions keep pausing on usage limits, with what to do
+about each. `fctl workspaces members -w acme --claude --problems` says the
+same. They never see a token, the Claude account it belongs to or the
+label its person gave it, and each person reads in the workspace's
+**Settings → You** what its admins see of theirs.
+
+```
+$ fctl workspaces members -w acme --claude
+NAME           CLAUDE                      PLAN   ANSWERED   RUNS OUT        LIMIT PAUSES (7D)
+Ada Lovelace   login                       Max    5m ago     -               0
+Grace Hopper   token, set by admin token   Team   2h ago     ~Dec 14 (21d)   6
+Linus Lee      none                        -      -          -               -
+1 person has no Claude connection for Acme: their sessions here can't start.
+```
+
+How much admins see, and how they hear of it:
+
+| Setting | Where | Choices |
+|---|---|---|
+| The most a workspace's admins may see | **Admin → Settings**, `fctl admin set --claude-oversight` | `details` (the default): the connection's kind and who set it, its plan, when Claude last answered it, when it runs out, and whether sessions wait for a limit to reset; `readiness`: only whether each member's sessions can run and when their token runs out; `off`: nothing |
+| Whether they may see limit pauses | **Admin → Settings**, `fctl admin set --claude-limit-pauses` | on (the default): how often each member's sessions in the workspace paused on usage limits in 7 and 30 days |
+| Instance admins see everyone's | **Admin → Settings**, `fctl admin set --claude-instance-view` | off (the default); on, **Admin → People** and `fctl admin claude` show every account's connection, as workspace admins see their members' |
+| When fctl marks a token ended | **Admin → Settings**, `fctl admin set --claude-refusals` | after Claude refused it in 2 sessions since it last answered it (the default), 1 to 5 |
+| What a workspace's admins see | its **Settings → Claude**, `fctl workspaces set --claude-oversight`, `--claude-limit-pauses` | within what the instance lets them |
+| How its admins hear by email | its **Settings → Claude**, `fctl workspaces set --claude-admin-email` | `weekly` (the default): one email a week while a member's token runs out within a month or stopped working; `each`: as each member hears; `off` |
+
+- **When people hear.** fctl tells each person 30 days and 7 days before
+  their long-lived token runs out, and as soon as Claude stops taking
+  their connection: by email where the instance sends
+  [email](self-hosting.md#email-optional), and in the app, under the
+  connection in **Settings → Claude** and, in a token's last week, on the
+  Agent Floor. A login Claude ends is told the same way; logins don't run
+  out on a date, as Claude renews them.
+- **A token that stopped working.** Claude refuses a revoked or expired
+  token in each session that runs on it; once it did in as many sessions
+  as the instance says since it last answered it, fctl marks it ended and
+  sessions run on the person's other connection, if one works. A new token
+  from `claude setup-token`, connected in **Settings → Claude** or set
+  with an admin token, is the way back.
+- **What fctl keeps for it.** When Claude last answered each connection,
+  when its token runs out, and each session's pauses on usage limits and
+  each refusal for 30 days
+  ([Retention](security.md#retention)).
+
 ## Oversight
 
 - **Audit logs.** Each workspace's (its admins: its **Audit log** tab,
@@ -502,6 +562,9 @@ fctl projects set -p ml --runners large
   deleting a project, a workspace or an account removes:
   [Retention](security.md#retention). Each person can export their data;
   **Admin → Settings → Data exports** sets how often.
+- **Claude connections.** Whether each member can run sessions, on
+  which plan, and whose token runs out soon, as much as the instance and
+  the workspace let admins see: [Claude seats](#claude-seats).
 - **What each credential reaches**, and how fctl keeps the rest from it:
   [Access](security.md#access).
 
