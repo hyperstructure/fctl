@@ -37,44 +37,101 @@ pub fn is_metadata(ip: IpAddr) -> bool {
     ADDRESSES.contains(&ip.to_canonical())
 }
 
-/// Ethernet's types for IPv4, IPv6 and an 802.1Q tag.
+/// Ethernet's types for IPv4, IPv6, and an 802.1Q or 802.1ad tag.
 const ETHER_IPV4: u16 = 0x0800;
 const ETHER_IPV6: u16 = 0x86dd;
 const ETHER_VLAN: u16 = 0x8100;
+const ETHER_QINQ: u16 = 0x88a8;
 
-/// The type of what an Ethernet frame carries, and where that starts,
-/// after the frame's 802.1Q tag if it has one.
-fn ether_type(frame: &[u8]) -> Option<(u16, usize)> {
-    let kind = u16::from_be_bytes(frame.get(12..14)?.try_into().ok()?);
-    if kind == ETHER_VLAN {
-        let inner = u16::from_be_bytes(frame.get(16..18)?.try_into().ok()?);
-        return Some((inner, 18));
-    }
-    Some((kind, 14))
+/// What the host's filter does with a frame a VM sends on its way to the
+/// network (`fctl-agent net-filter`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// On to the network.
+    Carry,
+    /// Not on: it goes to a metadata address, and an IPv4 one gets an
+    /// answer that says so ([`refusal`]).
+    Refuse(IpAddr),
+    /// Not on, without a word: a frame too short to be Ethernet, one whose
+    /// type says IPv4 or IPv6 but whose header doesn't read as such, and a
+    /// tagged one, which a VM's own network has no use for. What would
+    /// read a destination in them otherwise can't be known here.
+    Drop,
 }
 
-/// Where the IPv4 or IPv6 packet in an Ethernet frame goes. `None` for
-/// other frames (ARP, say), and for one too short to say.
-pub fn destination(frame: &[u8]) -> Option<IpAddr> {
-    let (kind, at) = ether_type(frame)?;
-    let packet = frame.get(at..)?;
-    let version = packet.first()? >> 4;
-    match (kind, version) {
-        (ETHER_IPV4, 4) => {
-            let dst: [u8; 4] = packet.get(16..20)?.try_into().ok()?;
-            Some(IpAddr::from(dst))
-        }
-        (ETHER_IPV6, 6) => {
-            let dst: [u8; 16] = packet.get(24..40)?.try_into().ok()?;
-            Some(IpAddr::from(dst))
-        }
-        _ => None,
+/// What happens to `frame`, by its Ethernet type: an IP packet goes on
+/// unless it goes to a metadata address, other than DNS, which Google
+/// Cloud's metadata server answers as the machine's nameserver; what
+/// carries no IP packet (ARP) goes on.
+pub fn verdict(frame: &[u8]) -> Verdict {
+    let Some(kind) = frame
+        .get(12..14)
+        .and_then(|b| <[u8; 2]>::try_from(b).ok())
+        .map(u16::from_be_bytes)
+    else {
+        return Verdict::Drop;
+    };
+    let packet = frame.get(14..).unwrap_or_default();
+    match kind {
+        ETHER_IPV4 => ipv4_verdict(packet),
+        ETHER_IPV6 => ipv6_verdict(packet),
+        ETHER_VLAN | ETHER_QINQ => Verdict::Drop,
+        _ => Verdict::Carry,
     }
 }
 
-/// The metadata address an Ethernet frame goes to, if it goes to one.
-pub fn blocked(frame: &[u8]) -> Option<IpAddr> {
-    destination(frame).filter(|ip| is_metadata(*ip))
+fn ipv4_verdict(packet: &[u8]) -> Verdict {
+    let Some(&first) = packet.first() else {
+        return Verdict::Drop;
+    };
+    let header_len = usize::from(first & 0x0f) * 4;
+    let header = packet.get(..header_len);
+    let dst = packet.get(16..20).and_then(|d| <[u8; 4]>::try_from(d).ok());
+    let (Some(header), Some(dst)) = (header, dst) else {
+        return Verdict::Drop;
+    };
+    if first >> 4 != 4 || header_len < 20 {
+        return Verdict::Drop;
+    }
+    let dst = IpAddr::from(dst);
+    if !is_metadata(dst) {
+        return Verdict::Carry;
+    }
+    let first_fragment = header
+        .get(6..8)
+        .is_some_and(|f| u16::from_be_bytes([f[0], f[1]]) & 0x1fff == 0);
+    let transport = header.get(9).copied();
+    if first_fragment && is_dns(transport, packet.get(header_len..)) {
+        return Verdict::Carry;
+    }
+    Verdict::Refuse(dst)
+}
+
+fn ipv6_verdict(packet: &[u8]) -> Verdict {
+    let dst = packet
+        .get(24..40)
+        .and_then(|d| <[u8; 16]>::try_from(d).ok());
+    let Some(dst) = dst.filter(|_| packet.first().is_some_and(|b| b >> 4 == 6)) else {
+        return Verdict::Drop;
+    };
+    let dst = IpAddr::from(dst);
+    if !is_metadata(dst) {
+        return Verdict::Carry;
+    }
+    // Without extension headers: DNS has no use for them.
+    if is_dns(packet.get(6).copied(), packet.get(40..)) {
+        return Verdict::Carry;
+    }
+    Verdict::Refuse(dst)
+}
+
+/// Whether a packet of the protocol `transport`, whose TCP or UDP header
+/// starts `segment`, goes to port 53.
+fn is_dns(transport: Option<u8>, segment: Option<&[u8]>) -> bool {
+    matches!(transport, Some(6 | 17))
+        && segment
+            .and_then(|s| s.get(2..4))
+            .is_some_and(|port| u16::from_be_bytes([port[0], port[1]]) == 53)
 }
 
 /// The answer to `frame`, an IPv4 packet that won't be carried to a
@@ -85,11 +142,10 @@ pub fn blocked(frame: &[u8]) -> Option<IpAddr> {
 /// fragments past the first, ICMP other than echo requests, and other
 /// protocols than TCP and UDP.
 pub fn refusal(frame: &[u8], gateway: Ipv4Addr) -> Option<Vec<u8>> {
-    let (kind, at) = ether_type(frame)?;
-    if kind != ETHER_IPV4 {
+    if frame.get(12..14)? != ETHER_IPV4.to_be_bytes() {
         return None;
     }
-    let packet = frame.get(at..)?;
+    let packet = frame.get(14..)?;
     let first = *packet.first()?;
     let header_len = usize::from(first & 0x0f) * 4;
     if first >> 4 != 4 || header_len < 20 {
@@ -220,38 +276,86 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reads_where_a_frame_goes() {
-        let to_metadata = frame(ETHER_IPV4, &ipv4(6, [169, 254, 169, 254], 0x4000, &syn()));
-        assert_eq!(
-            destination(&to_metadata),
-            Some(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)))
-        );
-        assert_eq!(blocked(&to_metadata), destination(&to_metadata));
-        let elsewhere = frame(ETHER_IPV4, &ipv4(6, [140, 82, 112, 3], 0x4000, &syn()));
-        assert!(destination(&elsewhere).is_some());
-        assert_eq!(blocked(&elsewhere), None);
+    /// A UDP datagram from port 12345 to `port`.
+    fn udp_to(port: u16) -> Vec<u8> {
+        let mut u = vec![0x30, 0x39];
+        u.extend_from_slice(&port.to_be_bytes());
+        u.extend_from_slice(&[0, 8, 0, 0]);
+        u
+    }
 
-        // Behind an 802.1Q tag.
+    /// An IPv6 packet of `next` from the guest to `dst`, carrying `body`.
+    fn ipv6(next: u8, dst: Ipv6Addr, body: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(body.len()).unwrap_or(u16::MAX);
+        let mut p = vec![0x60, 0, 0, 0];
+        p.extend_from_slice(&len.to_be_bytes());
+        p.extend_from_slice(&[next, 64]);
+        p.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0f]);
+        p.extend_from_slice(&dst.octets());
+        p.extend_from_slice(body);
+        p
+    }
+
+    #[test]
+    fn refuses_what_goes_to_metadata_but_dns() {
+        let metadata = [169, 254, 169, 254];
+        let refused = Verdict::Refuse(IpAddr::from(metadata));
+        let v4 = |protocol, dst, fragment, body: &[u8]| {
+            verdict(&frame(ETHER_IPV4, &ipv4(protocol, dst, fragment, body)))
+        };
+        assert_eq!(v4(6, metadata, 0x4000, &syn()), refused);
+        assert_eq!(v4(17, metadata, 0, &udp_to(80)), refused);
+        assert_eq!(v4(1, metadata, 0, &[8, 0, 0, 0, 0, 1, 0, 1]), refused);
+        assert_eq!(v4(6, [140, 82, 112, 3], 0x4000, &syn()), Verdict::Carry);
+        // DNS: Google Cloud's nameserver is its metadata server.
+        assert_eq!(v4(17, metadata, 0, &udp_to(53)), Verdict::Carry);
+        let mut tcp_dns = syn();
+        tcp_dns.splice(2..4, [0, 53]);
+        assert_eq!(v4(6, metadata, 0x4000, &tcp_dns), Verdict::Carry);
+        // But not a later fragment, which has no ports to tell.
+        assert_eq!(v4(17, metadata, 0x0010, &udp_to(53)), refused);
+
+        // IPv6.
+        let aws = Ipv6Addr::new(0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254);
+        let v6 = |next, dst, body: &[u8]| verdict(&frame(ETHER_IPV6, &ipv6(next, dst, body)));
+        assert_eq!(v6(6, aws, &syn()), Verdict::Refuse(IpAddr::V6(aws)));
+        assert_eq!(v6(17, aws, &udp_to(53)), Verdict::Carry);
+        // An extension header first: no DNS to tell.
+        assert_eq!(v6(0, aws, &udp_to(53)), Verdict::Refuse(IpAddr::V6(aws)));
+        assert_eq!(v6(6, Ipv6Addr::LOCALHOST, &syn()), Verdict::Carry);
+    }
+
+    #[test]
+    fn drops_what_says_ip_but_doesnt_read_as_ip() {
+        // IPv4's type over a packet whose version isn't 4, with a metadata
+        // address where IPv4's destination would be: whatever else reads
+        // it, it goes nowhere.
+        let mut odd = ipv4(6, [169, 254, 169, 254], 0x4000, &syn());
+        odd[0] = 0x65;
+        assert_eq!(verdict(&frame(ETHER_IPV4, &odd)), Verdict::Drop);
+        // A header shorter than IPv4's least.
+        let mut short = ipv4(6, [140, 82, 112, 3], 0x4000, &syn());
+        short[0] = 0x44;
+        assert_eq!(verdict(&frame(ETHER_IPV4, &short)), Verdict::Drop);
+        // Cut short, before its destination, or before the header it names.
+        let whole = frame(ETHER_IPV4, &ipv4(6, [140, 82, 112, 3], 0x4000, &syn()));
+        assert_eq!(verdict(&whole[..30]), Verdict::Drop);
+        let mut long_header = ipv4(6, [140, 82, 112, 3], 0x4000, &[]);
+        long_header[0] = 0x4f;
+        assert_eq!(verdict(&frame(ETHER_IPV4, &long_header)), Verdict::Drop);
+        assert_eq!(verdict(&frame(ETHER_IPV6, &[0x60; 30])), Verdict::Drop);
+        assert_eq!(verdict(&frame(ETHER_IPV6, &[0x45; 60])), Verdict::Drop);
+        // Tagged frames, whatever they carry.
         let mut tagged = GATEWAY_MAC.to_vec();
         tagged.extend_from_slice(&GUEST_MAC);
         tagged.extend_from_slice(&[0x81, 0x00, 0, 5, 0x08, 0x00]);
-        tagged.extend(ipv4(17, [169, 254, 169, 254], 0, &[0; 8]));
-        assert!(blocked(&tagged).is_some());
-
-        // IPv6.
-        let mut v6 = vec![0x60, 0, 0, 0, 0, 0, 6, 64];
-        v6.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0f]);
-        v6.extend_from_slice(&Ipv6Addr::new(0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254).octets());
-        let v6 = frame(ETHER_IPV6, &v6);
-        assert!(blocked(&v6).is_some());
-
-        // ARP, and frames too short to say, go nowhere.
-        assert_eq!(destination(&frame(0x0806, &[0; 28])), None);
-        assert_eq!(destination(&to_metadata[..30]), None);
-        assert_eq!(destination(&[]), None);
-        // An IPv4 type with an IPv6 packet in it says nothing.
-        assert_eq!(destination(&frame(ETHER_IPV4, &[0x60; 40])), None);
+        tagged.extend(ipv4(17, [140, 82, 112, 3], 0, &udp_to(443)));
+        assert_eq!(verdict(&tagged), Verdict::Drop);
+        // Too short to be Ethernet.
+        assert_eq!(verdict(&[0; 13]), Verdict::Drop);
+        assert_eq!(verdict(&[]), Verdict::Drop);
+        // ARP carries no IP packet: it goes on.
+        assert_eq!(verdict(&frame(0x0806, &[0; 28])), Verdict::Carry);
     }
 
     #[test]

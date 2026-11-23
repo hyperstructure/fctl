@@ -1303,16 +1303,19 @@ Alibaba and Tencent), which hands out the machine's own credentials and
 its user data, where boot scripts keep secrets such as an enrollment
 token. Docker sandboxes get routes that make those addresses unreachable,
 which a helper container with nothing but `NET_ADMIN` adds in their
-network, and run without `NET_RAW`, so that not even their root takes
-the routes out or sends around them; `ping` still works. Firecracker VMs'
-frames to them are dropped on the host before `passt` carries them, and
-a connection there fails at once with "No route to host". Apple container
-and Lima VMs, whose root could change anything the host set inside them,
-and the process driver aren't kept off them. A runner whose sessions
-should use the machine's own cloud role sets `allow_cloud_metadata =
-true`; agents reach clouds without one through [identity
-tokens](identity-tokens.md) instead. Should keeping a Docker sandbox off
-them fail, its session goes on and its log says so.
+network, and run without `NET_RAW`, so that not even their root takes the
+routes out or sends around them; `ping` still works. Firecracker VMs'
+frames to them are dropped on the host before `passt` carries them, but
+DNS, which Google Cloud's metadata server answers as the machine's
+nameserver, and a connection there fails at once with "No route to host".
+Apple container and Lima VMs, whose root could change anything the host
+set inside them, and the process driver aren't kept off them. A runner
+whose sessions should use the machine's own cloud role sets
+`allow_cloud_metadata = true`; agents reach clouds without one through
+[identity tokens](identity-tokens.md) instead. A run whose sandbox can't
+be kept off them doesn't start, and says why. A Docker sandbox made
+before, with raw sockets, is replaced as its session next starts, which
+starts a new conversation on its branch.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the
 host's default. Sessions only start on a runner whose maximum covers that;

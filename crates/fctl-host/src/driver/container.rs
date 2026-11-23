@@ -799,7 +799,26 @@ impl ContainerDriver {
             name: spec.name.clone(),
             root: None,
         };
-        match self.state(&spec.name).await?.as_deref() {
+        let mut state = self.state(&spec.name).await?;
+        // One made with raw sockets (before hosts kept sandboxes off cloud
+        // metadata services, or while this one let them reach them) could
+        // send around the routes that keep it off them: no run of the
+        // session is under way, so the session starts in a new one.
+        if state.is_some()
+            && self.flavor == Flavor::Docker
+            && !self.cloud_metadata
+            && self.keeps_raw_sockets(&spec.name).await?
+        {
+            log(format!(
+                "Starting in a new sandbox: {} was made with raw sockets, with which it could reach the cloud's metadata service, so Claude starts a new conversation on the session's branch",
+                spec.name
+            ));
+            self.run(&["rm", "-f", &spec.name])
+                .await
+                .with_context(|| format!("removing {}", spec.name))?;
+            state = None;
+        }
+        match state.as_deref() {
             Some("running") => {
                 // Apple's `container` lists a sandbox it failed to stop as
                 // running, and refuses commands in it (see `halt`). A
@@ -1037,8 +1056,10 @@ impl ContainerDriver {
     /// for being here: the sandbox, which has neither it nor `NET_RAW`
     /// ([`Self::start_new`]), can neither take the routes out nor send
     /// around them. Run again on a sandbox kept off them, it changes
-    /// nothing. Apple's VMs, and hosts that let sandboxes reach them, are
-    /// left as they are.
+    /// nothing. A sandbox made with raw sockets, which [`Self::ensure`]
+    /// replaces as its session next starts, gets the routes all the same,
+    /// and an error that says it can send around them. Apple's VMs, and
+    /// hosts that let sandboxes reach them, are left as they are.
     pub async fn keep_off_metadata(&self, sb: &Sandbox, agent: &Path) -> Result<()> {
         if self.flavor != Flavor::Docker || self.cloud_metadata {
             return Ok(());
@@ -1085,7 +1106,30 @@ impl ContainerDriver {
             Err(e) => Err(e),
         };
         let _ = self.run(&["rm", "-f", &helper]).await;
-        ran.map(drop)
+        ran?;
+        if self.keeps_raw_sockets(&sb.name).await? {
+            anyhow::bail!(
+                "{} was made with raw sockets, with which its root could still reach the cloud's metadata service around the routes, until the session next starts in a new sandbox",
+                sb.name
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether the Docker sandbox `name` has raw sockets: it was made
+    /// without dropping `NET_RAW` ([`Self::start_new`]), whose packet
+    /// sockets send frames around its routes.
+    async fn keeps_raw_sockets(&self, name: &str) -> Result<bool> {
+        let dropped = self
+            .run(&["inspect", "--format", "{{json .HostConfig.CapDrop}}", name])
+            .await
+            .context("reading the sandbox's capabilities")?;
+        let dropped: Option<Vec<String>> = serde_json::from_str(dropped.trim())
+            .with_context(|| format!("reading the sandbox's capabilities from {dropped:?}"))?;
+        Ok(!dropped.unwrap_or_default().iter().any(|cap| {
+            let cap = cap.to_ascii_uppercase();
+            ["NET_RAW", "CAP_NET_RAW", "ALL"].contains(&cap.as_str())
+        }))
     }
 
     /// Gives the user of the new Docker sandbox `name` the package caches
@@ -2522,6 +2566,18 @@ mod tests {
     const VERSION_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:0.3.0";
     const LATEST_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:latest";
 
+    /// The ID of the build `name` is on a stand-in, as `docker inspect`
+    /// gives a container's image.
+    fn cli_image(name: &'static str) -> impl Fn(&FakeCli) -> Result<String> {
+        move |cli: &FakeCli| {
+            cli.images()?
+                .into_iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, id)| id)
+                .context("no such image")
+        }
+    }
+
     fn spec(image: &str, fallback: Option<&str>) -> SandboxSpec {
         SandboxSpec {
             name: "fctl-ses-1".into(),
@@ -2822,6 +2878,7 @@ mod tests {
                 &format!("cp {} {helper}:/fctl-agent", agent.display()),
                 &format!("start -a {helper}"),
                 &format!("rm -f {helper}"),
+                &"inspect --format {{json .HostConfig.CapDrop}} fctl-ses-1".to_owned(),
             ],
             "{calls:?}"
         );
@@ -2856,6 +2913,66 @@ mod tests {
         let calls = cli.calls();
         assert!(!calls.iter().any(|c| c.contains("NET_RAW")), "{calls:?}");
         assert!(!calls.iter().any(|c| c.starts_with("create ")), "{calls:?}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_sandboxes_with_raw_sockets_go_as_their_session_starts() -> Result<()> {
+        let default = spec(VERSION_IMAGE, None);
+        let image = cli_image(VERSION_IMAGE);
+        // One made before, with raw sockets, which stopped: the session
+        // starts in a new one, and says why.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.uses(&default.name, &image(&cli)?)?;
+        cli.stopped(&default.name)?;
+        let (_, said) = cli.ensure(Flavor::Docker, &default).await?;
+        let calls = cli.calls();
+        let removed = calls.iter().position(|c| *c == "rm -f fctl-ses-1");
+        let made = calls
+            .iter()
+            .position(|c| c.starts_with("run -d ") && c.contains(" --cap-drop NET_RAW "));
+        assert!(removed.is_some() && made > removed, "{calls:?}");
+        assert!(said.iter().any(|l| l.contains("raw sockets")), "{said:?}");
+        // One made since, which stopped: started again, as it was.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ensure(Flavor::Docker, &default).await?;
+        cli.stopped(&default.name)?;
+        cli.ensure(Flavor::Docker, &default).await?;
+        let calls = cli.calls();
+        assert!(calls.contains(&"start fctl-ses-1".to_owned()), "{calls:?}");
+        assert!(!calls.contains(&"rm -f fctl-ses-1".to_owned()), "{calls:?}");
+        // A host that lets sandboxes reach metadata keeps them.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.uses(&default.name, &image(&cli)?)?;
+        cli.stopped(&default.name)?;
+        let driver = cli.driver(Flavor::Docker).allow_cloud_metadata(true);
+        driver.ensure(&default, &|_| {}).await?;
+        assert!(!cli.calls().contains(&"rm -f fctl-ses-1".to_owned()));
+
+        // One that runs with raw sockets gets the routes all the same, and
+        // an error that says it can still send around them.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.uses(&default.name, &image(&cli)?)?;
+        let sb = Sandbox {
+            name: default.name.clone(),
+            root: None,
+        };
+        let e = cli
+            .driver(Flavor::Docker)
+            .keep_off_metadata(&sb, &cli.dir.path().join("fctl-agent"))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"));
+        assert!(
+            e.as_deref().is_some_and(|e| e.contains("raw sockets")),
+            "{e:?}"
+        );
+        assert!(
+            cli.calls()
+                .contains(&"start -a fctl-ses-1-guard".to_owned()),
+            "{:?}",
+            cli.calls()
+        );
         Ok(())
     }
 

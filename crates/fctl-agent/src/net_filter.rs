@@ -2,9 +2,11 @@
 //! between its link, on stdin (the VM's vsock connection), and `passt`, on
 //! stdout, in passt's frames (each after its length: 4 bytes, big endian),
 //! and drops the VM's frames to cloud metadata services
-//! (`fctl_domain::metadata`). An IPv4 one gets an ICMP "communication
-//! administratively prohibited" back, so that what sent it fails at once
-//! rather than waiting out its timeout.
+//! (`fctl_domain::metadata`), but DNS, which Google Cloud's metadata server
+//! answers as the machine's nameserver. An IPv4 one gets an ICMP
+//! "communication administratively prohibited" back, so that what sent it
+//! fails at once rather than waiting out its timeout. Frames whose type
+//! says IP but that don't read as IP, and tagged ones, go nowhere.
 //!
 //! In the VM its root can change anything, routes too; this runs on the
 //! host, out of its reach. The host starts it between the VM and passt
@@ -13,6 +15,7 @@
 //! links the VM again.
 
 use anyhow::{Context, Result};
+use fctl_domain::metadata::{Verdict, refusal, verdict};
 use fctl_proto::vm::GATEWAY;
 use std::collections::HashSet;
 use std::io::{self, BufReader, Read, Write};
@@ -61,30 +64,45 @@ pub fn relay(vm: UnixStream, passt: UnixStream) -> io::Error {
         .unwrap_or_else(|_| io::Error::other("the link's threads ended"))
 }
 
-/// The VM's frames to passt, but those to metadata services.
+/// The VM's frames to passt, but those to metadata services, other than
+/// DNS, and those that say IP but don't read as IP
+/// ([`fctl_domain::metadata::verdict`]).
 fn up(vm: UnixStream, mut passt: UnixStream, to_vm: &Mutex<UnixStream>) -> io::Error {
     let mut from_vm = BufReader::with_capacity(256 * 1024, vm);
     let (mut frame, mut out) = (Vec::new(), Vec::new());
     let mut told = HashSet::new();
+    let mut told_dropped = false;
     loop {
         if let Err(e) = read_frame(&mut from_vm, &mut frame) {
             return e;
         }
-        let Some(ip) = fctl_domain::metadata::blocked(&frame) else {
-            if let Err(e) = write_frame(&mut passt, &frame, &mut out) {
-                return e;
+        match verdict(&frame) {
+            Verdict::Carry => {
+                if let Err(e) = write_frame(&mut passt, &frame, &mut out) {
+                    return e;
+                }
             }
-            continue;
-        };
-        if told.insert(ip) {
-            tracing::warn!(
-                "dropped the VM's packets to {ip}, a cloud metadata service (allow_cloud_metadata in host.toml lets sandboxes reach it)"
-            );
-        }
-        if let Some(reply) = fctl_domain::metadata::refusal(&frame, Ipv4Addr::from(GATEWAY)) {
-            let mut vm = to_vm.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Err(e) = write_frame(&mut *vm, &reply, &mut out) {
-                return e;
+            Verdict::Drop => {
+                if !told_dropped {
+                    told_dropped = true;
+                    tracing::warn!(
+                        "dropped a frame from the VM whose type says IP but which doesn't read as IP, or that has a tag"
+                    );
+                }
+            }
+            Verdict::Refuse(ip) => {
+                if told.insert(ip) {
+                    tracing::warn!(
+                        "dropped the VM's packets to {ip}, a cloud metadata service (allow_cloud_metadata in host.toml lets sandboxes reach it)"
+                    );
+                }
+                let Some(reply) = refusal(&frame, Ipv4Addr::from(GATEWAY)) else {
+                    continue;
+                };
+                let mut vm = to_vm.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Err(e) = write_frame(&mut *vm, &reply, &mut out) {
+                    return e;
+                }
             }
         }
     }
@@ -164,11 +182,21 @@ mod tests {
 
         let metadata = syn_to([169, 254, 169, 254]);
         let github = syn_to([140, 82, 112, 3]);
+        // DNS to the metadata server, Google Cloud's nameserver.
+        let mut dns = syn_to([169, 254, 169, 254]);
+        dns.splice(36..38, [0, 53]);
+        // A frame of IPv4's type that isn't IPv4, to the metadata server.
+        let mut odd = syn_to([169, 254, 169, 254]);
+        odd[14] = 0x65;
         write_frame(&mut guest, &metadata, &mut out)?;
+        write_frame(&mut guest, &odd, &mut out)?;
         write_frame(&mut guest, &github, &mut out)?;
-        // passt gets the frame to GitHub alone…
+        write_frame(&mut guest, &dns, &mut out)?;
+        // passt gets the frames to GitHub and the DNS alone…
         read_frame(&mut passt, &mut got)?;
         assert_eq!(got, github);
+        read_frame(&mut passt, &mut got)?;
+        assert_eq!(got, dns);
         // …and the guest an ICMP "administratively prohibited".
         read_frame(&mut guest, &mut got)?;
         assert_eq!(got.get(34..36), Some(&[3u8, 13][..]));

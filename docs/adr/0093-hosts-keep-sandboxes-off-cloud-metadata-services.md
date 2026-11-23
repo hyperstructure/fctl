@@ -39,23 +39,37 @@ a way out to the host.
   (`fctl-agent keep-off-metadata`), which adds the routes over rtnetlink,
   then goes. Nothing of the sandbox's runs with a capability it lacks, and
   no image needs a tool for it. The host does it before fctl-agent starts
-  in a sandbox, and again as it starts it in one that runs already, which
-  covers sandboxes from before it.
+  in a sandbox, and again as it starts it in one that runs already.
+- **A sandbox made with raw sockets starts anew.** Docker can't take a
+  capability from a container it made, so a sandbox made before this, or
+  while its host let sandboxes reach metadata, is removed as its session
+  next starts, and the session goes on in a new one, as when a stopped
+  sandbox expires: Claude starts a new conversation on the session's
+  branch. One that runs as its host updates gets the routes, which stop
+  ordinary connections, and its session hears that its root could still
+  go around them until then.
 - **Firecracker VMs' frames to those addresses are dropped on the host**,
   by `fctl-agent net-filter`, which the host starts between the VM's link
   and its `passt`, out of the VM's reach. It answers IPv4 ones with an
   ICMP "administratively prohibited", so that a connection there fails at
   once with "No route to host" rather than hanging; IPv6 ones are dropped.
-  It runs detached, as passt does, so the network outlives the host's
-  restarts. A VM that a host from before it linked gets it as a session
-  next starts in it, which links its network again.
+  DNS goes through (TCP or UDP to port 53): Google Cloud's metadata server
+  is also its machines' nameserver, which VMs ask as the host does, and it
+  hands out nothing else on that port. Frames whose Ethernet type says IP
+  but that don't read as IP, and tagged ones, go nowhere, so that nothing
+  past the filter can read a destination in them that it didn't. It runs
+  detached, as passt does, so the network outlives the host's restarts. A
+  VM that a host from before it linked gets it as a session next starts
+  in it, which links its network again.
 - **Apple container and Lima VMs, and the process driver, aren't kept off
   them**: what the host could set inside a VM, the VM's root takes out. The
   docs say to use Docker or Firecracker on cloud machines.
-- **A failure doesn't stop the session.** Should keeping a Docker sandbox
-  off them fail (a runtime that refuses the helper), the session goes on,
-  and its log and the host's say so: hosts update themselves, and a
-  failure in every runner at once must not stop every session.
+- **A run that can't be kept off them doesn't start.** Should the helper
+  fail (a runtime that refuses it), the run fails, saying why and that
+  `allow_cloud_metadata = true` lets sandboxes reach them, as a
+  Firecracker VM whose network can't be linked through the filter does. A
+  run under way as its host restarts carries on, and its session hears
+  that it may reach them until its next run.
 
 ## Consequences
 
@@ -66,13 +80,17 @@ a way out to the host.
   or their runner's owner turns the setting on.
 - Docker sandboxes have no raw sockets: `ping` still works, through the
   ICMP sockets Docker gives containers, but `tcpdump` and the like don't.
-  Sandboxes made before it keep `NET_RAW` until they are made again, and
-  get the routes as their agent starts.
+- Sessions in Docker sandboxes from before this start their next run in a
+  new sandbox, once, without their conversation or what their agent left
+  uncommitted (it pushed after each turn).
+- A runner whose Docker refuses the helper starts no session until its
+  owner turns `allow_cloud_metadata` on, which its sessions' failures say.
 - On a cloud whose nameserver is the metadata address (Google Cloud's),
   sandboxes on Docker's default network, where Docker leaves them only
-  when it can't make fctl's own, can't resolve names. Those on fctl's
-  network, and Firecracker's VMs, ask through Docker's and passt's
-  forwarders, from the host.
+  when it can't make fctl's own, can't resolve names: routes can't let
+  port 53 through. Those on fctl's network ask through Docker's own
+  resolver, from the host, and Firecracker's VMs through the filter's
+  exception for DNS.
 - Each Docker sandbox start takes a few more `docker` commands, about a
   second.
 - Image builds (`allowed_builds`) aren't covered; hosts build only the

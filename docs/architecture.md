@@ -4686,11 +4686,14 @@ fctl-agent (`fctl-agent keep-off-metadata`) to add routes that make those
 addresses unreachable there, and goes
 (`ContainerDriver::keep_off_metadata`). Nothing of the sandbox's runs with
 `NET_ADMIN`, so not even its root takes the routes out, and without raw
-sockets nothing sends around them. The host does it again as it starts
-fctl-agent in a sandbox that runs already, so that sandboxes from before
-it are kept off them too, and should it fail, the session goes on and its
-log says so. Firecracker's VMs are kept off them by their network's filter
-([Firecracker](#firecracker)).
+sockets nothing sends around them. A run whose sandbox can't be kept off
+them doesn't start, and says why. A sandbox made with raw sockets (before
+this, or while the host let sandboxes reach them) is removed as its
+session next starts (`ContainerDriver::ensure`), and the session goes on
+in a new one; one that runs as the host restarts gets the routes as the
+host starts fctl-agent in it again, and its session hears that its root
+could still go around them until its next run. Firecracker's VMs are kept
+off them by their network's filter ([Firecracker](#firecracker)).
 
 A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
@@ -4899,14 +4902,17 @@ need them too.
   starts between them (`Vm::link_network`) and which drops the VM's frames
   to those addresses, answering IPv4 ones with an ICMP "administratively
   prohibited" as from the gateway, so that a connection there fails at
-  once ("No route to host"). The filter runs detached, as passt does, and
-  exits once either side closes, passt with it. A VM that a host from
-  before the filter linked gets it as a session next starts in it, which
-  links its network again. The VM asks the host's nameservers, as a Docker
-  container does: those in `/etc/resolv.conf` but for any on the loopback,
-  and where only those are left (systemd-resolved's `127.0.0.53`), the
-  servers systemd-resolved asks; with none, passt's forwarder to the
-  host's resolver.
+  once ("No route to host"). DNS goes through, as Google Cloud's metadata
+  server is its machines' nameserver, which the VM asks as the host does;
+  frames whose type says IP but that don't read as IP, and tagged ones, go
+  nowhere (`fctl_domain::metadata::verdict`). The filter runs detached, as
+  passt does, and exits once either side closes, passt with it. A VM that
+  a host from before the filter linked gets it as a session next starts in
+  it, which links its network again. The VM asks the host's nameservers,
+  as a Docker container does: those in `/etc/resolv.conf` but for any on
+  the loopback, and where only those are left (systemd-resolved's
+  `127.0.0.53`), the servers systemd-resolved asks; with none, passt's
+  forwarder to the host's resolver.
 - **Processes.** Firecracker, `passt` and the network's filter run in
   process groups of their own, as the process driver's agents do, so
   restarting or updating the host leaves them running; the host finds a

@@ -362,13 +362,16 @@ its VM, and nothing outside it except through these channels:
   runs without `NET_RAW`, so not even its root, which has neither, takes
   the routes out or sends raw frames around them. A Firecracker VM's
   frames to them are dropped on the host, between the VM and its `passt`,
-  where the VM's root can't reach. Apple container and Lima VMs, whose
-  root could take out anything the host set inside them, and the process
-  driver aren't kept off them: on a cloud machine, use Docker or
-  Firecracker. Image builds (`allowed_builds`) aren't kept off them
-  either: build only repositories you trust. Agents that should use a
-  cloud get credentials of their own through [identity
-  tokens](identity-tokens.md).
+  where the VM's root can't reach, but for DNS, which Google Cloud's
+  metadata server answers as the machine's nameserver. A run whose sandbox
+  can't be kept off them doesn't start, and says why; a Docker sandbox
+  made before, with raw sockets, is replaced as its session next starts.
+  Apple container and Lima VMs, whose root could take out anything the
+  host set inside them, and the process driver aren't kept off them: on a
+  cloud machine, use Docker or Firecracker. Image builds
+  (`allowed_builds`) aren't kept off them either: build only repositories
+  you trust. Agents that should use a cloud get credentials of their own
+  through [identity tokens](identity-tokens.md).
 - **GitHub.** Installation tokens for the project's repositories and no
   others, within the GitHub accounts and repositories its workspace may use,
   valid for an hour and refreshed on demand

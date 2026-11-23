@@ -129,6 +129,10 @@ case "$1 $2" in
       "{{.Image}}")
         [ -e "$d/containers/$4" ] || { echo "Error: No such object: $4" >&2; exit 1; }
         cat "$d/containers/$4" ;;
+      "{{.State.Status}}") [ -e "$d/state/$4" ] || exit 1; cat "$d/state/$4" ;;
+      "{{json .HostConfig.CapDrop}}")
+        [ -e "$d/containers/$4" ] || { echo "Error: No such object: $4" >&2; exit 1; }
+        if [ -e "$d/capdrop/$4" ]; then cat "$d/capdrop/$4"; else echo null; fi ;;
       *) exit 1 ;;
     esac ;;
   "inspect "*) exit 1 ;;
@@ -138,14 +142,16 @@ case "$1 $2" in
   "start -a")
     [ ! -e "$d/fail_guard" ] || exit 1
     echo "Cloud metadata services are unreachable from this network: 169.254.169.254" ;;
-  "rm -f") ;;
+  "rm -f") rm -f "$d/containers/$3" "$d/state/$3" "$d/capdrop/$3" ;;
+  "start "*) [ ! -e "$d/state/$2" ] || echo running > "$d/state/$2" ;;
   "run "*)
     [ ! -e "$d/fail_run" ] || { echo "no room for it" >&2; exit 1; }
     [ ! -e "$d/full_disk" ] || { echo "docker: Error response from daemon: mkdir /var/lib/docker/overlay2/4f1c/merged: no space left on device." >&2; exit 125; }
-    name=; rm=; vol=
+    name=; rm=; vol=; capdrop=
     while [ $# -gt 0 ] && [ "$1" != --entrypoint ]; do
       case "$1" in
         --name) name=$2 ;;
+        --cap-drop) capdrop=$2 ;;
         --rm) rm=1 ;;
         --mount) case "$2" in type=volume,source=*) vol=${2#type=volume,source=}; vol=${vol%%,*} ;; esac ;;
       esac
@@ -156,6 +162,7 @@ case "$1 $2" in
     [ -z "$vol" ] || [ -e "$d/volumes/$vol" ] || echo 0 > "$d/volumes/$vol"
     if [ -z "$rm" ]; then
       id_of "$image" > "$d/containers/$name"
+      [ -z "$capdrop" ] || printf '["%s"]\n' "$capdrop" > "$d/capdrop/$name"
       [ -z "$vol" ] || echo "$vol" > "$d/mounts/$name"
     else
       case "$entry" in
@@ -214,7 +221,15 @@ impl FakeCli {
     /// A host with no images, and nothing it can pull.
     pub fn empty() -> Result<Self> {
         let dir = tempfile::tempdir()?;
-        for sub in ["have", "registry", "containers", "volumes", "mounts"] {
+        for sub in [
+            "have",
+            "registry",
+            "containers",
+            "volumes",
+            "mounts",
+            "state",
+            "capdrop",
+        ] {
             std::fs::create_dir(dir.path().join(sub))?;
         }
         write_script(&dir.path().join("cli"), SCRIPT)?;
@@ -243,6 +258,13 @@ impl FakeCli {
     /// Makes a container, `name`, from the build `id`.
     pub fn uses(&self, name: &str, id: &str) -> Result<()> {
         std::fs::write(self.dir.path().join("containers").join(name), id)?;
+        Ok(())
+    }
+
+    /// Makes the container `name` a stopped one, which `docker inspect`
+    /// says is there, and `docker start` starts.
+    pub fn stopped(&self, name: &str) -> Result<()> {
+        std::fs::write(self.dir.path().join("state").join(name), "exited\n")?;
         Ok(())
     }
 

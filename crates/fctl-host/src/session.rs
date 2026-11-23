@@ -1081,31 +1081,21 @@ async fn prepare(
             .await
             .context("getting fctl-agent for the sandbox")?;
         ctx.driver.install_agent(&sb, &bin).await?;
-        keep_off_metadata(ctx, &sb, &bin, &log_uplink).await;
+        // Before anything of the session's runs: a run that can't be kept
+        // off them doesn't start.
+        ctx.driver
+            .keep_off_metadata(&sb, &bin)
+            .await
+            .context(KEEP_OFF_FAILED)?;
     }
     ctx.driver.start_agent(&sb).await?;
     Ok((sb, for_agent))
 }
 
-/// Keeps the sandbox off cloud metadata services, before the agent starts
-/// in it ([`crate::driver::Driver::keep_off_metadata`]). Should that fail,
-/// the session goes on, and its log and the host's say so.
-async fn keep_off_metadata(
-    ctx: &HostCtx,
-    sb: &Sandbox,
-    agent: &std::path::Path,
-    log: &(dyn Fn(String) + Send + Sync),
-) {
-    if let Err(e) = ctx.driver.keep_off_metadata(sb, agent).await {
-        tracing::warn!(
-            "{} may reach cloud metadata services: keeping it off them failed: {e:#}",
-            sb.name
-        );
-        log(format!(
-            "This sandbox may reach the cloud's metadata service, which hands out the runner's own credentials when the runner is a cloud machine: keeping it off it failed: {e:#}"
-        ));
-    }
-}
+/// Why a run doesn't start when its sandbox can't be kept off cloud
+/// metadata services ([`crate::driver::Driver::keep_off_metadata`]), and
+/// the way round it for a runner that should let it reach them.
+const KEEP_OFF_FAILED: &str = "Couldn't keep the sandbox off the cloud's metadata service, which hands out the runner's own credentials (allow_cloud_metadata = true in the runner's host.toml lets sandboxes reach it)";
 
 /// Why this host takes no session now: `studio's docker driver isn't ready:
 /// the Docker daemon isn't running`.
@@ -1129,7 +1119,7 @@ fn stop_asked(cmds: &mut mpsc::UnboundedReceiver<SessionCmd>) -> bool {
 /// Starts fctl-agent in a sandbox that has one, perhaps of an older host,
 /// which may not run as root (`serve --user`): this host's goes in first.
 /// One that runs keeps running.
-async fn start_again(ctx: &HostCtx, sb: &Sandbox) -> Result<()> {
+async fn start_again(ctx: &HostCtx, sb: &Sandbox, uplink: &Uplink) -> Result<()> {
     if ctx.driver.needs_linux_agent() {
         match crate::agentbin::linux_agent(&ctx.cfg).await {
             Ok(bin) => {
@@ -1137,8 +1127,19 @@ async fn start_again(ctx: &HostCtx, sb: &Sandbox) -> Result<()> {
                     tracing::warn!("putting this host's fctl-agent in {}: {e:#}", sb.name);
                 }
                 // A sandbox from before hosts kept sandboxes off cloud
-                // metadata services is kept off them from now on.
-                keep_off_metadata(ctx, sb, &bin, &|_| {}).await;
+                // metadata services is kept off them from now on. Its run
+                // is under way: it carries on, and the session hears why
+                // it may reach them, which its next run won't.
+                if let Err(e) = ctx.driver.keep_off_metadata(sb, &bin).await {
+                    tracing::warn!("{} may reach cloud metadata services: {e:#}", sb.name);
+                    host_log(
+                        uplink,
+                        LogLevel::Warn,
+                        format!(
+                            "This sandbox may reach the cloud's metadata service, which hands out the runner's own credentials, until the session's next run, which keeps it off it or doesn't start: {e:#}"
+                        ),
+                    );
+                }
             }
             Err(e) => tracing::warn!(
                 "putting this host's fctl-agent in {}: getting fctl-agent for the sandbox: {e:#}",
@@ -1292,7 +1293,7 @@ async fn run(
             if ctx.driver.pauses() && ctx.driver.paused(&sb).await {
                 tracing::info!("{} is paused until there is room on the disk", sb.name);
                 found_paused = true;
-            } else if let Err(e) = start_again(&ctx, &sb).await {
+            } else if let Err(e) = start_again(&ctx, &sb, &uplink).await {
                 tracing::warn!("restarting fctl-agent in {}: {e:#}", sb.name);
             }
             sb
@@ -1416,10 +1417,10 @@ async fn run(
                 uplink.send(UplinkUp::Notice { notice: n });
                 told_restart = true;
             }
-            let (ctx, sb) = (ctx.clone(), sb.clone());
+            let (ctx, sb, up) = (ctx.clone(), sb.clone(), uplink.clone());
             attaching = Some(tokio::spawn(async move {
                 let started = if restart {
-                    start_again(&ctx, &sb).await.err()
+                    start_again(&ctx, &sb, &up).await.err()
                 } else {
                     None
                 };

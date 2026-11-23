@@ -1218,8 +1218,6 @@ impl FirecrackerDriver {
         Ok(sb)
     }
 
-    /// What `spec`'s VM is served of the host's: its project's package
-    /// caches, which `fctl-agent share` serves.
     /// The fctl-agent that keeps the VMs off cloud metadata services
     /// between each VM and its passt (`fctl-agent net-filter`,
     /// [`Vm::link_network`]): the host's own, as `share`'s is. `None` where
@@ -1234,6 +1232,8 @@ impl FirecrackerDriver {
             .map(Some)
     }
 
+    /// What `spec`'s VM is served of the host's: its project's package
+    /// caches, which `fctl-agent share` serves.
     async fn share_of(&self, spec: &SandboxSpec) -> Result<Option<vm::Share>> {
         let Some(Spot::Dir(dir)) = &spec.cache else {
             return Ok(None);
