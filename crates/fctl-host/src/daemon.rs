@@ -1092,6 +1092,9 @@ impl Daemon {
                 match removed {
                     Ok(_) => {
                         tracing::info!("retired: the runner left its workspace");
+                        // Gone before the token is: a host that restarts
+                        // finds this machine retired, not cut short.
+                        retire::unmark(&marker);
                         if let Err(e) = HostConfig::remove_token() {
                             tracing::warn!("removing the runner token: {e:#}");
                         }
@@ -2293,7 +2296,7 @@ mod tests {
         // Marked retired before the command, which may take the machine
         // down at once, and a stop signal waits meanwhile.
         let data = d.ctx.cfg.data_dir();
-        assert!(retire::retired(&data).is_some());
+        assert!(retire::retired_marker(&data).exists());
         assert!(!d.may_stop());
         // It failed: the runner stays as drained as it was before, unmarked.
         d.on_chore(Chore::RetireRan {
@@ -2301,7 +2304,7 @@ mod tests {
             drained: theirs,
         });
         assert_eq!((d.retiring, d.owe_undrain), (None, false));
-        assert_eq!(retire::retired(&data), None);
+        assert!(!retire::retired_marker(&data).exists());
         assert!(d.may_stop());
         Ok(())
     }

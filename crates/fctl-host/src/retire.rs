@@ -101,11 +101,28 @@ pub fn retired_marker(data_dir: &Path) -> PathBuf {
     data_dir.join("retired")
 }
 
-/// When this machine retired, as its marker says, if it did.
+/// When this machine retired, as its marker says, if it did and its
+/// runner left: what `fctl host run` waits on.
+///
+/// The machine is marked retired before its command runs, and
+/// `retiring.json` goes only once its runner has left. A host that finds
+/// both restarted before that (while the command ran, or hung; killed, or
+/// the machine back from a poweroff): the retirement stopped short, as
+/// when the command fails. Its mark goes, and the daemon's recovery has
+/// the runner take sessions again, unless someone else had drained it.
 pub fn retired(data_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(retired_marker(data_dir))
-        .ok()
-        .map(|s| s.trim().to_owned())
+    let at = std::fs::read_to_string(retired_marker(data_dir))
+        .ok()?
+        .trim()
+        .to_owned();
+    if marker(data_dir).exists() {
+        tracing::info!(
+            "this machine's retirement stopped short as the host restarted before its runner left: the runner takes sessions again"
+        );
+        let _ = std::fs::remove_file(retired_marker(data_dir));
+        return None;
+    }
+    Some(at)
 }
 
 /// What a retirement that stopped short says, for the log.
@@ -204,6 +221,28 @@ mod tests {
         assert_eq!(retired(dir.path()), None);
         std::fs::write(retired_marker(dir.path()), "2026-11-23T15:00:00Z\n")?;
         assert_eq!(retired(dir.path()).as_deref(), Some("2026-11-23T15:00:00Z"));
+        assert_eq!(retired(dir.path()).as_deref(), Some("2026-11-23T15:00:00Z"));
+        Ok(())
+    }
+
+    /// Marked retired with its runner still there (a restart as the
+    /// command ran): it didn't retire, and the mark goes, so that the host
+    /// starts and takes the drain back.
+    #[test]
+    fn a_restart_before_the_runner_left_takes_the_retirement_back() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        mark(
+            &marker(dir.path()),
+            &Drained {
+                before: false,
+                enrolled: true,
+            },
+        )?;
+        std::fs::write(retired_marker(dir.path()), "2026-11-23T15:00:00Z\n")?;
+        assert_eq!(retired(dir.path()), None);
+        assert!(!retired_marker(dir.path()).exists());
+        // What the daemon undrains from.
+        assert!(marked(&marker(dir.path())).is_some());
         Ok(())
     }
 

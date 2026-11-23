@@ -1460,12 +1460,15 @@ scale-in, and never removes a busy one:
    is marked retired (`retired` in its data directory) before the command
    runs, and a stop signal waits until the runner has left, as `systemctl
    poweroff` sends one as soon as it is under way; a command that fails
-   takes the mark back. Run otherwise,
-   it waits for the machine to go rather than exit, and `fctl host run`
-   on a machine that retired waits too, so that a unit or container that
-   restarts it doesn't make it a runner again: `fctl host install` does.
-   A runner a person registered stays, drained. Without `retire_command`,
-   it leaves at once, and whatever ran the host takes the machine away.
+   takes the mark back. Run otherwise, it waits for the machine to go
+   rather than exit, and `fctl host run` on a machine that retired waits
+   too, so that a unit or container that restarts it doesn't make it a
+   runner again: `fctl host install` does. A host that restarts before
+   its runner left (killed while the command ran, or the machine back from
+   a poweroff) finds `retiring.json` beside the mark: the retirement
+   stopped short, as when the command fails, and the mark goes. A runner
+   a person registered stays, drained. Without `retire_command`, it
+   leaves at once, and whatever ran the host takes the machine away.
 
 While it retires, the host declines the sessions FleetDO still sends it
 (resumes into the sandboxes it keeps), which then start elsewhere, and

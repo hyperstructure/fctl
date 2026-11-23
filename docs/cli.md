@@ -1199,6 +1199,11 @@ max_build_mb = 20480     # the largest image a build may make
 auto_update = true       # update fctl to the version the control plane runs (false: `fctl self update`)
 agent_as_root = true     # fctl-agent as root in sandboxes, out of the agent's reach (false: as the sandbox's user)
 allow_cloud_metadata = false  # true: sandboxes reach the cloud's instance metadata service (169.254.169.254)
+retire_idle_minutes = 0  # once the runner has run nothing this long, drain, run retire_command and leave (0: never)
+# retire_command = "systemctl poweroff"   # what takes the machine away, with sh -c (unset: the host leaves and stops)
+
+[kubernetes]             # with the host in a Kubernetes pod
+pod_deletion_cost = true # keep the pod's deletion cost at its number of sessions, so that scaling down takes idle pods first
 
 [firecracker]            # with the firecracker driver
 # firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads

@@ -768,9 +768,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                             ))
                         );
                     }
-                    let stopping = api.drain_this_runner(true, true).await?;
-                    wait_until_stopped(&api, stopping, json, STOP_AFTER_TIMEOUT).await?;
-                    d = api.this_runner().await?;
+                    let stopping = stop_sessions(&api, json, STOP_AFTER_TIMEOUT).await?;
+                    d = wait_until_stopped(&api, stopping, json, STOP_AFTER_TIMEOUT).await;
                 }
                 if !json {
                     print_autopilots(&d.autopilots, d.runner.drain.is_some());
@@ -1034,7 +1033,7 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                 }
                 let d = api.drain_this_runner(true, true).await?;
                 if online {
-                    wait_until_stopped(&api, d, json, std::time::Duration::from_secs(120)).await?;
+                    wait_until_stopped(&api, d, json, std::time::Duration::from_secs(120)).await;
                 } else {
                     // Nothing reaches its host: stop the sandboxes here.
                     if !json {
@@ -1277,14 +1276,18 @@ async fn wait_until_stopped(
     mut d: RunnerDetail,
     json: bool,
     limit: std::time::Duration,
-) -> Result<()> {
+) -> RunnerDetail {
     if !json {
         println!("{}", style::dim("Stopping…"));
     }
     let deadline = std::time::Instant::now() + limit;
     while !d.sessions.is_empty() && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        d = api.this_runner().await?;
+        // A poll that fails changes nothing: the next may go through.
+        match api.this_runner().await {
+            Ok(next) => d = next,
+            Err(e) => poll_failed(json, &e),
+        }
     }
     if !json {
         match d.sessions.len() {
@@ -1305,7 +1308,7 @@ async fn wait_until_stopped(
             ),
         }
     }
-    Ok(())
+    d
 }
 
 /// The sandboxes of sessions that run on this machine, by the host's driver.
@@ -1619,6 +1622,50 @@ fn autopilots_note(draining: bool) -> &'static str {
     }
 }
 
+/// Says that reading the runner failed, and that it tries again.
+fn poll_failed(json: bool, e: &fctl_client::Error) {
+    if !json {
+        eprintln!(
+            "{}",
+            style::dim(&format!("Reading the runner failed ({e}); trying again…"))
+        );
+    }
+}
+
+/// Stops what still runs on this runner, as `--force` does: asked again
+/// every 2 seconds while the control plane doesn't answer, for `limit` at
+/// most, so that one failed request doesn't leave agents unstopped as the
+/// machine goes.
+async fn stop_sessions(
+    api: &fctl_client::Api,
+    json: bool,
+    limit: std::time::Duration,
+) -> Result<RunnerDetail> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match api.drain_this_runner(true, true).await {
+            Ok(d) => return Ok(d),
+            Err(e) if std::time::Instant::now() < deadline => {
+                if !json {
+                    eprintln!(
+                        "{}",
+                        style::dim(&format!(
+                            "Stopping the sessions failed ({e}); trying again…"
+                        ))
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "stopping the sessions that still run here failed for {}: {e}",
+                    duration_words(limit)
+                ));
+            }
+        }
+    }
+}
+
 /// Polls until no session runs on this runner, saying what changes.
 async fn wait_until_drained(
     api: &fctl_client::Api,
@@ -1648,12 +1695,27 @@ async fn wait_until_drained(
             })
         );
     }
+    // Polls that fail in a row: without a deadline, the wait gives up
+    // after a minute of them; with one, they count as still running until
+    // it, so that what still runs then stops all the same.
+    let mut failed = 0;
     while !d.sessions.is_empty() {
         if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             return Ok(d);
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        let next = api.this_runner().await?;
+        let next = match api.this_runner().await {
+            Ok(next) => {
+                failed = 0;
+                next
+            }
+            Err(e) if deadline.is_some() || failed < 20 => {
+                failed += 1;
+                poll_failed(json, &e);
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         if !json && key(&next) != key(&d) && !next.sessions.is_empty() {
             println!(
                 "{}",
@@ -2098,6 +2160,131 @@ async fn doctor() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A runner's detail as the control plane answers it, with `sessions`
+    /// running.
+    fn detail(sessions: u32) -> Result<RunnerDetail> {
+        let running: Vec<serde_json::Value> = (0..sessions)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("ses_{i}"), "project_slug": "web", "number": i,
+                    "title": "Work", "status": "running",
+                })
+            })
+            .collect();
+        Ok(serde_json::from_value(serde_json::json!({
+            "runner": {
+                "id": "rnr_spot", "name": "spot", "status": "online", "drivers": [],
+                "capacity": 2, "active_sessions": sessions, "labels": [], "created_at": 0,
+                "yours": true,
+            },
+            "sessions": running,
+        }))?)
+    }
+
+    /// A stand-in for the control plane: each request gets the next answer
+    /// queued for its method and path, `(status, body)`, and the last one
+    /// again once they run out; others get a 404.
+    async fn stand_in(answers: Vec<(&str, Vec<(u16, String)>)>) -> Result<String> {
+        use std::collections::{HashMap, VecDeque};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let answers: HashMap<String, VecDeque<(u16, String)>> = answers
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.into()))
+            .collect();
+        let answers = std::sync::Arc::new(std::sync::Mutex::new(answers));
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = listener.accept().await {
+                let answers = answers.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    // The head, then as much of the body as it says.
+                    let end = loop {
+                        let n = match conn.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        buf.extend(chunk.iter().take(n));
+                        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break i + 4;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(buf.get(..end).unwrap_or_default());
+                    let length = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    let key = head.split(' ').take(2).collect::<Vec<_>>().join(" ");
+                    while buf.len() < end + length {
+                        match conn.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend(chunk.iter().take(n)),
+                        }
+                    }
+                    let (status, body) = {
+                        let Ok(mut answers) = answers.lock() else {
+                            return;
+                        };
+                        match answers.get_mut(&key) {
+                            Some(q) if q.len() > 1 => q.pop_front(),
+                            Some(q) => q.front().cloned(),
+                            None => None,
+                        }
+                        .unwrap_or((404, "{}".into()))
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = conn.write_all(reply.as_bytes()).await;
+                    let _ = conn.shutdown().await;
+                });
+            }
+        });
+        Ok(format!("http://{addr}"))
+    }
+
+    /// A drain with a deadline stops what still runs at the deadline,
+    /// though every poll before it failed; asks again when the stop fails;
+    /// and waits for the sessions to stop through a poll that fails.
+    #[tokio::test]
+    async fn a_drain_with_a_deadline_stops_its_sessions_through_failed_requests() -> Result<()> {
+        use std::time::Duration;
+        let down = (
+            503,
+            r#"{"error":{"code":"unavailable","message":"Down"}}"#.to_owned(),
+        );
+        let server = stand_in(vec![
+            (
+                "GET /api/v1/runner",
+                vec![
+                    down.clone(),
+                    down.clone(),
+                    (200, serde_json::to_string(&detail(0)?)?),
+                ],
+            ),
+            (
+                "POST /api/v1/runner/drain",
+                vec![down, (200, serde_json::to_string(&detail(1)?)?)],
+            ),
+        ])
+        .await?;
+        let api = fctl_client::Api::new(&server, Some("fctl_rt_test".into()));
+        let d = wait_until_drained(&api, detail(1)?, true, Some(Duration::from_secs(1))).await?;
+        assert_eq!(d.sessions.len(), 1);
+        let stopping = stop_sessions(&api, true, Duration::from_secs(10)).await?;
+        assert_eq!(stopping.sessions.len(), 1);
+        let d = wait_until_stopped(&api, stopping, true, Duration::from_secs(10)).await;
+        assert!(d.sessions.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn drains_wait_and_machines_retire_as_long_as_they_are_told() {
