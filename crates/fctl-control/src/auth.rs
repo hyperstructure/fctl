@@ -261,7 +261,7 @@ fn admin_token_sql() -> String {
     format!(
         "SELECT t.id AS token_id, 'admin' AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
          t.last_used_at AS last_used_at, NULL AS verified_at, NULL AS scope, \
-         NULL AS auth_method, NULL AS auth_domain, \
+         t.auth_method AS auth_method, t.auth_domain AS auth_domain, \
          (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
          FROM admin_tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?",
         crate::instance::KEY,
@@ -477,6 +477,13 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             "This admin token stopped working: the admin who made it isn't an active admin of the instance any more.",
         )));
     }
+    let settings = crate::instance::parse(found.instance_settings.as_deref());
+    // Held to the rules as its admin's own sign-ins are: one their domain's
+    // rule doesn't meet stops.
+    let how = SignedIn::read(found.auth_method.as_deref(), found.auth_domain.as_deref());
+    if let Err(required) = found.user.admits(&settings, &how) {
+        return Err(AppError(crate::sign_in::admin_token_refused(&required)));
+    }
     if found
         .last_used_at
         .is_none_or(|t| ctx.now - t > 10 * 60 * 1000)
@@ -494,7 +501,6 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             Ok(())
         });
     }
-    let settings = crate::instance::parse(found.instance_settings.as_deref());
     // An admin the instance requires two-factor sign-in of, who hasn't set
     // it up, does nothing else until they have, with their tokens too.
     let two_factor_setup_required = fctl_domain::two_factor::setup_required(
@@ -511,9 +517,7 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
         via_cookie: false,
         signed_in_at: found.token_created_at,
         verified_at: None,
-        // A program's token: the sign-in rules check people's sign-ins,
-        // and its admin's account stays what stops it.
-        signed_in_with: SignedIn::default(),
+        signed_in_with: how,
         two_factor_setup_required,
         settings,
         limits: None,
@@ -555,7 +559,7 @@ pub async fn user_by_id(ctx: &Ctx, id: &str) -> AppResult<Option<UserRow>> {
 pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
     let identities: Vec<IdentityRow> = q(
         &ctx.db,
-        "SELECT id, provider, email, name, avatar_url, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
+        "SELECT id, provider, email, vouched_domain, name, avatar_url, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
         &[s(&user.id)],
     )?
     .all()

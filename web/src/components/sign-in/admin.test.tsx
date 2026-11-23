@@ -124,6 +124,8 @@ const preview = (fields: Partial<G.SignInPreview> = {}): G.SignInPreview => ({
   password_count: 38,
   passkeys: [],
   passkey_count: 0,
+  access_tokens: 0,
+  admin_tokens: 0,
   linked: 3,
   first: 0,
   released: 0,

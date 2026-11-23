@@ -23,6 +23,17 @@ passwords: Array<SignInPerson>, password_count: number,
  */
 passkeys: Array<SignInPerson>, passkey_count: number, 
 /**
+ * Their CLI sign-ins and access tokens made with another way in,
+ * which saving deletes: they make new ones after signing in with the
+ * provider.
+ */
+access_tokens: number, 
+/**
+ * Their admin tokens made with another way in, which stop working
+ * (a program that provisions people with one needs a new one).
+ */
+admin_tokens: number, 
+/**
  * Those an account of the provider, as an address at a covered
  * domain, signs in to already.
  */

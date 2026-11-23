@@ -97,7 +97,7 @@ import {
   workspacesGist,
 } from "@/lib/settings";
 import { forgetSidebar } from "@/lib/sidebar";
-import { domainOf, domainsWords, GOOGLE, providers, says, startHref } from "@/lib/sign-in";
+import { domainOf, domainsWords, GOOGLE, providers, ruleFor, says, startHref } from "@/lib/sign-in";
 import { useTheme } from "@/lib/theme";
 import { useTickAt } from "@/lib/tick";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
@@ -519,8 +519,10 @@ function Addresses({ me }: { me: G.Me }) {
     ? me.emails
     : [{ email: me.user.email, primary: true, commit_email: me.commit_email, workspaces: [], added_at: 0 }];
   // An address at a domain that signs in with a provider only stays: without it, you would sign in another way.
+  // Any rule's domain, as the server checks it, not only the one Settings names.
+  const { data: instance } = useInstance();
   const held = me.sign_in && !me.sign_in.exempt ? me.sign_in : undefined;
-  const kept = (email: string) => !!held && held.domains.includes(domainOf(email) ?? "");
+  const kept = (email: string) => !!held && !!ruleFor(instance, email);
   return (
     <Section
       title="Email addresses"
@@ -606,8 +608,12 @@ function Addresses({ me }: { me: G.Me }) {
         </p>
         {held && list.some((e) => !e.primary && kept(e.email)) && (
           <p>
-            Your addresses at {domainsWords(held.domains)} stay on this account, as you sign in with{" "}
-            {held.provider_name} as one of them: an instance admin removes them.
+            Your addresses at{" "}
+            {domainsWords([
+              ...new Set(list.filter((e) => kept(e.email)).map((e) => domainOf(e.email) ?? "")),
+            ])}{" "}
+            stay on this account, as you sign in with {held.provider_name} as one of them: an instance admin
+            removes them.
           </p>
         )}
       </div>
@@ -1294,9 +1300,13 @@ function SignIn({ me }: { me: G.Me }) {
   const password = me.user.has_password;
   const googles = me.identities.filter((i) => i.provider === GOOGLE);
   const google = providers(instance).find((p) => p.id === GOOGLE);
-  // The linked accounts that meet the rule: the way in it keeps, which stays linked.
+  // The linked accounts that meet a rule, vouched for at one of its domains: the way in it keeps, which stays
+  // linked. One that only shows an address there, unvouched, signs nobody in where a rule covers them.
+  const rules = instance?.sign_in?.rules ?? [];
   const keeps = (i: G.Identity) =>
-    !!held && i.provider === held.provider && held.domains.includes(domainOf(i.email ?? "") ?? "");
+    !!held &&
+    !!i.domain &&
+    rules.some((r) => r.provider === i.provider && r.domains.includes(i.domain ?? ""));
   return (
     <Section
       title="Sign-in methods"

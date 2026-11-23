@@ -426,7 +426,16 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         apply_reset(ctx, &user, &row).await?;
         crate::api::auth::password_reset_notice(ctx, &user).await?;
     }
-    auth::start_web_session(ctx, &user, true, row.how(reason)).await?;
+    let how = row.how(reason);
+    // A provider's sign-in that a domain's rule requires moves its person off
+    // their password, now that it is whole (`api::sign_in::moved_over`).
+    let user = if reason == ChallengeReason::Google {
+        let settings = crate::instance::settings(&ctx.db).await?;
+        crate::api::sign_in::moved_over(ctx, user, &how, &settings).await?
+    } else {
+        user
+    };
+    auth::start_web_session(ctx, &user, true, how).await?;
     let (factor, passkey) = match &used {
         CodeUse::Totp => ("totp", None),
         CodeUse::Recovery { .. } => ("recovery_code", None),

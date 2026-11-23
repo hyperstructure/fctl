@@ -357,9 +357,13 @@ pub struct Person {
     pub owner: bool,
     pub password: bool,
     pub passkeys: bool,
-    /// The providers whose accounts sign in to it, each with the address
-    /// it showed when it was linked or last signed in.
+    /// The providers whose accounts sign in to it, each with the domain of
+    /// the address it vouched for at its last sign-in, if it vouched for
+    /// one (`identities.vouched_domain`).
     pub identities: Vec<(String, Option<String>)>,
+    /// Its CLI sign-ins and access tokens (`cli`, `pat`) and its admin
+    /// tokens (`admin`), each with how the sign-in that made it was made.
+    pub tokens: Vec<(String, SignedIn)>,
 }
 
 impl Person {
@@ -373,13 +377,26 @@ impl Person {
         !self.password && !self.passkeys && self.identities.is_empty()
     }
 
-    /// Whether an account of the provider of one of `rules`, as an address
-    /// at one of its domains, signs in to it.
+    /// Whether an account of the provider of one of `rules`, vouched for as
+    /// an address at one of its domains, signs in to it.
     fn linked(&self, rules: &[&SignInRule]) -> bool {
-        self.identities.iter().any(|(provider, email)| {
-            let how = SignedIn::provider(provider, email.as_deref());
+        self.identities.iter().any(|(provider, domain)| {
+            let how = SignedIn::read(Some(provider), domain.as_deref());
             rules.iter().any(|r| meets(r, &how))
         })
+    }
+
+    /// Its tokens of `kinds` that `before` lets in and `after` doesn't.
+    fn tokens_stopped(&self, before: &[SignInRule], after: &[SignInRule], kinds: &[&str]) -> u32 {
+        let addresses = self.addresses();
+        self.tokens
+            .iter()
+            .filter(|(kind, how)| {
+                kinds.contains(&kind.as_str())
+                    && admits(before, &addresses, self.owner, how).is_ok()
+                    && admits(after, &addresses, self.owner, how).is_err()
+            })
+            .count() as u32
     }
 
     /// Whether its password signs it in under `rules`.
@@ -469,6 +486,8 @@ pub fn preview(
         password_count: 0,
         passkeys: Vec::new(),
         passkey_count: 0,
+        access_tokens: 0,
+        admin_tokens: 0,
         linked: 0,
         first: 0,
         released: 0,
@@ -496,6 +515,8 @@ pub fn preview(
             p.owner = Some(person.to_api());
             continue;
         }
+        p.access_tokens += person.tokens_stopped(before, after, &["cli", "pat"]);
+        p.admin_tokens += person.tokens_stopped(before, after, &["admin"]);
         if person.linked(&now) {
             p.linked += 1;
         } else if person.no_way_in() {
@@ -754,11 +775,22 @@ mod tests {
             Person {
                 password: true,
                 passkeys: true,
-                identities: vec![(GOOGLE.to_owned(), Some("bob@gmail.com".to_owned()))],
+                identities: vec![(GOOGLE.to_owned(), Some("gmail.com".to_owned()))],
+                tokens: vec![
+                    ("pat".to_owned(), SignedIn::password()),
+                    ("cli".to_owned(), SignedIn::default()),
+                    ("admin".to_owned(), SignedIn::password()),
+                    ("pat".to_owned(), google("bob@acme.com")),
+                ],
                 ..person("bob", &["bob@acme.com"])
             },
             Person {
-                identities: vec![(GOOGLE.to_owned(), Some("cy@acme.com".to_owned()))],
+                identities: vec![
+                    (GOOGLE.to_owned(), Some("acme.com".to_owned())),
+                    // A consumer account showing a work address Google
+                    // doesn't vouch for.
+                    (GOOGLE.to_owned(), None),
+                ],
                 ..person("cy", &["cy@acme.com"])
             },
             person("dee", &["dee@acme.com"]),
@@ -780,6 +812,9 @@ mod tests {
         assert_eq!((p.password_count, p.passkey_count), (1, 1));
         // Bob's Google account is his own Gmail, which doesn't count.
         assert_eq!(p.linked, 1);
+        // His access token and CLI sign-in from before stop, and his admin
+        // token; the one he made after signing in with Google doesn't.
+        assert_eq!((p.access_tokens, p.admin_tokens), (2, 1));
         assert_eq!(p.first, 1);
         assert_eq!(p.others, 1);
         assert_eq!(p.released, 0);

@@ -396,9 +396,13 @@ by its id, `google` ([ADR 0097](adr/0097-domains-require-signing-in-with-their-p
   (`tokens.auth_method`: `password`, `passkey` or a provider's id; and
   `auth_domain`, for a provider's, the domain of the address it vouched
   for). A CLI's sign-in takes it from the browser session that approved
-  the device code, and an access token from the sign-in that made it. A
-  sign-in that waits for its second factor keeps it in its challenge.
-  Sign-ins from before fctl kept it have none.
+  the device code, and an access token or an admin token
+  (`admin_tokens.auth_method`) from the sign-in that made it. A sign-in
+  that waits for its second factor keeps it in its challenge. Sign-ins
+  from before fctl kept it have none. A linked account keeps the domain
+  its provider vouched for at its last sign-in (`identities.vouched_domain`),
+  which says whether it can meet a rule: one that only shows an address
+  there can't.
 - **Rules** (`InstanceSettings::sign_in`, Admin → Sign-in, `fctl admin
   sign-in require`): "acme.com and acme.dev: Google only". A rule covers an
   account when any of its addresses is at one of its domains, a connected
@@ -408,26 +412,32 @@ by its id, `google` ([ADR 0097](adr/0097-domains-require-signing-in-with-their-p
   `admits` checks each sign-in as it is made (passwords, passkeys, reset
   links, invitations, an admin token's password, a provider's account
   that isn't the organization's, such as a personal Gmail), and every
-  request's token as `auth::authenticate` reads it, so that sign-ins made
-  another way, before the rule too, stop working at once. A browser's is
-  signed out; a CLI's or an access token's request is refused with what to
-  do. Each domain is in one rule at most; an account at domains of two
-  rules gets in with either one's provider.
+  request's token as `auth::authenticate` reads it, admin tokens' too.
+  Saving rules deletes the sign-ins of covered accounts they don't meet,
+  in one statement a table (`sign_in::revoke_unmet`), so that none comes
+  back when a rule goes. Each domain is in one rule at most; an account at
+  domains of two rules gets in with either one's provider.
 - **The way in while the provider is down.** The primary instance owner
   keeps every way in whatever the rules say. An admin who saves rules that
   would cover them is refused unless the sign-in they save them with meets
   them (`SignInYou::SignsOut`), which shows the provider works for them
   first.
 - **Moving off passwords.** A covered account's first sign-in that meets
-  its rule links the provider's account by address, takes the account's
-  password, its reset links and the sign-ins made another way
-  (`api::sign_in::move_off_password`), and emails the person. Saving a
-  rule emails, in batches of a hundred, everyone whose password or
-  passkeys stop signing them in (`api::sign_in::tell`). Their addresses at
-  the domain stay on their accounts: only an instance admin, or an admin
+  its rule links the provider's account by address, unless another
+  account of the provider at the rule's domains is linked already (a
+  recycled address's new holder) or it is the primary instance owner's.
+  Once the sign-in is whole, its second factor included, it takes the
+  account's password, its reset links and the sign-ins made another way
+  (`api::sign_in::moved_over`), and emails the person. Saving a rule
+  emails everyone whose password or passkeys stop signing them in
+  (`api::sign_in::tell`), in batches of a hundred, paced to Resend's rate
+  limit; a batch that fails doesn't stop the rest. Their addresses at the
+  domain stay on their accounts: only an instance admin, or an admin
   token, removes one. Saving rules that let anyone sign in another way
   (a domain let go, passkeys let in, another provider) is a sensitive
-  action (`Sensitive::RelaxSignIn`).
+  action (`Sensitive::RelaxSignIn`). Closing someone's account at the
+  provider stops their next sign-in, not the sessions they have:
+  disabling their account here does that.
 - **Accounts only from the directory.** With `InstanceSettings::self_sign_up`
   off, a provider's sign-in makes an account only for an address with an
   allowlist entry of its own (an invitation's, or one an admin allowed):

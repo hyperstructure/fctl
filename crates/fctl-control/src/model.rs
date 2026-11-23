@@ -314,6 +314,8 @@ pub struct IdentityRow {
     pub id: String,
     pub provider: String,
     pub email: Option<String>,
+    #[serde(default)]
+    pub vouched_domain: Option<String>,
     pub name: Option<String>,
     pub avatar_url: Option<String>,
     #[serde(deserialize_with = "int")]
@@ -326,6 +328,7 @@ impl IdentityRow {
             id: IdentityId(self.id.clone()),
             provider: self.provider.clone(),
             email: self.email.clone(),
+            domain: self.vouched_domain.clone(),
             name: self.name.clone(),
             avatar_url: self.avatar_url.clone(),
             created_at: self.created_at,

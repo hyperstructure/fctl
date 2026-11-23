@@ -6,9 +6,9 @@
 
 An organization that runs fctl for its people wants them to sign in the
 way they sign in everywhere else: with the identity provider that holds
-their accounts, under its two-step verification and device checks, and
-out the day it closes their account, with no fctl password to forget, have
-phished or leave behind (#618). fctl signed people in with a password,
+their accounts, under its two-step verification and device checks, unable
+to sign in once it closes their account, with no fctl password to forget,
+have phished or leave behind (#618). fctl signed people in with a password,
 passkeys or Google, and nothing made Google the only way: someone at a
 company that standardized on Google Workspace kept the password they set
 before, and with it their access after Google closed their account.
@@ -24,8 +24,9 @@ none of the organization's business.
 - **Each sign-in records how it was made**: `password`, `passkey` or the
   provider's id, and for a provider, the domain of the address it vouched
   for (`tokens.auth_method`, `auth_domain`). A CLI's sign-in takes it from
-  the browser session that approved it, and an access token from the
-  sign-in that made it.
+  the browser session that approved it, and an access token or an admin
+  token from the sign-in that made it. A linked account keeps the domain
+  its provider last vouched for (`identities.vouched_domain`).
 - **Instance admins require a provider per domain**
   (`InstanceSettings::sign_in`): "acme.com and acme.dev: Google only". A
   rule covers every account with an address at one of its domains,
@@ -49,9 +50,13 @@ none of the organization's business.
   working.
 - **The provider's first sign-in moves people over.** At a domain whose
   rule makes it the way in, the provider's account links by the address it
-  vouches for, whatever else the account has, and the account's password,
-  reset links and sign-ins made another way go. Elsewhere, linking by
-  address stays limited to accounts with no way in at all.
+  vouches for, whatever else the account has, unless another account of
+  the provider at the rule's domains is linked already (the address may
+  have been handed to someone new), or the account is the primary
+  instance owner's. Once the sign-in is whole, its second factor
+  included, the account's password, reset links and sign-ins made another
+  way go. Elsewhere, linking by address stays limited to accounts with no
+  way in at all.
 - **Covered addresses stay.** People can't disconnect an address at a
   covered domain, which would let them sign in another way; an instance
   admin or an admin token can.
@@ -71,13 +76,17 @@ none of the organization's business.
 ## Consequences
 
 - An organization moves its people off passwords in one step: their next
-  sign-in goes through its provider, and leaving the organization ends
-  their access to fctl with the provider's account, unless someone keeps a
-  passkey a rule lets in.
-- Requiring a provider signs out, at once, every browser, CLI and access
-  token of a covered person not made with it, those from before the
-  columns existed included: they sign in again, and make access tokens
-  again, once.
+  sign-in goes through its provider, and once the provider closes their
+  account they can't sign in again, unless a rule lets their passkeys in.
+  The sessions they have go on until they end, or an admin disables
+  their account: signals from the provider that someone signed out are
+  later work.
+- Saving a rule deletes, at once, every browser session, CLI sign-in,
+  access token and admin token of a covered person not made with its
+  provider, those from before the columns existed included, so that none
+  comes back if the rule goes: they sign in again, and make tokens again,
+  once. A directory sync's admin token made by a covered admin another
+  way stops with them.
 - A password that went at someone's first sign-in with the provider
   doesn't come back when the rule goes: they sign in with the provider as
   before, or set a password from Settings or a reset link.

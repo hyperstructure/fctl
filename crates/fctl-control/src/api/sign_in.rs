@@ -58,6 +58,12 @@ impl Provided {
         SignedIn::provider(self.provider, self.vouched.as_deref())
     }
 
+    /// The domain of the address the provider vouches for, if any
+    /// (`identities.vouched_domain`).
+    fn vouched_domain(&self) -> Option<String> {
+        self.vouched.as_deref().and_then(rules::domain_of)
+    }
+
     /// The provider's error `code`, which the pages that started it
     /// explain (`google_link_required`).
     fn code(&self, code: &str) -> String {
@@ -180,12 +186,14 @@ async fn login(
         if !user.is_active() {
             return fail("/login", "disabled", "");
         }
+        // What the account shows now, and which address it vouches for,
+        // refused or not: the rules read it.
+        refresh(&ctx.db, p).await?;
         // Their own Gmail, say, where their organization's domain signs in
         // with its Google Workspace.
         if let Err(required) = user.admits(&settings, &how) {
             return wrong_account(p, &required);
         }
-        refresh(&ctx.db, p).await?;
         return sign_in(ctx, user, return_to, how, &settings).await;
     }
     if p.email.is_none() || !p.verified {
@@ -307,10 +315,6 @@ async fn sign_in(
     if !user.is_active() {
         return fail("/login", "disabled", "");
     }
-    let user = match user.sign_in_required(settings) {
-        Some(_) => move_off_password(ctx, user, &how, settings).await?,
-        None => user,
-    };
     let two_factor = user.two_factor_settings(settings);
     if fctl_domain::two_factor::asks(
         &two_factor,
@@ -319,7 +323,8 @@ async fn sign_in(
         user.factors(),
         user.two_factor_google,
     ) {
-        // The page that asks for the code finishes it, then goes on to
+        // The page that asks for the code finishes it, moving them off their
+        // password once it checks out (`moved_over`), then goes on to
         // `return_to`.
         crate::api::two_factor::challenge(
             ctx,
@@ -334,6 +339,7 @@ async fn sign_in(
         .await?;
         return http::redirect("/two-factor");
     }
+    let user = moved_over(ctx, user, &how, settings).await?;
     let via = how.method_str().map(str::to_owned);
     auth::start_web_session(ctx, &user, false, how).await?;
     ctx.audit(
@@ -344,10 +350,25 @@ async fn sign_in(
     http::redirect(return_to)
 }
 
+/// `user` as they are once their sign-in `how`, which meets the rule that
+/// covers them, finished, its second factor too: moved off their password
+/// ([`move_off_password`]). Nothing for someone no rule covers.
+pub async fn moved_over(
+    ctx: &Ctx,
+    user: UserRow,
+    how: &SignedIn,
+    settings: &InstanceSettings,
+) -> AppResult<UserRow> {
+    match user.sign_in_required(settings) {
+        Some(_) => move_off_password(ctx, user, how, settings).await,
+        None => Ok(user),
+    }
+}
+
 /// Takes the password of `user`, whom a rule covers, at a sign-in `how`
 /// that meets it: it signs them in no more. Their reset links and the
-/// sign-ins made another way go with it, so that none comes back if the
-/// rule does. Returns them as they are now.
+/// sign-ins and admin tokens made another way go with it, so that none
+/// comes back if the rule does. Returns them as they are now.
 async fn move_off_password(
     ctx: &Ctx,
     user: UserRow,
@@ -363,17 +384,22 @@ async fn move_off_password(
         .flat_map(|r| r.domains.iter().map(|d| format!("{} {d}", r.provider)))
         .collect();
     let passkeys = covering.iter().any(|r| r.passkeys);
-    let mut statements = vec![q(
-        &ctx.db,
-        "DELETE FROM tokens WHERE user_id = ?1 \
-         AND NOT (COALESCE(auth_method, '') || ' ' || COALESCE(auth_domain, '') IN (SELECT value FROM json_each(?2)) \
-           OR (?3 AND COALESCE(auth_method, '') = 'passkey'))",
-        &[
-            s(&user.id),
-            s(&serde_json::to_string(&meeting)?),
-            crate::db::b(passkeys),
-        ],
-    )?];
+    let mut statements = Vec::new();
+    for table in ["tokens", "admin_tokens"] {
+        statements.push(q(
+            &ctx.db,
+            &format!(
+                "DELETE FROM {table} WHERE user_id = ?1 \
+                 AND NOT (COALESCE(auth_method, '') || ' ' || COALESCE(auth_domain, '') IN (SELECT value FROM json_each(?2)) \
+                   OR (?3 AND COALESCE(auth_method, '') = 'passkey'))"
+            ),
+            &[
+                s(&user.id),
+                s(&serde_json::to_string(&meeting)?),
+                crate::db::b(passkeys),
+            ],
+        )?);
+    }
     if user.has_password() {
         statements.extend([
             q(
@@ -419,8 +445,17 @@ async fn first_sign_in(
     {
         return wrong_account(p, &required);
     }
-    // A rule makes the provider the way in for the address's domain.
-    let by_rule = settings.sign_in.iter().any(|r| rules::meets(r, &how));
+    // A rule makes the provider the way in for the address's domain: its
+    // domains, where it does. Not for the primary instance owner, whom the
+    // rules don't hold and who links it from Settings, as before them.
+    let meeting: Vec<String> = settings
+        .sign_in
+        .iter()
+        .filter(|r| rules::meets(r, &how))
+        .flat_map(|r| r.domains.iter().cloned())
+        .collect();
+    let by_rule = !meeting.is_empty() && !user.is_owner();
+    let by_rule = by_rule.then_some(meeting.as_slice());
     match first(&ctx.db, &user, p, email, ctx.now, by_rule).await? {
         First::Linked => {}
         First::Signs => return sign_in(ctx, user, return_to, how, settings).await,
@@ -432,12 +467,7 @@ async fn first_sign_in(
         ctx,
         &user,
         &format!("A {name} account was linked to your account"),
-        if by_rule && user.is_owner() {
-            format!(
-                "You signed in to your {instance} account ({}) with the {name} account {email}: it signs you in from now on, as {instance}'s admins require for your address. As the primary instance owner, you keep your password and passkeys too: the way in while {name} is down.\n\nIf it wasn't you, check your {name} account now.",
-                user.email,
-            )
-        } else if by_rule {
+        if by_rule.is_some() {
             format!(
                 "You signed in to your {instance} account ({}) with the {name} account {email}: it signs you in from now on, as {instance}'s admins require for your address.{}\n\nIf it wasn't you, tell an admin of {instance} now.",
                 user.email,
@@ -469,7 +499,7 @@ async fn first_sign_in(
         Some(&user.id),
         Some(serde_json::json!({
             "provider": p.provider,
-            "via": if by_rule { "sign_in_rule" } else { "first_sign_in" },
+            "via": if by_rule.is_some() { "sign_in_rule" } else { "first_sign_in" },
         })),
     );
     response
@@ -494,16 +524,18 @@ enum First {
 /// one with no way to sign in at all (no password, passkey or linked
 /// account), as an admin token makes them for an address
 /// (`api::provision`), and nobody has signed in to; and one whose domain a
-/// rule makes this provider the way in for (`by_rule`), where the
-/// provider is authoritative for the address and its account the way in
-/// already. Their first sign-in with it links it.
+/// rule makes this provider the way in for (`by_rule`, the domains of the
+/// rules the sign-in meets), where the provider is authoritative for the
+/// address, while no account of it at those domains signs in to it
+/// already: another one with its address is a recycled address's new
+/// holder, not its person. Their first sign-in with it links it.
 async fn first(
     db: &D1Database,
     user: &UserRow,
     p: &Provided,
     email: &str,
     now: i64,
-    by_rule: bool,
+    by_rule: Option<&[String]>,
 ) -> AppResult<First> {
     if !user.is_active() {
         return Ok(First::Refused("disabled".to_owned()));
@@ -525,6 +557,9 @@ async fn first(
     match owner {
         Some(o) if o.user_id == user.id => Ok(First::Signs),
         Some(_) => Ok(First::Refused(p.code("linked_elsewhere"))),
+        // Under a rule, another account of the provider at its domains
+        // signs in to it: that one links this one, from Settings.
+        None if by_rule.is_some() => Ok(First::Refused(p.code("link_other"))),
         None => Ok(First::Refused(link_required(user, p))),
     }
 }
@@ -535,24 +570,30 @@ async fn first(
 /// unless a rule makes the provider the way in for it (`by_rule`), that it
 /// has no way in: a password, a passkey or a linked account given it since
 /// it was read, or an address an admin token changed meanwhile, leaves it
-/// as it is. Whether it linked it.
+/// as it is. Under a rule, it checks that no account of the provider at the
+/// rule's domains signs in to it already: one whose vouched domain is
+/// there, or, linked before fctl kept that, whose address is. Whether it
+/// linked it.
 async fn link_first(
     db: &D1Database,
     user_id: &str,
     p: &Provided,
     email: &str,
     now: i64,
-    by_rule: bool,
+    by_rule: Option<&[String]>,
 ) -> AppResult<bool> {
     let linked = q(
         db,
-        "INSERT OR IGNORE INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at) \
-         SELECT ?1, ?2, ?8, ?3, ?4, ?5, ?6, ?7 \
+        "INSERT OR IGNORE INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at, vouched_domain) \
+         SELECT ?1, ?2, ?8, ?3, ?4, ?5, ?6, ?7, ?11 \
          WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = ?2 AND u.status = 'active' \
            AND (?9 OR u.password_hash IS NULL) \
            AND (u.email = ?4 OR EXISTS (SELECT 1 FROM user_emails e WHERE e.user_id = ?2 AND e.email = ?4))) \
          AND (?9 OR NOT EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = ?2)) \
-         AND (?9 OR NOT EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2))",
+         AND (?9 OR NOT EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2)) \
+         AND NOT (?9 AND EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2 AND i.provider = ?8 \
+           AND COALESCE(i.vouched_domain, lower(substr(i.email, instr(i.email, '@') + 1))) \
+             IN (SELECT value FROM json_each(?10))))",
         &[
             s(fctl_domain::ids::identity_id(now).as_str()),
             s(user_id),
@@ -562,7 +603,9 @@ async fn link_first(
             os(p.picture.as_deref()),
             n(now),
             s(p.provider),
-            crate::db::b(by_rule),
+            crate::db::b(by_rule.is_some()),
+            s(&serde_json::to_string(&by_rule.unwrap_or_default())?),
+            os(p.vouched_domain().as_deref()),
         ],
     )?
     .run()
@@ -585,16 +628,18 @@ fn link_required(user: &UserRow, p: &Provided) -> String {
 }
 
 /// Keeps what the provider's account shows now: its address, name and
-/// picture, as Settings shows it.
+/// picture, as Settings shows it, and the domain of the address it vouches
+/// for, none included.
 async fn refresh(db: &D1Database, p: &Provided) -> AppResult<()> {
     q(
         db,
-        "UPDATE identities SET email = COALESCE(?, email), name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url) \
-         WHERE provider = ? AND subject = ?",
+        "UPDATE identities SET email = COALESCE(?, email), name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url), \
+         vouched_domain = ? WHERE provider = ? AND subject = ?",
         &[
             os(p.email.as_deref()),
             os(p.name.as_deref()),
             os(p.picture.as_deref()),
+            os(p.vouched_domain().as_deref()),
             s(p.provider),
             s(&p.subject),
         ],
@@ -625,7 +670,7 @@ fn identity_insert(
 ) -> AppResult<crate::db::Query> {
     q(
         db,
-        "INSERT INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at, vouched_domain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(fctl_domain::ids::identity_id(now).as_str()),
             s(user_id),
@@ -635,6 +680,7 @@ fn identity_insert(
             os(p.name.as_deref()),
             os(p.picture.as_deref()),
             n(now),
+            os(p.vouched_domain().as_deref()),
         ],
     )
 }
@@ -643,7 +689,8 @@ fn identity_insert(
 struct IdentityBrief {
     id: String,
     provider: String,
-    email: Option<String>,
+    #[serde(default)]
+    vouched_domain: Option<String>,
 }
 
 /// `DELETE /api/v1/auth/identities/{id}`: unlinks one of the caller's
@@ -653,7 +700,7 @@ pub async fn unlink(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let user = ctx.user()?.clone();
     let mine: Vec<IdentityBrief> = q(
         &ctx.db,
-        "SELECT id, provider, email FROM identities WHERE user_id = ?",
+        "SELECT id, provider, vouched_domain FROM identities WHERE user_id = ?",
         &[s(&user.id)],
     )?
     .all()
@@ -667,7 +714,7 @@ pub async fn unlink(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         let addresses: Vec<&str> = addresses.iter().map(String::as_str).collect();
         let covering = rules::covering(&settings.sign_in, &addresses);
         let meets = |i: &IdentityBrief| {
-            let how = SignedIn::provider(&i.provider, i.email.as_deref());
+            let how = SignedIn::read(Some(&i.provider), i.vouched_domain.as_deref());
             covering.iter().any(|r| rules::meets(r, &how))
         };
         if meets(target) && !mine.iter().any(|i| i.id != id && meets(i)) {
@@ -858,6 +905,13 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const NOW: i64 = 1_800_000_000_000;
+    /// No rule makes Google the way in.
+    const NONE: Option<&[String]> = None;
+
+    /// The domains of the rule that makes Google the way in at acme.dev.
+    fn acme() -> Vec<String> {
+        vec!["acme.dev".to_owned()]
+    }
 
     /// Bob, whom an admin token made as `api::provision::create` does: an
     /// active member, with an allowlist entry of his own and no way to sign
@@ -880,8 +934,8 @@ mod tests {
              ('alw_eve', 'eve@acme.dev', 'member', 'Admin token', 'usr_ada', 0)",
             "INSERT INTO passkeys (id, user_id, credential_id, public_key, algorithm, name, created_at) VALUES \
              ('psk_cy', 'usr_cy', 'cred-cy', 'key', -7, 'Laptop', 0)",
-            "INSERT INTO identities (id, user_id, provider, subject, email, created_at) VALUES \
-             ('idn_dee', 'usr_dee', 'google', 'g-dee-personal', 'dee@gmail.com', 0)",
+            "INSERT INTO identities (id, user_id, provider, subject, email, created_at, vouched_domain) VALUES \
+             ('idn_dee', 'usr_dee', 'google', 'g-dee-personal', 'dee@gmail.com', 0, 'gmail.com')",
         ] {
             q(db, sql, &[])?.run().await?;
         }
@@ -942,14 +996,14 @@ mod tests {
         let bob = user(&db, "usr_bob").await?;
         let g = google("g-bob", "bob@acme.dev");
         assert_eq!(
-            first(&db, &bob, &g, "bob@acme.dev", NOW, false).await?,
+            first(&db, &bob, &g, "bob@acme.dev", NOW, NONE).await?,
             First::Linked
         );
         assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
         // Then it is his way in: the same Google account signs in, and
         // another with his address links to it only from his Settings.
         assert_eq!(
-            first(&db, &bob, &g, "bob@acme.dev", NOW + 1, false).await?,
+            first(&db, &bob, &g, "bob@acme.dev", NOW + 1, NONE).await?,
             First::Signs
         );
         let other = google("g-bob-2", "bob@acme.dev");
@@ -960,7 +1014,7 @@ mod tests {
                 &other,
                 "bob@acme.dev",
                 NOW + 2,
-                false
+                NONE
             )
             .await?,
             refused("google_link_other")
@@ -981,7 +1035,7 @@ mod tests {
             ("usr_eve", "eve@acme.dev", "disabled"),
         ] {
             let g = google(&format!("g-{id}"), email);
-            let found = first(&db, &user(&db, id).await?, &g, email, NOW, false).await?;
+            let found = first(&db, &user(&db, id).await?, &g, email, NOW, NONE).await?;
             assert_eq!(found, refused(code), "{id}");
         }
         assert!(googles(&db, "usr_ada").await?.is_empty());
@@ -1002,7 +1056,7 @@ mod tests {
         .await?;
         let g = google("g-bob", "bob@acme.dev");
         assert!(matches!(
-            first(&db, &bob, &g, "bob@acme.dev", NOW, false).await?,
+            first(&db, &bob, &g, "bob@acme.dev", NOW, NONE).await?,
             First::Refused(_)
         ));
         assert!(googles(&db, "usr_bob").await?.is_empty());
@@ -1022,7 +1076,7 @@ mod tests {
             ("usr_dee", "dee@acme.dev"),
         ] {
             let g = google(&format!("g-{id}"), email);
-            let found = first(&db, &user(&db, id).await?, &g, email, NOW, true).await?;
+            let found = first(&db, &user(&db, id).await?, &g, email, NOW, Some(&acme())).await?;
             assert_eq!(found, First::Linked, "{id}");
         }
         assert_eq!(
@@ -1034,15 +1088,62 @@ mod tests {
         let eve = user(&db, "usr_eve").await?;
         let g = google("g-eve", "eve@acme.dev");
         assert_eq!(
-            first(&db, &eve, &g, "eve@acme.dev", NOW, true).await?,
+            first(&db, &eve, &g, "eve@acme.dev", NOW, Some(&acme())).await?,
             refused("disabled")
         );
         let bob = user(&db, "usr_bob").await?;
         let ada_google = google("g-usr_ada", "bob@acme.dev");
         assert_eq!(
-            first(&db, &bob, &ada_google, "bob@acme.dev", NOW, true).await?,
+            first(&db, &bob, &ada_google, "bob@acme.dev", NOW, Some(&acme())).await?,
             refused("google_linked_elsewhere")
         );
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_rule_links_no_second_organization_account_to_an_account() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        // Cy's organization account links by the rule, beside his passkey.
+        let cy = user(&db, "usr_cy").await?;
+        let org = google("g-cy", "cy@acme.dev");
+        assert_eq!(
+            first(&db, &cy, &org, "cy@acme.dev", NOW, Some(&acme())).await?,
+            First::Linked
+        );
+        // His address, handed to someone new with a new Google account,
+        // doesn't take his account over: that one links from Settings, by
+        // whoever signs in to it.
+        let recycled = google("g-cy-new-hire", "cy@acme.dev");
+        assert_eq!(
+            first(
+                &db,
+                &user(&db, "usr_cy").await?,
+                &recycled,
+                "cy@acme.dev",
+                NOW + 1,
+                Some(&acme())
+            )
+            .await?,
+            refused("google_link_other")
+        );
+        assert_eq!(googles(&db, "usr_cy").await?, vec!["g-cy".to_owned()]);
+        // Nor does one linked before fctl kept which domain Google vouched
+        // for, that showed an address at the rule's domain.
+        q(
+            &db,
+            "INSERT INTO identities (id, user_id, provider, subject, email, created_at) VALUES \
+             ('idn_bob_old', 'usr_bob', 'google', 'g-bob-old', 'bob@acme.dev', 0)",
+            &[],
+        )?
+        .run()
+        .await?;
+        let bob = user(&db, "usr_bob").await?;
+        let recycled = google("g-bob-new-hire", "bob@acme.dev");
+        assert!(matches!(
+            first(&db, &bob, &recycled, "bob@acme.dev", NOW, Some(&acme())).await?,
+            First::Refused(_)
+        ));
         Ok(())
     }
 
@@ -1061,9 +1162,9 @@ mod tests {
             q(&db, sql, &[])?.run().await?;
         }
         let old = google("g-bob-old", "bob@acme.dev");
-        for by_rule in [false, true] {
+        for by_rule in [None, Some(acme())] {
             assert!(matches!(
-                first(&db, &bob, &old, "bob@acme.dev", NOW, by_rule).await?,
+                first(&db, &bob, &old, "bob@acme.dev", NOW, by_rule.as_deref()).await?,
                 First::Refused(_)
             ));
         }
@@ -1084,7 +1185,7 @@ mod tests {
                 &connected,
                 "bob@acme.io",
                 NOW,
-                false
+                NONE
             )
             .await?,
             First::Linked
@@ -1104,8 +1205,8 @@ mod tests {
             google("g-bob-2", "bob@acme.dev"),
         );
         let (a, b) = futures::join!(
-            first(&db, &bob, &one, "bob@acme.dev", NOW, false),
-            first(&db, &bob, &two, "bob@acme.dev", NOW, false),
+            first(&db, &bob, &one, "bob@acme.dev", NOW, NONE),
+            first(&db, &bob, &two, "bob@acme.dev", NOW, NONE),
         );
         let mut both = [a?, b?];
         both.sort_by_key(|f| format!("{f:?}"));
@@ -1128,8 +1229,8 @@ mod tests {
         let bob = user(&db, "usr_bob").await?;
         let g = google("g-bob", "bob@acme.dev");
         let (a, b) = futures::join!(
-            first(&db, &bob, &g, "bob@acme.dev", NOW, false),
-            first(&db, &bob, &g, "bob@acme.dev", NOW, false),
+            first(&db, &bob, &g, "bob@acme.dev", NOW, NONE),
+            first(&db, &bob, &g, "bob@acme.dev", NOW, NONE),
         );
         let mut both = [a?, b?];
         both.sort_by_key(|f| format!("{f:?}"));

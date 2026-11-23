@@ -116,16 +116,20 @@ owner and purpose), so a value copied between rows does not decrypt.
   the accounts with an address there sign in only with that provider, as
   an address there that it vouches for: Google only where it hosts the
   address (a Google Workspace account's, never a personal account's that
-  shows it). Each browser session keeps how it was made, and a CLI's and
-  an access token's take it from the sign-in that made them, so that every
-  request checks it: passwords, passkeys alone (unless the admins allow
-  them), reset links and sign-ins made before the rule stop working at
-  once. A covered account's first sign-in with the provider takes its
-  password, and its people can't disconnect an address there. The
+  shows it). Each browser session keeps how it was made, and a CLI's, an
+  access token's and an admin token's take it from the sign-in that made
+  them, so that every request checks it: passwords, passkeys alone
+  (unless the admins allow them) and reset links stop working, and saving
+  the rule deletes the sign-ins made otherwise, before it too. A covered
+  account's first whole sign-in with the provider takes its password; a
+  second account of the provider at the domain doesn't link to an account
+  that has one; and its people can't disconnect an address there. The
   primary instance owner keeps their password and passkeys, the way in
   while the provider is down; an admin can't save a rule their own
   sign-in doesn't meet, and letting a domain go, or passkeys in, is a
-  sensitive action.
+  sensitive action. Closing someone's account at the provider stops their
+  next sign-in, not the sessions they have: disable their account here
+  too.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin

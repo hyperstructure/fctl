@@ -180,6 +180,28 @@ pub fn consequences(p: &SignInPreview, provider: &str) -> Vec<String> {
             names(&p.passkeys, p.passkey_count)
         ));
     }
+    if p.access_tokens > 0 {
+        lines.push(format!(
+            "Their {} made with another way in {}: they make new ones after signing in with {provider}.",
+            if p.access_tokens == 1 {
+                "1 access token or CLI sign-in".to_owned()
+            } else {
+                format!("{} access tokens and CLI sign-ins", p.access_tokens)
+            },
+            if p.access_tokens == 1 { "goes" } else { "go" }
+        ));
+    }
+    if p.admin_tokens > 0 {
+        lines.push(format!(
+            "{} made with another way in {}: a program that provisions people with one needs a new one.",
+            if p.admin_tokens == 1 {
+                "1 admin token".to_owned()
+            } else {
+                format!("{} admin tokens", p.admin_tokens)
+            },
+            if p.admin_tokens == 1 { "stops working" } else { "stop working" }
+        ));
+    }
     if p.linked > 0 {
         lines.push(format!(
             "{} {} with {provider} already.",
@@ -206,7 +228,12 @@ pub fn consequences(p: &SignInPreview, provider: &str) -> Vec<String> {
         ));
     }
     // Nothing anyone signs in with stops or starts working: the rest is context.
-    if p.password_count == 0 && p.passkey_count == 0 && p.released == 0 {
+    if p.password_count == 0
+        && p.passkey_count == 0
+        && p.access_tokens == 0
+        && p.admin_tokens == 0
+        && p.released == 0
+    {
         lines.insert(0, "Nobody's way in changes.".to_owned());
         return lines;
     }
@@ -338,6 +365,8 @@ mod tests {
             password_count: 38,
             passkeys: vec![person("Bob")],
             passkey_count: 1,
+            access_tokens: 5,
+            admin_tokens: 1,
             linked: 3,
             first: 0,
             released: 0,
@@ -356,6 +385,8 @@ mod tests {
             "38 people sign in with a password today: their next sign-in goes through Google, and their passwords stop working (Bob, Cy and 36 more)."
         );
         assert!(lines.contains(&"4 people at other domains sign in as before.".to_owned()));
+        assert!(lines.contains(&"Their 5 access tokens and CLI sign-ins made with another way in go: they make new ones after signing in with Google.".to_owned()));
+        assert!(lines.contains(&"1 admin token made with another way in stops working: a program that provisions people with one needs a new one.".to_owned()));
         assert!(
             lines
                 .iter()
@@ -372,6 +403,8 @@ mod tests {
             password_count: 0,
             passkeys: vec![],
             passkey_count: 0,
+            access_tokens: 0,
+            admin_tokens: 0,
             linked: 0,
             first: 0,
             owner: None,

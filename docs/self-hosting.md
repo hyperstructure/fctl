@@ -1167,9 +1167,12 @@ people sign in with it.
 ### Requiring Google for your domains
 
 Where your people's addresses are your Google Workspace's, they can sign
-in with it alone: under its two-step verification and device checks, and
-out the day you close their Google account, with no password of fctl's
-to forget or leave behind. Under **Admin → Sign-in → Domains that sign in
+in with it alone: under its two-step verification and device checks,
+unable to sign in again once you close their Google account, and with no
+password of fctl's to forget or leave behind. Closing a Google account
+doesn't end the sessions its person has already: disable their account
+here too as they leave (or with your [admin
+token](#provision-people-with-admin-tokens)'s sync). Under **Admin → Sign-in → Domains that sign in
 with a provider**, choose **Require a provider** and give your domains
 (`acme.com, acme.dev`), or:
 
@@ -1187,14 +1190,20 @@ address at those domains, a connected one too:
   working, and so do their passkeys alone, unless you allow those
   (`--passkeys`): quick, but a passkey still signs in someone whose Google
   account you closed. Passkeys still confirm it's them after Google and
-  before sensitive actions. Their browsers, CLIs and access tokens made
-  another way, before the rule too, stop working at once: they sign in
-  again, and make access tokens again, once.
+  before sensitive actions. Saving the rule deletes the browser sessions,
+  CLI sign-ins, access tokens and admin tokens they made another way,
+  those from before the rule too: they sign in again, and make access
+  tokens again, once. The admin token your directory sync uses stops if
+  an admin the rule covers made it another way: make it after signing in
+  with Google, or as the primary instance owner.
 - **Their next Google sign-in moves them over.** It links their Google
   Workspace account to their fctl account by its address, whatever else
-  the account has, and takes the account's password, which signs nobody in
-  any more. Signing in as a personal Google account (a Gmail one) is
-  refused: the page says which address to choose.
+  the account has, unless another Workspace account at those domains signs
+  in to it already (a recycled address's new holder doesn't get the
+  account). Once its second factor checks out, where it asks for one, it
+  takes the account's password, which signs nobody in any more. Signing
+  in as a personal Google account (a Gmail one) is refused: the page says
+  which address to choose.
 - **They hear of it**, by email where the instance [sends
   it](#email-optional), and the sign-in page says which domains sign in
   with Google and turns its form into Google's button for an address

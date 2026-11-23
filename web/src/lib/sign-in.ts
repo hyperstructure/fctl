@@ -132,6 +132,14 @@ export function consequences(p: G.SignInPreview, provider: string, you?: string)
     lines.push(
       `${people(p.passkey_count)} ${p.passkey_count === 1 ? "has" : "have"} passkeys that stop signing them in alone; they still confirm it's them after ${provider}.`,
     );
+  if (p.access_tokens > 0)
+    lines.push(
+      `Their ${p.access_tokens === 1 ? "1 access token or CLI sign-in" : `${p.access_tokens} access tokens and CLI sign-ins`} made with another way in ${p.access_tokens === 1 ? "goes" : "go"}: they make new ones after signing in with ${provider}.`,
+    );
+  if (p.admin_tokens > 0)
+    lines.push(
+      `${p.admin_tokens === 1 ? "1 admin token" : `${p.admin_tokens} admin tokens`} made with another way in ${p.admin_tokens === 1 ? "stops working" : "stop working"}: a program that provisions people with one needs a new one.`,
+    );
   if (p.linked > 0)
     lines.push(`${people(p.linked)} ${p.linked === 1 ? "signs in" : "sign in"} with ${provider} already.`);
   if (p.first > 0)
@@ -143,8 +151,8 @@ export function consequences(p: G.SignInPreview, provider: string, you?: string)
       `${people(p.released)} ${p.released === 1 ? "signs in" : "sign in"} as they like again; those who still have a password, with it.`,
     );
   // Nothing anyone signs in with stops or starts working: the rest is context.
-  if (p.password_count === 0 && p.passkey_count === 0 && p.released === 0)
-    return ["Nobody's way in changes.", ...lines];
+  const changes = p.password_count + p.passkey_count + p.access_tokens + p.admin_tokens + p.released;
+  if (changes === 0) return ["Nobody's way in changes.", ...lines];
   if (p.covered > 0 && p.others > 0)
     lines.push(`${people(p.others)} at other domains ${p.others === 1 ? "signs in" : "sign in"} as before.`);
   if (p.you === "owner")

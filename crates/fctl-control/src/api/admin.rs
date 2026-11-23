@@ -1083,8 +1083,14 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         settings.sign_in = rules;
     }
     crate::instance::save(&ctx.db, &settings).await?;
-    // Who hears that their password or passkeys stop signing them in.
     if let Some(change) = change {
+        // The sign-ins the rules don't meet go, so that none comes back with
+        // a rule that goes; then who hears that their way in stopped.
+        batch(
+            &ctx.db,
+            crate::sign_in::revoke_unmet(&ctx.db, &settings.sign_in)?,
+        )
+        .await?;
         crate::api::sign_in::tell(ctx, change, &settings.sign_in);
     }
     if gravatar_off {

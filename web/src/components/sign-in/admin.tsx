@@ -131,7 +131,7 @@ export function SignInAdmin({
       </Section>
       <Section
         title="Domains that sign in with a provider"
-        description="Your organization's people sign in with its provider alone, as their address there: under its two-step verification and device checks, and out the day it closes their account. People at other domains sign in as before."
+        description="Your organization's people sign in with its provider alone, as their address there: under its two-step verification and device checks, and unable to sign in again once it closes their account. People at other domains sign in as before."
       >
         {!o ? (
           <Skeleton className="h-20 w-full" />

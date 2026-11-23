@@ -110,6 +110,8 @@ describe("changing the rules", () => {
       password_count: 38,
       passkeys: [person("Bob")],
       passkey_count: 1,
+      access_tokens: 5,
+      admin_tokens: 1,
       linked: 3,
       first: 0,
       released: 0,
@@ -123,6 +125,12 @@ describe("changing the rules", () => {
       "38 people sign in with a password today: their next sign-in goes through Google, and their passwords stop working.",
     );
     expect(lines).toContain("4 people at other domains sign in as before.");
+    expect(lines).toContain(
+      "Their 5 access tokens and CLI sign-ins made with another way in go: they make new ones after signing in with Google.",
+    );
+    expect(lines).toContain(
+      "1 admin token made with another way in stops working: a program that provisions people with one needs a new one.",
+    );
     expect(lines.at(-1)).toBe(
       "Ada, the primary instance owner, keeps their password and passkeys: the way in if Google is down.",
     );
@@ -134,6 +142,8 @@ describe("changing the rules", () => {
       covered: 0,
       password_count: 0,
       passkey_count: 0,
+      access_tokens: 0,
+      admin_tokens: 0,
       linked: 0,
       owner: undefined,
     };

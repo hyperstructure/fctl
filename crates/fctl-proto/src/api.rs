@@ -268,6 +268,10 @@ pub struct Identity {
     /// `google`.
     pub provider: String,
     pub email: Option<String>,
+    /// The domain of `email`, where the provider vouched for it at its last
+    /// sign-in (Google: one it hosts). Only then does it sign in where a
+    /// domain requires the provider ([`SignInRule`]).
+    pub domain: Option<String>,
     pub name: Option<String>,
     pub avatar_url: Option<String>,
     pub created_at: Millis,
@@ -1863,6 +1867,15 @@ pub struct SignInPreview {
     /// sensitive actions.
     pub passkeys: Vec<SignInPerson>,
     pub passkey_count: u32,
+    /// Their CLI sign-ins and access tokens made with another way in,
+    /// which saving deletes: they make new ones after signing in with the
+    /// provider.
+    #[serde(default)]
+    pub access_tokens: u32,
+    /// Their admin tokens made with another way in, which stop working
+    /// (a program that provisions people with one needs a new one).
+    #[serde(default)]
+    pub admin_tokens: u32,
     /// Those an account of the provider, as an address at a covered
     /// domain, signs in to already.
     pub linked: u32,

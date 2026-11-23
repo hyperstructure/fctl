@@ -86,7 +86,7 @@ below.
 
 Where your people's addresses are your Google Workspace's, require Google
 for your domains: they then sign in with it alone, under its two-step
-verification and device checks, and lose access to fctl the day you close
+verification and device checks, and can't sign in again once you close
 their Google account. An instance admin does it under **Admin → Sign-in**,
 or:
 
@@ -100,9 +100,9 @@ passwords stop working. 4 people at other domains sign in as before.").
 From then on, for everyone with an address at those domains:
 
 - Their passwords, their passkeys alone (unless you add `--passkeys`) and
-  their personal Google accounts stop signing them in, and so do the
-  browsers, CLIs and access tokens they signed in with that way, before
-  the rule too.
+  their personal Google accounts stop signing them in, and saving the
+  rule deletes the browser sessions, CLI sign-ins, access tokens and
+  admin tokens they made that way, those from before the rule too.
 - Their next Google sign-in, as their Workspace address, links Google to
   their fctl account and takes its password. The sign-in page turns its
   form into Google's button for an address there, and fctl emails them
@@ -254,10 +254,11 @@ minutes, once your sync makes accounts with an admin token (above).
    ```
 
    That signs Ada out everywhere, and stops Ada's tokens and the
-   sessions that run on Ada's Claude subscription. Closing Ada's Google
-   account does the first already, where step 3 applies. Delete the
-   account later (`fctl admin delete-user`), once nobody needs what only
-   Ada has.
+   sessions that run on Ada's Claude subscription. Where step 3 applies,
+   closing Ada's Google account keeps Ada from signing in again, but the
+   browsers and CLIs Ada is signed in with already go on until this
+   does. Delete the account later (`fctl admin delete-user`), once nobody
+   needs what only Ada has.
 
 What can go wrong:
 

@@ -700,7 +700,7 @@ describe("two-factor sign-in in a workspace's settings", () => {
       { ...side, require_two_factor: true, instance_requires_two_factor: true },
       "admin",
     );
-    expect(page.textContent).toContain("only instance admins can turn it off (Admin → Settings).");
+    expect(page.textContent).toContain("only instance admins can turn it off (Admin → Sign-in).");
   });
 });
 
