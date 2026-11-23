@@ -25,7 +25,13 @@ machines were idle but fctl itself.
   group is at its minimum size, a missing permission) leaves the machine a
   runner that takes sessions again and tries after another idle while.
   Removing the runner first would leave, on any such failure, a machine
-  that costs money and runs nothing.
+  that costs money and runs nothing. Once it worked, the host uninstalls
+  its service, so that no service manager starts it again on a machine
+  that is going.
+- **A retirement that stops short undoes its drain**, from a file kept
+  until the control plane hears it, so that neither a lost answer nor a
+  restart leaves a runner drained for good; and while it retires, the host
+  declines the resumes the control plane still sends it.
 - **Being idle is the host's to judge**, from what it runs and is about to
   (sessions, starts that wait, sign-ins, chores on sandboxes), not the
   control plane's: no new protocol, and older control planes work.
@@ -43,9 +49,9 @@ machines were idle but fctl itself.
 - Retiring loses what any machine that goes loses: sessions whose
   sandboxes it kept resume elsewhere without their conversation, until
   session snapshots carry it (#616).
-- A pool's demand never wants fewer runners than run a session (ADR
-  0094's `wanted`), so a scaler that sets the size from it removes only
-  idle machines too.
+- A pool's demand never wants fewer runners than run a session (its
+  `wanted`, from the change that adds runner pools, #634), so a scaler that
+  sets the size from it removes only idle machines too.
 - `retire_command` runs as the host's user: it needs the permissions the
   cloud's call takes (an instance role that may terminate its own instance,
   `sudo` for a poweroff).

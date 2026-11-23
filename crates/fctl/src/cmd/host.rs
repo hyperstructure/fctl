@@ -162,7 +162,7 @@ pub enum HostCmd {
     #[command(after_help = "Examples:
   fctl host drain                      # no new sessions; the ones here carry on
   fctl host drain --wait               # until none runs here
-  fctl host drain --timeout 90s        # as a cloud takes the machine: stop what still runs after 90 s")]
+  fctl host drain --timeout 60s        # on Spot's two-minute notice: stop what still runs after a minute")]
     Drain {
         /// Wait until no session runs here.
         #[arg(long)]
@@ -1667,7 +1667,11 @@ async fn wait_until_drained(
 /// their agents push their work.
 const STOP_AFTER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// `--timeout`: `90s`, `10m`, `1h`.
+/// The longest `--timeout`: an autoscaling group's lifecycle hook, at its
+/// longest, gives a machine 48 hours.
+const MAX_TIMEOUT_HOURS: u64 = 48;
+
+/// `--timeout`: `90s`, `10m`, `1h`, at most [`MAX_TIMEOUT_HOURS`].
 fn timeout_arg(s: &str) -> std::result::Result<std::time::Duration, String> {
     let t = s.trim().to_lowercase();
     let (n, per) = if let Some(n) = t.strip_suffix('s') {
@@ -1679,8 +1683,16 @@ fn timeout_arg(s: &str) -> std::result::Result<std::time::Duration, String> {
     } else {
         return Err(format!("{s:?} needs a unit: 90s, 10m or 1h"));
     };
-    match n.trim().parse::<u64>() {
-        Ok(n) if n > 0 => Ok(std::time::Duration::from_secs(n * per)),
+    match n
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(per))
+    {
+        Some(secs) if secs > MAX_TIMEOUT_HOURS * 3600 => Err(format!(
+            "{s:?} is longer than a drain waits: at most {MAX_TIMEOUT_HOURS}h"
+        )),
+        Some(secs) if secs > 0 => Ok(std::time::Duration::from_secs(secs)),
         _ => Err(format!("{s:?} isn't a duration: use 90s, 10m or 1h")),
     }
 }
@@ -1713,10 +1725,10 @@ fn retire_sentence(cfg: &HostConfig) -> Option<String> {
         fctl_domain::enrollment::minutes(u32::try_from(after.as_secs() / 60).unwrap_or(u32::MAX));
     Some(match &cfg.retire_command {
         Some(c) => format!(
-            "Once its runner has run nothing for {minutes}, this machine drains, runs `{c}` and leaves (retire_idle_minutes)."
+            "Once its runner has run nothing for {minutes}, this machine drains, runs `{c}`, then leaves and uninstalls its host service (retire_idle_minutes)."
         ),
         None => format!(
-            "Once its runner has run nothing for {minutes}, this machine drains, leaves and stops its host service (retire_idle_minutes)."
+            "Once its runner has run nothing for {minutes}, this machine drains, leaves and uninstalls its host service (retire_idle_minutes)."
         ),
     })
 }
@@ -2083,6 +2095,9 @@ mod tests {
         assert_eq!(timeout_arg(" 2H "), Ok(Duration::from_secs(7200)));
         assert!(timeout_arg("90").is_err());
         assert!(timeout_arg("0s").is_err());
+        assert_eq!(timeout_arg("48h"), Ok(Duration::from_secs(48 * 3600)));
+        assert!(timeout_arg("49h").is_err());
+        assert!(timeout_arg("18446744073709551615h").is_err());
         assert_eq!(duration_words(Duration::from_secs(90)), "90 seconds");
         assert_eq!(duration_words(Duration::from_secs(60)), "1 minute");
         assert_eq!(duration_words(Duration::from_secs(600)), "10 minutes");
@@ -2097,7 +2112,7 @@ mod tests {
         assert_eq!(
             retire_sentence(&cfg).as_deref(),
             Some(
-                "Once its runner has run nothing for 20 minutes, this machine drains, runs `systemctl poweroff` and leaves (retire_idle_minutes)."
+                "Once its runner has run nothing for 20 minutes, this machine drains, runs `systemctl poweroff`, then leaves and uninstalls its host service (retire_idle_minutes)."
             )
         );
     }

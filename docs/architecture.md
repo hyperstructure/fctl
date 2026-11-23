@@ -1425,11 +1425,12 @@ machine with the driver.
 A cloud that takes a machine away gives it a deadline: Spot's two
 minutes, an autoscaling group's lifecycle hook, Google Cloud's graceful
 shutdown, Azure's terminate notification, a pod's `preStop` hook and
-grace period. `fctl host drain --timeout 90s` drains the runner and waits
-that long at most, then drains it with `stop_sessions`, as `fctl host
-uninstall --force` does, and waits up to a minute for the sessions to
-stop: the turns under way get the time there is, and every agent still
-pushes its work.
+grace period. `fctl host drain --timeout 60s` (on Spot's two minutes)
+drains the runner and waits that long at most, then drains it with
+`stop_sessions`, as `fctl host uninstall --force` does, and waits up to a
+minute for the sessions to stop: the turns under way get the time there
+is, and every agent still pushes its work. Give it a minute less than the
+notice.
 
 ### Machines that retire
 
@@ -1455,9 +1456,18 @@ scale-in, and never removes a busy one:
    leaves fctl without going away itself.
 4. Once the command worked, an enrolled runner leaves its workspace
    (`DELETE /api/v1/runner`, as `fctl host uninstall` removes it), the
-   host forgets its token, and stops. A runner a person registered stays,
-   drained. Without `retire_command`, it leaves at once, and whatever ran
-   the host takes the machine away.
+   host forgets its token, uninstalls its service, so that nothing starts
+   it again, and stops. A runner a person registered stays, drained.
+   Without `retire_command`, it leaves at once, and whatever ran the host
+   takes the machine away.
+
+While it retires, the host declines the sessions FleetDO still sends it
+(resumes into the sandboxes it keeps), which then start elsewhere, and
+doesn't update itself. What it drained is kept in `retiring.json` in its
+data directory until the runner takes sessions again: a retirement that
+stops short (the drain's answer lost, a failed command, a restart) has
+the runner undrained, asked at every heartbeat until the control plane
+hears it, unless someone else had drained it.
 
 Sessions whose sandboxes the machine kept resume elsewhere, without their
 conversation, as after any machine that goes. A host in a Kubernetes pod

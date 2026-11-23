@@ -117,6 +117,11 @@ pub struct Daemon {
     idle: retire::Idle,
     /// Where a retirement under way is.
     retiring: Option<Retiring>,
+    /// A retirement that stopped short drained the runner, which takes
+    /// sessions again once the control plane hears so: until then, every
+    /// heartbeat asks again. `undraining`: an ask is under way.
+    owe_undrain: bool,
+    undraining: bool,
     /// The Kubernetes pod this host runs in, whose deletion cost it keeps
     /// at its number of sessions: `None` outside one, with
     /// `pod_deletion_cost` off, and once the cluster refused.
@@ -131,10 +136,8 @@ pub struct Daemon {
 enum Retiring {
     /// The runner drains: nothing more comes.
     Draining,
-    /// The retire command runs. `drained_before`: someone else drained the
-    /// runner before it retired, which a retirement that doesn't happen
-    /// leaves as it was.
-    Running { drained_before: bool },
+    /// The retire command runs, with what was drained.
+    Running(retire::Drained),
 }
 
 /// A host that updates itself: where its fctl is, and the newer version
@@ -201,15 +204,19 @@ enum Chore {
     /// The driver this host uses became ready, or stopped being: the
     /// control plane hears it at once (`serve`).
     Drivers,
-    /// The runner drained for this machine to retire: whether it drained
-    /// before, and how many sessions the control plane says it runs; or
-    /// why the control plane didn't answer.
-    RetireDrained(Result<(bool, usize), String>),
+    /// The runner drained for this machine to retire: what was drained,
+    /// and how many sessions the control plane says it runs; or why not,
+    /// with what was to be drained when the runner was known by then (the
+    /// drain may have happened all the same).
+    RetireDrained(Result<(retire::Drained, usize), (String, Option<retire::Drained>)>),
     /// The retire command ran: what it printed, or why it failed.
     RetireRan {
         result: Result<String, String>,
-        drained_before: bool,
+        drained: retire::Drained,
     },
+    /// The runner takes sessions again after a retirement that stopped
+    /// short, or the control plane didn't hear it.
+    Undrained(Result<(), String>),
     /// The pod's deletion cost was set to this, or setting it failed, and
     /// whether it will fail every time.
     PodCost(usize, Result<(), (String, bool)>),
@@ -324,6 +331,22 @@ impl Daemon {
                 kube::DELETION_COST
             );
         }
+        // A retirement a restart cut short: the runner takes sessions again,
+        // unless someone else had drained it.
+        let marker = retire::marker(&ctx.cfg.data_dir());
+        let owe_undrain = match retire::marked(&marker) {
+            Some(d) if !d.before => {
+                tracing::info!(
+                    "a retirement stopped short as the host restarted: the runner takes sessions again"
+                );
+                true
+            }
+            Some(_) => {
+                retire::unmark(&marker);
+                false
+            }
+            None => false,
+        };
         Ok(Self {
             ctx,
             sessions: HashMap::new(),
@@ -357,6 +380,8 @@ impl Daemon {
             drivers_said: Vec::new(),
             idle: retire::Idle::default(),
             retiring: None,
+            owe_undrain,
+            undraining: false,
             pod,
             pod_cost: None,
             pod_setting: false,
@@ -839,28 +864,39 @@ impl Daemon {
             Chore::Downloaded(ready) => self.downloaded(*ready),
             // `serve` sends them as it loops.
             Chore::Drivers => {}
-            Chore::RetireDrained(Ok((drained_before, sessions))) => {
+            Chore::RetireDrained(Ok((drained, sessions))) => {
                 if sessions == 0 && self.sessions.is_empty() && self.pending_starts.is_empty() {
-                    self.run_retire_command(drained_before);
+                    self.run_retire_command(drained);
                 } else {
                     tracing::info!("{}", retire::Kept::Busy.words());
-                    self.keep(drained_before);
+                    self.keep(Some(drained));
                 }
             }
-            Chore::RetireDrained(Err(e)) => {
+            Chore::RetireDrained(Err((e, drained))) => {
                 tracing::warn!("{}", retire::Kept::Unreachable(e).words());
-                self.retiring = None;
-                self.idle.reset();
+                // The drain may have happened all the same.
+                self.keep(drained);
             }
             Chore::RetireRan {
-                result: Ok(said), ..
-            } => self.leave(said),
+                result: Ok(said),
+                drained,
+            } => self.leave(said, drained),
             Chore::RetireRan {
                 result: Err(why),
-                drained_before,
+                drained,
             } => {
                 tracing::error!("{}", retire::Kept::Command(why).words());
-                self.keep(drained_before);
+                self.keep(Some(drained));
+            }
+            Chore::Undrained(result) => {
+                self.undraining = false;
+                match result {
+                    Ok(()) => {
+                        self.owe_undrain = false;
+                        retire::unmark(&retire::marker(&self.ctx.cfg.data_dir()));
+                    }
+                    Err(e) => tracing::warn!("taking sessions again: {e}; trying again"),
+                }
             }
             Chore::PodCost(n, result) => {
                 self.pod_setting = false;
@@ -868,7 +904,7 @@ impl Daemon {
                     Ok(()) => self.pod_cost = Some(n),
                     Err((why, true)) => {
                         tracing::warn!(
-                            "can't set this pod's {} ({why}): its service account needs `patch` on pods; not trying again",
+                            "can't set this pod's {} ({why}); not trying again",
                             kube::DELETION_COST
                         );
                         self.pod = None;
@@ -902,11 +938,24 @@ impl Daemon {
                 let _ = tx.send(Chore::PodCost(n, result));
             });
         }
+        if self.owe_undrain && !self.undraining && self.retiring.is_none() {
+            self.undraining = true;
+            let api = self.runner_api();
+            let tx = self.chores_tx.clone();
+            tokio::spawn(async move {
+                let result = api
+                    .drain_this_runner(false, false)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(Chore::Undrained(result));
+            });
+        }
         let Some(after) = self.ctx.cfg.retire_after() else {
             return;
         };
         // A runner that waits for approval waits for its admins.
-        if self.retiring.is_some() || self.waiting_for_approval {
+        if self.retiring.is_some() || self.waiting_for_approval || self.owe_undrain {
             return;
         }
         // A sign-in that ended dropped what takes its codes.
@@ -926,14 +975,23 @@ impl Daemon {
         self.retiring = Some(Retiring::Draining);
         let api = self.runner_api();
         let tx = self.chores_tx.clone();
+        let marker = retire::marker(&self.ctx.cfg.data_dir());
         tokio::spawn(async move {
             let drained = async {
-                let before = api.this_runner().await.map_err(|e| e.to_string())?;
-                let d = api
+                let before = api.this_runner().await.map_err(|e| (e.to_string(), None))?;
+                let d = retire::Drained {
+                    before: before.runner.drain.is_some(),
+                    enrolled: before.runner.workspace.is_some(),
+                };
+                // Before the drain, so that a restart finds it.
+                if let Err(e) = retire::mark(&marker, &d) {
+                    tracing::warn!("saving {}: {e}", marker.display());
+                }
+                let detail = api
                     .drain_this_runner(true, false)
                     .await
-                    .map_err(|e| e.to_string())?;
-                Ok((before.runner.drain.is_some(), d.sessions.len()))
+                    .map_err(|e| (e.to_string(), Some(d)))?;
+                Ok((d, detail.sessions.len()))
             }
             .await;
             let _ = tx.send(Chore::RetireDrained(drained));
@@ -942,8 +1000,8 @@ impl Daemon {
 
     /// The runner drained and nothing runs: the retire command takes the
     /// machine away. Without one, it leaves at once.
-    fn run_retire_command(&mut self, drained_before: bool) {
-        self.retiring = Some(Retiring::Running { drained_before });
+    fn run_retire_command(&mut self, drained: retire::Drained) {
+        self.retiring = Some(Retiring::Running(drained));
         let command = self.ctx.cfg.retire_command.clone();
         let tx = self.chores_tx.clone();
         tokio::spawn(async move {
@@ -954,47 +1012,40 @@ impl Daemon {
                 }
                 None => Ok(String::new()),
             };
-            let _ = tx.send(Chore::RetireRan {
-                result,
-                drained_before,
-            });
+            let _ = tx.send(Chore::RetireRan { result, drained });
         });
     }
 
     /// A retirement that didn't happen: the runner takes sessions again,
-    /// unless someone else drained it, and the machine tries again once it
-    /// has been idle another while.
-    fn keep(&mut self, drained_before: bool) {
+    /// unless someone else drained it (`drained`: what was drained, when
+    /// the runner was known), asked at every heartbeat until the control
+    /// plane hears it; and the machine tries again once it has been idle
+    /// another while.
+    fn keep(&mut self, drained: Option<retire::Drained>) {
         self.retiring = None;
         self.idle.reset();
-        if !drained_before {
-            let api = self.runner_api();
-            tokio::spawn(async move {
-                if let Err(e) = api.drain_this_runner(false, false).await {
-                    tracing::warn!("taking sessions again: {e}");
-                }
-            });
+        match drained {
+            Some(d) if !d.before => {
+                self.owe_undrain = true;
+                self.check_idle();
+            }
+            _ => retire::unmark(&retire::marker(&self.ctx.cfg.data_dir())),
         }
     }
 
     /// The retire command worked: the runner leaves its workspace (an
-    /// enrolled one is removed, as `fctl host uninstall` removes it; one
-    /// registered by a person stays, drained), the host forgets its token
-    /// and stops, while the machine goes.
-    fn leave(&mut self, said: String) {
+    /// enrolled one is removed, as `fctl host uninstall` removes it; one a
+    /// person registered stays, drained), the host forgets its token,
+    /// uninstalls its service, so that nothing starts it again, and stops,
+    /// while the machine goes.
+    fn leave(&mut self, said: String, drained: retire::Drained) {
         if !said.is_empty() {
             tracing::info!("retire_command said: {said}");
         }
         let api = self.runner_api();
+        let marker = retire::marker(&self.ctx.cfg.data_dir());
         tokio::spawn(async move {
-            let enrolled = match api.this_runner().await {
-                Ok(d) => d.runner.workspace.is_some(),
-                Err(e) => {
-                    tracing::warn!("asking what this runner is before it leaves: {e}");
-                    false
-                }
-            };
-            if enrolled {
+            if drained.enrolled {
                 match api.remove_this_runner().await {
                     Ok(_) => {
                         tracing::info!("retired: the runner left its workspace");
@@ -1011,6 +1062,9 @@ impl Daemon {
                     "retired: the runner stays, drained, as one a person registered (`fctl host undrain` takes sessions again)"
                 );
             }
+            retire::unmark(&marker);
+            tracing::info!("uninstalling the host service");
+            crate::service::retire();
             std::process::exit(0);
         });
     }
@@ -1126,7 +1180,9 @@ impl Daemon {
         });
         // A sign-in that ended dropped what takes its codes.
         self.logins.retain(|_, tx| !tx.is_closed());
-        if changing || !self.busy.is_empty() {
+        if self.retiring.is_some() {
+            Some("this machine is no longer retiring".into())
+        } else if changing || !self.busy.is_empty() {
             Some("no sandbox is being made, stopped or removed here".into())
         } else if !self.pending_starts.is_empty() {
             Some("no session waits to start here".into())
@@ -1635,7 +1691,13 @@ impl Daemon {
             FleetToHost::Ping => self.outbox.push_back(HostToFleet::Pong),
             FleetToHost::StartSession { spec } => {
                 let id = spec.session_id.clone();
-                let error = self.start_session(spec).err();
+                // A machine that retires takes nothing more: the control
+                // plane starts it elsewhere.
+                let error = if self.retiring.is_some() {
+                    Some("This runner's machine is retiring: it takes no new sessions".to_owned())
+                } else {
+                    self.start_session(spec).err()
+                };
                 // Declined for its driver, which the session comes back to.
                 let unready = error.is_some()
                     && error
@@ -2080,30 +2142,95 @@ mod tests {
         d.waiting_for_approval = false;
         d.check_idle();
         assert_eq!(d.retiring, Some(Retiring::Draining));
-        // The control plane didn't answer: it stays, and waits a while again.
-        d.on_chore(Chore::RetireDrained(Err("unreachable".into())));
-        assert_eq!(d.retiring, None);
+        // The control plane didn't answer before it knew the runner: it
+        // stays, and waits a while again.
+        d.on_chore(Chore::RetireDrained(Err(("unreachable".into(), None))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, false));
         d.check_idle();
         assert_eq!(d.retiring, None);
+        let ours = retire::Drained {
+            before: false,
+            enrolled: true,
+        };
+        // While it retires, sessions the control plane still sends are
+        // declined: it starts them elsewhere.
+        d.retiring = Some(Retiring::Draining);
+        d.on_fleet(FleetToHost::StartSession {
+            spec: spec("ses_late")?,
+        });
+        assert!(d.sessions.is_empty());
+        assert!(matches!(
+            d.outbox.back(),
+            Some(HostToFleet::StartResult {
+                accepted: false,
+                ..
+            })
+        ));
+        // The drain failed after the runner was known: it may have
+        // happened, so the runner takes sessions again, asked until heard.
+        d.on_chore(Chore::RetireDrained(Err(("timed out".into(), Some(ours)))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, true));
+        assert!(d.undraining);
+        d.on_chore(Chore::Undrained(Err("unreachable".into())));
+        assert!(d.owe_undrain && !d.undraining);
+        // It doesn't retire meanwhile, and asks again at the next beat.
+        minutes(30).await;
+        d.check_idle();
+        assert!(d.undraining && d.retiring.is_none());
+        d.on_chore(Chore::Undrained(Ok(())));
+        assert!(!d.owe_undrain);
         // Drained with a session the control plane sent meanwhile: it stays.
         d.retiring = Some(Retiring::Draining);
-        d.on_chore(Chore::RetireDrained(Ok((false, 1))));
-        assert_eq!(d.retiring, None);
+        d.on_chore(Chore::RetireDrained(Ok((ours, 1))));
+        assert_eq!((d.retiring, d.owe_undrain), (None, true));
+        d.on_chore(Chore::Undrained(Ok(())));
         // Drained and idle: the command runs.
+        let theirs = retire::Drained {
+            before: true,
+            enrolled: true,
+        };
         d.retiring = Some(Retiring::Draining);
-        d.on_chore(Chore::RetireDrained(Ok((true, 0))));
-        assert_eq!(
-            d.retiring,
-            Some(Retiring::Running {
-                drained_before: true
-            })
-        );
-        // It failed: the runner stays, as drained as before.
+        d.on_chore(Chore::RetireDrained(Ok((theirs, 0))));
+        assert_eq!(d.retiring, Some(Retiring::Running(theirs)));
+        // It failed: the runner stays as drained as it was before.
         d.on_chore(Chore::RetireRan {
             result: Err("exit 1".into()),
-            drained_before: true,
+            drained: theirs,
         });
-        assert_eq!(d.retiring, None);
+        assert_eq!((d.retiring, d.owe_undrain), (None, false));
+        Ok(())
+    }
+
+    /// A host that restarts in the middle of a retirement it drained the
+    /// runner for takes sessions again.
+    #[tokio::test]
+    async fn a_retirement_cut_short_by_a_restart_takes_sessions_again() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ours = retire::Drained {
+            before: false,
+            enrolled: true,
+        };
+        retire::mark(&retire::marker(dir.path()), &ours)?;
+        let cfg = HostConfig {
+            driver: "process".into(),
+            data_dir: Some(dir.path().to_owned()),
+            agent_bin: Some(dir.path().join("fctl-agent")),
+            server: "http://127.0.0.1:9".into(),
+            ..HostConfig::default()
+        };
+        let d = Daemon::new(cfg.clone(), "fctl_rt_test".into()).await?;
+        assert!(d.owe_undrain);
+        // Someone else had drained it: it stays drained.
+        retire::mark(
+            &retire::marker(dir.path()),
+            &retire::Drained {
+                before: true,
+                ..ours
+            },
+        )?;
+        let d = Daemon::new(cfg, "fctl_rt_test".into()).await?;
+        assert!(!d.owe_undrain);
+        assert_eq!(retire::marked(&retire::marker(dir.path())), None);
         Ok(())
     }
 

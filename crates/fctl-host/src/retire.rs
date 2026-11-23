@@ -17,8 +17,16 @@
 //!    (the autoscaling group is at its minimum, say) costs nothing.
 //! 4. Once the command worked, the runner leaves its workspace (an enrolled
 //!    one is removed, as `fctl host uninstall` removes it), the host forgets
-//!    its token and stops.
+//!    its token, uninstalls its service and stops.
+//!
+//! While it retires, the host declines the sessions the control plane
+//! still sends it (resumes of the sessions whose sandboxes it keeps), and
+//! doesn't update itself. A retirement that stops short takes sessions
+//! again, also after a restart: what it drained is kept in a file
+//! ([`marker`]) until the runner has been undrained.
 
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -48,6 +56,41 @@ impl Idle {
     pub fn reset(&mut self) {
         self.since = None;
     }
+}
+
+/// What a retirement drained, decided before the command runs: what it
+/// undoes if it stops short, and how the runner leaves once it worked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Drained {
+    /// Someone else drained the runner before: a retirement that stops
+    /// short leaves it drained.
+    pub before: bool,
+    /// The runner enrolled in a workspace: it leaves it once retired. One a
+    /// person registered stays, drained.
+    pub enrolled: bool,
+}
+
+/// Where a retirement under way keeps what it drained, in the host's data
+/// directory.
+pub fn marker(data_dir: &Path) -> PathBuf {
+    data_dir.join("retiring.json")
+}
+
+/// Keeps what a retirement drained, before it drains.
+pub fn mark(path: &Path, drained: &Drained) -> std::io::Result<()> {
+    std::fs::write(path, serde_json::to_vec(drained).unwrap_or_default())
+}
+
+/// What a retirement that a restart cut short had drained, if any.
+pub fn marked(path: &Path) -> Option<Drained> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+/// Forgets it: the runner takes sessions again, or is gone.
+pub fn unmark(path: &Path) {
+    let _ = std::fs::remove_file(path);
 }
 
 /// What a retirement that stopped short says, for the log.
@@ -127,6 +170,22 @@ mod tests {
         assert!(idle.note(false, t0 + Duration::from_secs(40 * 60), after));
         idle.reset();
         assert!(!idle.note(false, t0 + Duration::from_secs(41 * 60), after));
+    }
+
+    #[test]
+    fn a_retirement_cut_short_is_found_after_a_restart() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = marker(dir.path());
+        assert_eq!(marked(&path), None);
+        let d = Drained {
+            before: false,
+            enrolled: true,
+        };
+        mark(&path, &d)?;
+        assert_eq!(marked(&path), Some(d));
+        unmark(&path);
+        assert_eq!(marked(&path), None);
+        Ok(())
     }
 
     #[tokio::test]

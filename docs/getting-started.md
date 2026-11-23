@@ -320,8 +320,8 @@ for a while: `fctl host install --retire-when-idle 20m --retire-command
 '…'` drains it, runs the command that takes it away (an autoscaling group's
 terminate call, say) and removes its runner. And where the cloud takes one
 on a deadline (a Spot notice, a lifecycle hook, a pod's `preStop`), `fctl
-host drain --timeout 90s` gives the turns under way that long, then stops
-what still runs, whose agents push their work.
+host drain --timeout 60s` gives the turns under way that long, then stops
+what still runs, whose agents push their work within a minute more.
 
 To enroll machines of your own instead, for your sessions alone, make a
 token for **Only my sessions** (any member can; a member's tokens are

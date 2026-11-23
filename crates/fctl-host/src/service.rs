@@ -273,6 +273,23 @@ pub fn uninstall() -> Result<()> {
     Ok(())
 }
 
+/// Uninstalls the host service from inside it, as a machine that retired
+/// does (`crate::retire`): its files go first, so that nothing starts it
+/// again, at the next login or boot either, and then the service stops,
+/// which ends this process when the service runs it. Outside the service,
+/// only the files go.
+pub fn retire() {
+    if cfg!(target_os = "macos") {
+        let _ = std::fs::remove_file(plist_path());
+        let _ = sh("launchctl", &["bootout", &format!("gui/{}/{LABEL}", uid())]);
+    } else {
+        let _ = systemctl_user(&["disable", "fctl-host.service"]);
+        let _ = std::fs::remove_file(unit_path());
+        let _ = systemctl_user(&["daemon-reload"]);
+        let _ = systemctl_user(&["stop", "fctl-host.service"]);
+    }
+}
+
 pub fn restart() -> Result<()> {
     if cfg!(target_os = "macos") {
         sh(

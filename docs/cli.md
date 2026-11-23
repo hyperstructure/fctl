@@ -1093,7 +1093,7 @@ fctl host auto-update off        # or on; restarts the host service (sessions ke
 fctl host restart                # sessions keep running
 fctl host drain                  # take no new sessions; the ones here carry on
 fctl host drain --wait           # …and wait until none runs here
-fctl host drain --timeout 90s    # …for 90 seconds at most, then stop what still runs (as a cloud takes the machine)
+fctl host drain --timeout 60s    # …for a minute at most, then stop what still runs (on Spot's two-minute notice)
 fctl host undrain                # take new sessions again
 fctl host uninstall              # sandboxes are kept; asks first when sessions run
 fctl host uninstall --wait       # drain, and uninstall once none runs
@@ -1108,7 +1108,7 @@ whenever no turn runs, and `--wait` returns then. Admins can drain a runner
 too, from the runners list or with `fctl admin drain`; whoever drained it,
 either can stop the drain.
 
-`--timeout` (`90s`, `10m`, `1h`; it implies `--wait`) is for a machine
+`--timeout` (`60s`, `10m`, `1h`, up to `48h`; it implies `--wait`) is for a machine
 that a cloud takes away on a deadline: a Spot notice, an autoscaling
 group's lifecycle hook, a pod's `preStop`. The turns under way get that
 long to end; then the sessions that still run stop as `fctl host
@@ -1123,7 +1123,9 @@ has run nothing for a while: `fctl host install --retire-when-idle 20m
 command, which takes the machine away (`aws autoscaling
 terminate-instance-in-auto-scaling-group --instance-id … --should-decrement-desired-capacity`,
 `gcloud compute instance-groups managed delete-instances …`, `systemctl
-poweroff`), and once that worked, leaves: an enrolled runner is removed.
+poweroff`), and once that worked, leaves: an enrolled runner is removed,
+and the host service is uninstalled. Sessions the control plane still
+sends it meanwhile start elsewhere.
 A command that fails (an autoscaling group at its minimum size, say)
 leaves the machine a runner, which takes sessions again and tries once
 more after another idle while. `fctl host status` says how it retires.
