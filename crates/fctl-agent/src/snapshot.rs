@@ -855,7 +855,8 @@ async fn put_back(
             .is_ok());
     if !behind {
         // It waits, with what waited before it as its second parent; or,
-        // with no work of its own, what waited before it does.
+        // with no work of its own on commits all pushed, what waited
+        // before it does.
         let own = own_changes(home, repo, &meta.wip)
             .await
             .is_none_or(|paths| !paths.is_empty());
@@ -867,8 +868,18 @@ async fn put_back(
         .await
         .ok()
         .filter(|b| !b.is_empty());
+        // The commit it was made on, when its commits are all on GitHub;
+        // else they come along only with the work commit itself.
+        let pushed = !meta.head.is_empty()
+            && git_text(
+                home,
+                repo,
+                &["rev-list", "--count", &meta.head, "--not", "--remotes"],
+            )
+            .await
+            .is_ok_and(|n| n == "0");
         let waits = match before {
-            Some(b) if !own => b,
+            Some(b) if !own && pushed => b,
             _ => meta.wip.clone(),
         };
         git(home, repo, &["update-ref", &parked, &waits], &[]).await?;
@@ -1317,6 +1328,47 @@ mod tests {
         )
         .await?;
         assert_eq!(kept, "mine");
+        // With nothing of its own on a commit never pushed, the work commit
+        // itself waits: the commit and the earlier work both stay.
+        let waiting = wip_ref(s.session_id.as_str());
+        sh(
+            &g.workdir,
+            &format!(
+                "echo waiting > w.txt && git add w.txt && git commit -qm waiting && git update-ref {waiting} HEAD && git reset -q --hard HEAD~1 && echo local > l.txt && git add l.txt && git commit -qm local"
+            ),
+        )
+        .await?;
+        let local = sh(&g.workdir, "git rev-parse HEAD").await?;
+        let again3 = save(&g, &s, &key, 10_000_000, None, 5, &root.path().join("out8"))
+            .await?
+            .ok_or_else(|| anyhow!("nothing saved"))?;
+        sh(
+            &d.workdir,
+            "git pull -q origin main && echo more > m.txt && git add m.txt && git commit -qm more && git push -q origin HEAD:main",
+        )
+        .await?;
+        let h = sandbox(root.path(), "h", &origin).await?;
+        let restored = restore(
+            &h,
+            &s,
+            &again3.file,
+            &key,
+            &again3.saved.sha256,
+            None,
+            &root.path().join("scratch8"),
+        )
+        .await
+        .map_err(|e| anyhow!(e))?;
+        assert_eq!((restored.changes.len(), restored.moved.len()), (0, 1));
+        sh(
+            &h.workdir,
+            &format!("git merge-base --is-ancestor {local} {waiting}"),
+        )
+        .await?;
+        assert_eq!(
+            sh(&h.workdir, &format!("git show {waiting}^2:w.txt")).await?,
+            "waiting"
+        );
         // A branch force-pushed without the history the work sits on: the
         // work can't be put back, and the restore says so.
         let e = sandbox(root.path(), "e", &origin).await?;

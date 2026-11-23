@@ -1918,9 +1918,9 @@ async fn run(
                         // attaches again, or its sandbox stops at the
                         // deadline: later for one that saves a snapshot.
                         // A run recovered after a restart, whose spec the
-                        // host no longer has, gets the plain wait, which
-                        // its parts extend as they come.
-                        let wait = if saves_by_spec(spec.as_deref()) { crate::snapshots::STOP_SAVING } else { Duration::from_secs(60) };
+                        // host no longer has, may save one too. The wait
+                        // only holds an agent that doesn't end by itself.
+                        let wait = if snapshot_limit(spec.as_deref()).is_some() { crate::snapshots::STOP_SAVING } else { Duration::from_secs(60) };
                         stop = Some((destroy, Instant::now() + wait));
                         stop_since = Some(Instant::now());
                         let frame = HostToAgent::Stop { reason, grace_ms: 30_000 };
