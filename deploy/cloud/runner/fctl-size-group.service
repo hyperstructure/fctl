@@ -1,0 +1,9 @@
+[Unit]
+Description=Size this fctl runner's group to what its pool wants
+ConditionPathExists=/etc/default/fctl-size-group
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fctl-size-group

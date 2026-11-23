@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs as root at every boot: reads the enrollment token and enrolls the
+# machine as one of the pool's runners (one that enrolled keeps its runner),
+# then has fctl-size-group.timer size the group every minute.
+set -eu
+md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1"; }
+secret="https://secretmanager.googleapis.com/v1/projects/$(md project/project-id)/secrets/${secret}/versions/latest:access"
+for try in 1 2 3 4 5 6 7 8 9 10; do
+  token=$(curl -sf -H "Authorization: Bearer $(md instance/service-accounts/default/token | jq -r .access_token)" "$secret" |
+    jq -r .payload.data | base64 -d) && [ -n "$token" ] && break
+  sleep 15
+done
+mkdir -p /etc/fctl && (umask 077 && printf %s "$token" > /etc/fctl/enroll-token)
+printf 'SERVER=%s\nMIN=%s\n' '${server}' '${min_size}' > /etc/default/fctl-size-group
+printf %s "$token" | fctl-enroll '${server}' "$(md instance/name)" --capacity ${capacity} --cpus ${cpus} --memory ${memory}

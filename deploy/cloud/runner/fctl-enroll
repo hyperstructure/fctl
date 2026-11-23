@@ -1,0 +1,10 @@
+#!/bin/sh
+# fctl-enroll SERVER NAME [fctl host install's options] < token
+set -eu
+server=$1 name=$2
+shift 2
+token=$(cat)
+uid=$(id -u fctl)
+systemctl start "user@$uid.service" # the host's systemd manager, which lingering starts at boot
+runuser -u fctl -- env XDG_RUNTIME_DIR="/run/user/$uid" FCTL_SERVER="$server" FCTL_ENROLL_TOKEN="$token" \
+  /home/fctl/.local/bin/fctl host install --name "$name" "$@"
