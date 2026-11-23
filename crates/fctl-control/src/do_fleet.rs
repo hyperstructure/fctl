@@ -215,6 +215,34 @@ struct DiskState {
     told: fctl_domain::disk::Told,
 }
 
+/// The runner among `candidates` that takes a session that wants `want`,
+/// with its project's `labels`, going back to `home` (and waiting for it,
+/// while busy, when `wait`): its id and name, or why none can now.
+fn pick_from(
+    candidates: &[&Candidate],
+    want: &spec::SessionWants,
+    labels: &[String],
+    home: Option<&str>,
+    wait: bool,
+) -> std::result::Result<(String, String), Wait> {
+    let slots: Vec<Slot<'_>> = candidates.iter().map(|c| c.slot(want)).collect();
+    let home = home
+        .and_then(|id| candidates.iter().find(|c| c.id == id))
+        .map(|c| Home {
+            id: &c.id,
+            name: &c.name,
+            wait,
+        });
+    let chosen =
+        fctl_domain::schedule::pick(&slots, labels, want.size, &want.image, home, want.review)?;
+    let name = candidates
+        .iter()
+        .find(|c| c.id == chosen.id)
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    Ok((chosen.id.to_owned(), name))
+}
+
 /// A connected runner, as scheduling sees it.
 struct Candidate {
     id: String,
@@ -242,6 +270,8 @@ struct Candidate {
     serves: Serves,
     /// Its pool packs sessions onto the busiest runner with room.
     packed: bool,
+    /// Its host restores session snapshots ([`FEATURE_SNAPSHOTS`]).
+    snapshots: bool,
 }
 
 /// Whose sessions a runner runs, and the pool it is in, as D1 had it at
@@ -2410,21 +2440,7 @@ impl FleetObject {
                 self.home_of(&item.session_id)
             };
             let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
-            // With a snapshot, a resume starts elsewhere as it was rather
-            // than wait for its busy home (`crate::snapshots`): on a runner
-            // whose host restores it, else it waits as before.
-            let picked =
-                match self.pick_runner(&want, &labels, home.as_deref(), wait && !want.snapshot) {
-                    Ok((id, _))
-                        if wait
-                            && want.snapshot
-                            && home.as_deref() != Some(id.as_str())
-                            && !self.host_has(&id, FEATURE_SNAPSHOTS) =>
-                    {
-                        self.pick_runner(&want, &labels, home.as_deref(), true)
-                    }
-                    picked => picked,
-                };
+            let picked = self.pick_runner(&want, &labels, home.as_deref(), wait);
             let (runner_id, runner_name) = match picked {
                 Ok(r) => r,
                 // A session that cannot start now says why and lets the
@@ -2627,6 +2643,7 @@ impl FleetObject {
                     reviews: hello.features.iter().any(|f| f == FEATURE_REVIEWS),
                     unready,
                     claude_token: hello.claude_token,
+                    snapshots: hello.features.iter().any(|f| f == FEATURE_SNAPSHOTS),
                     serves,
                 })
             })
@@ -3018,22 +3035,22 @@ impl FleetObject {
         wait: bool,
     ) -> std::result::Result<(String, String), Wait> {
         let candidates = self.candidates();
-        let slots: Vec<Slot<'_>> = candidates.iter().map(|c| c.slot(want)).collect();
-        let home = home
-            .and_then(|id| candidates.iter().find(|c| c.id == id))
-            .map(|c| Home {
-                id: &c.id,
-                name: &c.name,
-                wait,
-            });
-        let chosen =
-            fctl_domain::schedule::pick(&slots, labels, want.size, &want.image, home, want.review)?;
-        let name = candidates
-            .iter()
-            .find(|c| c.id == chosen.id)
-            .map(|c| c.name.clone())
-            .unwrap_or_default();
-        Ok((chosen.id.to_owned(), name))
+        // With a snapshot to restore, a resume doesn't wait for a busy
+        // runner that has its sandbox: it starts as it was where a host
+        // restores snapshots and can take it now, the runner with its
+        // sandbox first, which has more (`crate::snapshots`). Where none
+        // can, it waits, or starts, as any other.
+        if want.snapshot {
+            let restoring: Vec<&Candidate> = candidates
+                .iter()
+                .filter(|c| c.snapshots || home == Some(c.id.as_str()))
+                .collect();
+            if let Ok(picked) = pick_from(&restoring, want, labels, home, false) {
+                return Ok(picked);
+            }
+        }
+        let all: Vec<&Candidate> = candidates.iter().collect();
+        pick_from(&all, want, labels, home, wait)
     }
 
     async fn stop(&self, b: Stop) -> std::result::Result<serde_json::Value, ApiError> {

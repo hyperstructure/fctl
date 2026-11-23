@@ -875,6 +875,18 @@ fn again_within(deadline: Instant, delay: Duration, now: Instant) -> bool {
 /// host tries again.
 const RESUME_AGAIN_AFTER: Duration = Duration::from_secs(10);
 
+/// The most bytes of snapshot this run's agent may hand over: its spec's,
+/// where it asks for one; and, for a run the host recovered after a
+/// restart, whose spec it no longer has, as much as any instance allows
+/// (the control plane refuses what the session's own doesn't keep).
+/// `None`: it saves none.
+fn snapshot_limit(spec: Option<&SessionSpec>) -> Option<u64> {
+    match spec {
+        Some(s) => s.snapshot.as_ref().filter(|s| s.save).map(|s| s.max_bytes),
+        None => Some(u64::from(fctl_proto::api::MAX_SNAPSHOT_MB) * 1024 * 1024),
+    }
+}
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -1206,6 +1218,10 @@ async fn run(
     // ends before the run is said to have; and the parts of one fetched
     // for an agent that restores it.
     let mut spool: Option<crate::snapshots::Spool> = None;
+    // Whether any of a snapshot came, and whether the stop's deadline cut
+    // the run off before its agent said it had ended.
+    let mut snapshot_came = false;
+    let mut forced = false;
     let mut upload: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
     let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<HostToAgent>();
     // Screenshots and calls under way (`MAX_IN_FLIGHT`).
@@ -1611,17 +1627,9 @@ async fn run(
                         }
                     }
                     AgentToHost::SnapshotPart { id, n, data, saved } => {
-                        // Only a run whose spec asks for one sends a
-                        // snapshot, within the size it allows.
-                        let max_bytes = spec
-                            .as_ref()
-                            .and_then(|s| s.snapshot.as_ref())
-                            .filter(|s| s.save)
-                            .map(|s| s.max_bytes);
-                        // A stop waits while its parts come.
-                        if let Some((destroy, deadline)) = stop {
-                            stop = Some((destroy, deadline.max(Instant::now() + crate::snapshots::STOP_PER_PART)));
-                        }
+                        // Only a run that may save one sends a snapshot,
+                        // within the size it allows.
+                        let max_bytes = snapshot_limit(spec.as_deref());
                         if n == 0 {
                             if let Some(old) = spool.take() {
                                 old.discard();
@@ -1641,12 +1649,19 @@ async fn run(
                                     host_log(&uplink, LogLevel::Warn, format!("The session's snapshot wasn't saved: {e}."));
                                     s.discard();
                                 }
-                                Ok(()) => match saved {
-                                    Some(saved) => {
-                                        upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved));
+                                Ok(()) => {
+                                    snapshot_came = true;
+                                    // A stop waits while its parts come.
+                                    if let Some((destroy, deadline)) = stop {
+                                        stop = Some((destroy, deadline.max(Instant::now() + crate::snapshots::STOP_PER_PART)));
                                     }
-                                    None => spool = Some(s),
-                                },
+                                    match saved {
+                                        Some(saved) => {
+                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved));
+                                        }
+                                        None => spool = Some(s),
+                                    }
+                                }
                             }
                         }
                     }
@@ -1892,10 +1907,7 @@ async fn run(
                         // Without a link, the agent gets it once the host
                         // attaches again, or its sandbox stops at the
                         // deadline: later for one that saves a snapshot.
-                        let saves = spec
-                            .as_ref()
-                            .and_then(|s| s.snapshot.as_ref())
-                            .is_some_and(|s| s.save);
+                        let saves = snapshot_limit(spec.as_deref()).is_some();
                         let wait = if saves { crate::snapshots::STOP_SAVING } else { Duration::from_secs(60) };
                         stop = Some((destroy, Instant::now() + wait));
                         let frame = HostToAgent::Stop { reason, grace_ms: 30_000 };
@@ -1936,6 +1948,7 @@ async fn run(
             _ = tick.tick() => {
                 if let Some((_, deadline)) = stop
                     && Instant::now() > deadline {
+                        forced = exited.is_none();
                         break exited.clone().unwrap_or((SessionStatus::Stopped, Some("Stopped (forced)".into())));
                     }
                 // Its VM stopped answering, and the host stopped it, for
@@ -2014,6 +2027,17 @@ async fn run(
                 ),
             });
         }
+    }
+    // Cut off by the stop's deadline before any of it came, from an agent
+    // that would have saved one.
+    if forced && !snapshot_came && snapshot_limit(spec.as_deref()).is_some() {
+        uplink.send(UplinkUp::Notice {
+            notice: Notice::new(
+                NoticeLevel::Warn,
+                "snapshot_not_saved",
+                "The session's snapshot wasn't saved: its agent hadn't finished saving it when the stop's time ran out. A resume on another runner starts from the task and the branch.",
+            ),
+        });
     }
     // Its agent hadn't sent all of it when the run ended.
     if let Some(s) = spool.take() {
@@ -2250,6 +2274,34 @@ fn agent_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run's spec may let its agent save a snapshot of some size; one the
+    /// host recovered after a restart has no spec here, and may save as
+    /// much as any instance allows.
+    #[test]
+    fn a_run_saves_snapshots_as_its_spec_allows() -> anyhow::Result<()> {
+        let spec = |snapshot: serde_json::Value| -> anyhow::Result<SessionSpec> {
+            Ok(serde_json::from_value(serde_json::json!({
+                "session_id": "ses_test", "number": 1, "title": "Test",
+                "project": {"id": "prj_test", "slug": "w", "name": "W", "default_branch": "main", "settings": {}},
+                "branch": "fctl/1-test", "base_branch": "main",
+                "author": {"id": "usr_test", "name": "Ada"},
+                "claude_session_id": "00000000-0000-0000-0000-000000000000",
+                "resume": false, "secrets": {},
+                "credentials": {"claude": {"id": "crd_test", "kind": "setup_token", "access_token": "t", "scopes": []}},
+                "git_author": {"name": "fctl", "email": "fctl@example.com"}, "co_authors": [],
+                "web_url": "https://fctl.test/s/ses_test", "idle_timeout_secs": 600,
+                "snapshot": snapshot,
+            }))?)
+        };
+        let saves = spec(serde_json::json!({"key": "a2V5", "save": true, "max_bytes": 1000}))?;
+        assert_eq!(snapshot_limit(Some(&saves)), Some(1000));
+        let restores = spec(serde_json::json!({"key": "a2V5", "save": false, "max_bytes": 1000}))?;
+        assert_eq!(snapshot_limit(Some(&restores)), None);
+        assert_eq!(snapshot_limit(Some(&spec(serde_json::Value::Null)?)), None);
+        assert_eq!(snapshot_limit(None), Some(2048 * 1024 * 1024));
+        Ok(())
+    }
 
     #[test]
     fn tries_a_file_again_only_while_fctl_agent_waits() {

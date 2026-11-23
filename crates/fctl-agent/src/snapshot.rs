@@ -22,7 +22,7 @@
 //! uncommitted again. Where the branch moved on elsewhere, the work waits
 //! at `refs/fctl/wip/<session>`, and Claude hears where; the snapshots
 //! saved after that carry it on, as their work commit's second parent,
-//! until it is part of the branch.
+//! until the branch has what it changed, or Claude deletes the ref.
 
 use crate::workspace::Paths;
 use anyhow::{Context, Result, anyhow, bail};
@@ -169,6 +169,38 @@ async fn git_text(home: &Path, dir: &Path, args: &[&str]) -> Result<String> {
         .to_owned())
 }
 
+/// Whether the branch has taken work `p` back, which waited at
+/// [`wip_ref`]: merged it, or has what it changed as it was (its files
+/// checked out and committed, a squash), whichever way it came.
+async fn taken_back(home: &Path, repo: &Path, p: &str) -> bool {
+    if git(home, repo, &["merge-base", "--is-ancestor", p, "HEAD"], &[])
+        .await
+        .is_ok()
+    {
+        return true;
+    }
+    // What it changed on the commit it was made on; all its files, made
+    // before the branch's first.
+    let base = format!("{p}^1");
+    let changed = match git_text(home, repo, &["rev-parse", "--verify", "-q", &base]).await {
+        Ok(_) => {
+            git_text(
+                home,
+                repo,
+                &["diff", "--name-only", "--no-renames", &base, p],
+            )
+            .await
+        }
+        Err(_) => git_text(home, repo, &["ls-tree", "-r", "--name-only", p]).await,
+    };
+    let Ok(changed) = changed else {
+        return false;
+    };
+    let mut args = vec!["diff", "--quiet", "HEAD", p, "--"];
+    args.extend(changed.lines().filter(|l| !l.is_empty()));
+    git(home, repo, &args, &[]).await.is_ok()
+}
+
 /// A repository's work that isn't on GitHub, as a bundle: a commit of its
 /// working tree, untracked files with it but what it ignores, on top of
 /// its commits not pushed. `None` when it has neither. On a branch with no
@@ -184,7 +216,7 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
         .is_empty();
     // Work an earlier restore couldn't put back, which Claude may not have
     // taken back yet: carried on as the new commit's second parent, unless
-    // the branch has it by now.
+    // the branch has it by now, or Claude deleted the ref.
     let parked = match git_text(
         home,
         repo,
@@ -198,16 +230,11 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
     .await
     {
         Ok(p) if !p.is_empty() => {
-            let merged = head.is_some()
-                && git(
-                    home,
-                    repo,
-                    &["merge-base", "--is-ancestor", &p, "HEAD"],
-                    &[],
-                )
-                .await
-                .is_ok();
-            (!merged).then_some(p)
+            let taken = head.is_some() && taken_back(home, repo, &p).await;
+            if taken {
+                let _ = git(home, repo, &["update-ref", "-d", &wip_ref(session)], &[]).await;
+            }
+            (!taken).then_some(p)
         }
         _ => None,
     };
@@ -1152,11 +1179,12 @@ mod tests {
         )
         .await?;
         assert_eq!(kept, "mine");
-        // Once the branch has it, it no longer comes along.
+        // Once the branch has it (here its files checked out and
+        // committed), it no longer comes along, and its ref goes.
         sh(
             &d.workdir,
             &format!(
-                "git merge -q --no-edit -X theirs {} -m merged",
+                "git checkout {} -- . && git commit -qm 'take it back'",
                 wip_ref(s.session_id.as_str())
             ),
         )
@@ -1171,6 +1199,14 @@ mod tests {
             save(&d, &s, &key, 10_000_000, None, 3, &root.path().join("out5"))
                 .await?
                 .is_none()
+        );
+        assert_eq!(
+            sh(
+                &d.workdir,
+                "git for-each-ref --format='%(refname)' refs/fctl"
+            )
+            .await?,
+            ""
         );
         // A branch force-pushed without the history the work sits on: the
         // work can't be put back, and the restore says so.

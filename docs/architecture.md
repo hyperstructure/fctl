@@ -1606,9 +1606,10 @@ up to 2,048). Review agents' sessions save none.
    holds. Only then does the host say the run ended (for ten minutes at
    most), so that a message right after a stop finds it; a stop waits
    three minutes, rather than one, for an agent that saves a snapshot,
-   and a minute more after each part. The host takes only the parts a
-   spec asks for, up to its size, and the transcript says when one is lost
-   on the way. SessionDO keeps the parts in its storage, in rows of 1 MiB;
+   and a minute more after each part it takes. The host takes only the
+   parts a spec asks for, up to its size (for a run it recovered after a
+   restart, whose spec it no longer has, up to the largest any instance
+   allows), and the transcript says when one is lost on the way. SessionDO keeps the parts in its storage, in rows of 1 MiB;
    the commit marks the snapshot whole, D1's `session_snapshots` then
    names it the session's, and only then does SessionDO let go of the one
    before, so that D1 never names one whose parts are gone. D1 says its
@@ -1631,7 +1632,8 @@ up to 2,048). Review agents' sessions save none.
    pushed are on the branch. Where the branch moved on elsewhere since,
    the work waits at `refs/fctl/wip/<session>`, and Claude hears where
    (`snapshot_work_aside`); the snapshots saved after that carry it on,
-   as their work commit's second parent, until the branch has it. Work it
+   as their work commit's second parent, until the branch has what it
+   changed or Claude deletes the ref, as it is told to once done. Work it
    couldn't put back at all (history a force-push took away) the
    transcript and Claude hear of too (`snapshot_work_lost`). Then Claude
    Code resumes the conversation
@@ -1650,8 +1652,8 @@ FleetDO still sends a resume to the runner that has the session's
 sandbox, which has everything, but doesn't wait for it: where that runner
 is busy or away, a session with a snapshot to restore starts on another
 at once, rather than after ten minutes (`SessionWants.snapshot`), on a
-runner whose host restores snapshots; where none can take it, it waits
-as before. The hourly job deletes the snapshots past their workspace's
+runner whose host restores snapshots; where none can take it, it waits,
+or starts, as any other session does. The hourly job deletes the snapshots past their workspace's
 days, and those of workspaces, or an instance, that stopped keeping them,
 the oldest first and one whose deletion failed after the others;
 deleting a session
