@@ -491,6 +491,23 @@ impl DurableObject for FleetObject {
                 Ok(b) => {
                     if b.approved {
                         self.approved(&b.runner_id);
+                        // It has a say in its pool now: what it announced
+                        // as it connected counts once it goes offline.
+                        if let Some(hello) = self.hello_of(&b.runner_id)
+                            && let Ok(db) = self.env.d1("DB")
+                            && let Err(e) = crate::pools::keep_shape(
+                                &db,
+                                &b.runner_id,
+                                &pool_shape(&hello, now_ms()),
+                            )
+                            .await
+                        {
+                            worker::console_error!(
+                                "keeping the shape of {}'s pool: {}",
+                                b.runner_id,
+                                e.0.message
+                            );
+                        }
                     }
                     self.stop_unserved(&b.runner_id).await;
                     self.feed_runner(&b.runner_id).await;
