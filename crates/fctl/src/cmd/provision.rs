@@ -86,7 +86,7 @@ pub enum UsersCmd {
     /// the instance refuses one, those before it stay made.
     #[command(
         group(ArgGroup::new("change").required(true).multiple(true).args(["email", "given_name", "family_name", "name", "preferred_name", "commit_email", "avatar", "claude_token"])),
-        after_help = "Examples:\n  fctl admin users set ada@acme.dev --email ada.lovelace@acme.dev\n  fctl admin users set ada@acme.dev --family-name Byron --preferred-name Ada\n  fctl admin users set ada@acme.dev --avatar ada.png\n  fctl admin users set ada@acme.dev --commit-email 1234+ada@users.noreply.github.com\n  echo \"$SETUP_TOKEN\" | fctl admin users set ada@acme.dev --claude-token - --claude-label \"Acme seat\"\n  fctl admin users set ada@acme.dev --claude-token none"
+        after_help = "Examples:\n  fctl admin users set ada@acme.dev --email ada.lovelace@acme.dev\n  fctl admin users set ada@acme.dev --family-name Byron --preferred-name Ada\n  fctl admin users set ada@acme.dev --avatar ada.png\n  fctl admin users set ada@acme.dev --commit-email 1234+ada@users.noreply.github.com\n  echo \"$SETUP_TOKEN\" | fctl admin users set ada@acme.dev --claude-token - --claude-label \"Acme seat\"\n  echo \"$SETUP_TOKEN\" | fctl admin users set ada@acme.dev --claude-token - --claude-made-at today\n  fctl admin users set ada@acme.dev --claude-token none"
     )]
     Set {
         /// Any of their email addresses, or their user id.
@@ -123,6 +123,13 @@ pub enum UsersCmd {
         /// What their settings call the Claude token.
         #[arg(long, value_name = "LABEL", requires = "claude_token")]
         claude_label: Option<String>,
+        /// The day `claude setup-token` made the token (YYYY-MM-DD, today
+        /// or yesterday): it runs out a year on, and fctl tells them, and
+        /// their workspaces' admins, 30 and 7 days before. Without it, fctl
+        /// counts the year from now; the same token set again keeps the
+        /// date it had.
+        #[arg(long, value_name = "DAY", requires = "claude_token", value_parser = super::claude_overview::made_at)]
+        claude_made_at: Option<i64>,
     },
     /// Add someone to workspaces, as a member or an admin, and to
     /// projects, with a role; or change their role there. They join a
@@ -366,22 +373,43 @@ pub fn print_user(a: &AdminUser) {
         "Claude",
         match &a.claude {
             None => "no token set by an admin token".to_owned(),
-            Some(c) => format!(
-                "{}, set {}{}{}",
-                c.label.as_deref().unwrap_or("a token"),
-                style::ago(c.updated_at),
-                if c.status == fctl_proto::api::CredentialStatus::Invalid {
-                    ", which stopped working"
-                } else {
-                    ""
-                },
-                if c.is_default { ", their default" } else { "" }
-            ),
+            Some(c) => claude_line(c, style::now_ms()),
         },
     ));
     for (label, value) in lines {
         println!("  {}  {value}", style::dim(&format!("{label:<10}")));
     }
+}
+
+/// The Claude token an admin token set for someone, in a line: its label,
+/// when it was set, whether it works, when it runs out and when Claude
+/// last answered it.
+fn claude_line(c: &fctl_proto::api::AdminClaudeToken, now: i64) -> String {
+    use super::claude_overview::{left_words, runs_out_words, short_day};
+    let mut line = format!(
+        "{}, set {}",
+        c.label.as_deref().map_or("a token".into(), style::plain),
+        style::ago_from(c.updated_at, now)
+    );
+    if c.status == fctl_proto::api::CredentialStatus::Invalid {
+        line.push_str(&match c.ended_at {
+            Some(at) => format!(", which Claude refused on {}", short_day(at, now)),
+            None => ", which stopped working".into(),
+        });
+    } else if let Some(at) = c.expires_at {
+        line.push_str(&format!(
+            ", runs out {} ({})",
+            runs_out_words(at, c.expiry_estimated, now),
+            left_words(at, now)
+        ));
+    }
+    if let Some(at) = c.answered_at {
+        line.push_str(&format!(", Claude answered {}", style::ago_from(at, now)));
+    }
+    if c.is_default {
+        line.push_str(", their default");
+    }
+    line
 }
 
 pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<()> {
@@ -452,7 +480,14 @@ pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<
             avatar,
             claude_token,
             claude_label,
+            claude_made_at,
         } => {
+            if let Some(at) = claude_made_at
+                && let Some(problem) =
+                    fctl_domain::claude_oversight::made_at_problem(at, style::now_ms())
+            {
+                bail!("{problem}");
+            }
             // What it reads and checks comes first: a file it can't read or
             // use, nothing on stdin or something that isn't a Claude token
             // changes nothing.
@@ -534,7 +569,7 @@ pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<
                             &AddClaudeTokenRequest {
                                 token,
                                 label: claude_label,
-                                made_at: None,
+                                made_at: claude_made_at,
                             },
                         )
                         .await?
@@ -666,6 +701,30 @@ mod tests {
             ("acme".to_owned(), WorkspaceRole::Member)
         );
         assert!(workspace_role("acme:owner").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn says_when_the_token_they_set_runs_out_and_whether_it_works() -> Result<()> {
+        const NOW: i64 = 1_795_435_200_000; // November 23, 2026, 12:00 UTC.
+        const DAY: i64 = 86_400_000;
+        let mut c: fctl_proto::api::AdminClaudeToken = serde_json::from_value(serde_json::json!({
+            "id": "crd_1", "label": "Acme seat", "status": "active", "is_default": true,
+            "created_at": NOW - 344 * DAY, "updated_at": NOW - 344 * DAY,
+            "expires_at": NOW + 21 * DAY, "expiry_estimated": true,
+            "answered_at": NOW - 2 * 3_600_000,
+        }))?;
+        assert_eq!(
+            claude_line(&c, NOW),
+            "Acme seat, set 344d ago, runs out around Dec 14 (in 21 days), Claude answered 2h ago, their default"
+        );
+        c.status = fctl_proto::api::CredentialStatus::Invalid;
+        c.ended_at = Some(NOW - 3 * DAY);
+        c.is_default = false;
+        assert_eq!(
+            claude_line(&c, NOW),
+            "Acme seat, set 344d ago, which Claude refused on Nov 20, Claude answered 2h ago"
+        );
         Ok(())
     }
 }

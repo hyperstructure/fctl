@@ -34,8 +34,14 @@ pub enum ClaudeCmd {
         /// sessions then run only on those runners.
         #[arg(long)]
         on_runners: bool,
+        /// The day `claude setup-token` made the token (YYYY-MM-DD, today
+        /// or yesterday): it runs out a year on. Without it, fctl counts
+        /// the year from today and says it runs out around then.
+        #[arg(long, value_name = "DAY", conflicts_with_all = ["login", "on_runners"], value_parser = super::claude_overview::made_at)]
+        made_at: Option<i64>,
     },
-    /// Show connected subscriptions and how much of each plan's limits is used.
+    /// Show connected subscriptions, when Claude last answered each, when a
+    /// long-lived token runs out, and how much of each plan's limits is used.
     Status,
     /// Change how your sessions use your Claude subscription.
     #[command(
@@ -183,6 +189,61 @@ pub(crate) fn pick_connection<'a>(
     Ok(c)
 }
 
+/// What a connection's state says under it: when Claude refused it, when
+/// its long-lived token runs out and when Claude last answered it. None
+/// while there's nothing to say.
+fn state_line(c: &ClaudeCredentialInfo, now: i64) -> Option<String> {
+    use super::claude_overview::{left_words, runs_out_words, short_day};
+    if c.status != CredentialStatus::Active {
+        let on = c
+            .ended_at
+            .map(|at| format!(" on {}", short_day(at, now)))
+            .unwrap_or_default();
+        return Some(style::red(
+            &if c.kind == fctl_proto::runner::ClaudeCredentialKind::Oauth {
+                format!(
+                    "Claude ended this login{on}: sign in again with `fctl claude connect --login`, or connect a long-lived token with `fctl claude connect`."
+                )
+            } else {
+                format!(
+                    "Claude refused it{on}: connect a new one with `claude setup-token`, then `fctl claude connect`."
+                )
+            },
+        ));
+    }
+    let mut parts = Vec::new();
+    // A long-lived token runs out; a login Claude renews, and one kept on
+    // runners fctl never reads.
+    if c.kind == fctl_proto::runner::ClaudeCredentialKind::SetupToken
+        && !c.on_runners
+        && let Some(at) = c.expires_at
+    {
+        let text = format!(
+            "runs out {} ({}){}",
+            runs_out_words(at, c.expiry_estimated, now),
+            left_words(at, now),
+            if c.expiry_estimated {
+                ", a year after you connected it: fctl can't read the date from the token"
+            } else {
+                ""
+            }
+        );
+        parts.push(if at <= now {
+            style::red(&text)
+        } else if fctl_domain::claude_oversight::soon(at, now) {
+            style::amber(&format!(
+                "{text}. Make a new one with `claude setup-token` and connect it before then, or your sessions stop"
+            ))
+        } else {
+            text
+        });
+    }
+    if let Some(at) = c.answered_at {
+        parts.push(format!("Claude answered {}", style::ago_from(at, now)));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// A credential's plan limits, one line each, as sessions last reported them.
 fn print_usage(usage: &[PlanLimit]) {
     let Some(reported) = usage.iter().map(|l| l.observed_at).max() else {
@@ -300,6 +361,9 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                     },
                     style::dim(&format!(" · {}", c.id))
                 );
+                if let Some(line) = state_line(c, style::now_ms()) {
+                    println!("    {line}");
+                }
                 if c.on_runners
                     && let Some(runners) = &runners
                 {
@@ -359,8 +423,16 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
         ClaudeCmd::Connect {
             token,
             login: false,
+            made_at,
             ..
         } => {
+            // Before the token is asked for: a day it can't be is said now.
+            if let Some(at) = made_at
+                && let Some(problem) =
+                    fctl_domain::claude_oversight::made_at_problem(at, style::now_ms())
+            {
+                bail!("{problem}");
+            }
             let token = match token {
                 Some(t) => t,
                 None => {
@@ -374,7 +446,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                     crate::prompt::read_secret("Paste the token (input hidden): ")?
                 }
             };
-            let me = api.add_claude_token(&token, None, None).await?;
+            let me = api.add_claude_token(&token, None, made_at).await?;
             if json {
                 return style::print_json(&me);
             }
@@ -382,6 +454,30 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                 "{} Connected. New sessions run on this subscription.",
                 style::accent("✓")
             );
+            // The newest token is the one just connected.
+            if let Some(c) = me
+                .claude
+                .iter()
+                .filter(|c| {
+                    c.kind == fctl_proto::runner::ClaudeCredentialKind::SetupToken && !c.on_runners
+                })
+                .max_by_key(|c| c.created_at)
+                && let Some(at) = c.expires_at
+            {
+                let now = style::now_ms();
+                println!(
+                    "{}",
+                    style::dim(&format!(
+                        "It runs out {}{}: fctl tells you 30 and 7 days before.",
+                        super::claude_overview::runs_out_words(at, c.expiry_estimated, now),
+                        if c.expiry_estimated {
+                            ", a year from now (`--made-at` says when `claude setup-token` made it)"
+                        } else {
+                            ""
+                        }
+                    ))
+                );
+            }
             println!(
                 "{}",
                 style::dim(
@@ -608,6 +704,45 @@ mod tests {
         );
         assert!(runners_line(&[boxed]).contains("None of your runners keeps it yet"));
         assert!(runners_line(&[theirs]).contains("You have no runners yet"));
+        Ok(())
+    }
+
+    #[test]
+    fn says_when_a_token_runs_out_and_when_claude_last_answered_it() -> Result<()> {
+        let mut token = connection("crd_01TOKEN", "setup_token", None, "active", NOW)?;
+        assert_eq!(state_line(&token, NOW), None);
+        token.expires_at = Some(NOW + 60 * DAY);
+        token.answered_at = Some(NOW - 2 * 3_600_000);
+        let line = state_line(&token, NOW).unwrap_or_default();
+        assert!(line.starts_with("runs out on "), "{line}");
+        assert!(
+            line.contains("(in 60 days) · Claude answered 2h ago"),
+            "{line}"
+        );
+        token.expiry_estimated = true;
+        token.expires_at = Some(NOW + 10 * DAY);
+        let line = state_line(&token, NOW).unwrap_or_default();
+        assert!(line.starts_with("runs out around "), "{line}");
+        assert!(line.contains("(in 10 days), a year after you connected it: fctl can't read the date from the token. Make a new one with `claude setup-token` and connect it before then, or your sessions stop"), "{line}");
+        // A login Claude renews: no date.
+        let mut login = connection("crd_01ADA", "oauth", None, "active", NOW)?;
+        login.expires_at = Some(NOW + 3_600_000);
+        assert_eq!(state_line(&login, NOW), None);
+        let mut ended = connection("crd_01OLD", "setup_token", None, "invalid", 0)?;
+        ended.ended_at = Some(NOW - 3 * DAY);
+        let line = state_line(&ended, NOW).unwrap_or_default();
+        assert!(line.starts_with("Claude refused it on "), "{line}");
+        assert!(
+            line.ends_with(
+                ": connect a new one with `claude setup-token`, then `fctl claude connect`."
+            ),
+            "{line}"
+        );
+        login.status = CredentialStatus::Invalid;
+        assert!(
+            state_line(&login, NOW)
+                .is_some_and(|l| l.starts_with("Claude ended this login: sign in again"))
+        );
         Ok(())
     }
 

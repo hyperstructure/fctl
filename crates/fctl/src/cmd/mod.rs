@@ -5,6 +5,7 @@ pub mod attach;
 pub mod auth;
 pub mod autopilot;
 pub mod claude;
+pub mod claude_overview;
 pub mod completions;
 pub mod files;
 pub mod host;
