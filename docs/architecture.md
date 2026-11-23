@@ -4900,11 +4900,13 @@ need them too.
   to those addresses, answering IPv4 ones with an ICMP "administratively
   prohibited" as from the gateway, so that a connection there fails at
   once ("No route to host"). The filter runs detached, as passt does, and
-  exits once either side closes, passt with it. The VM asks the host's
-  nameservers, as a Docker container does: those in `/etc/resolv.conf` but
-  for any on the loopback, and where only those are left
-  (systemd-resolved's `127.0.0.53`), the servers systemd-resolved asks;
-  with none, passt's forwarder to the host's resolver.
+  exits once either side closes, passt with it. A VM that a host from
+  before the filter linked gets it as a session next starts in it, which
+  links its network again. The VM asks the host's nameservers, as a Docker
+  container does: those in `/etc/resolv.conf` but for any on the loopback,
+  and where only those are left (systemd-resolved's `127.0.0.53`), the
+  servers systemd-resolved asks; with none, passt's forwarder to the
+  host's resolver.
 - **Processes.** Firecracker, `passt` and the network's filter run in
   process groups of their own, as the process driver's agents do, so
   restarting or updating the host leaves them running; the host finds a

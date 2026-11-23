@@ -310,6 +310,12 @@ impl Vm {
         self.pid("passt").is_some()
     }
 
+    /// Whether the VM's network goes through `fctl-agent net-filter`
+    /// ([`Self::link_network`]), which keeps it off cloud metadata services.
+    pub fn filtered(&self) -> bool {
+        self.pid("filter").is_some()
+    }
+
     /// Starts Firecracker, after stopping what an earlier boot left: the
     /// `passt` of a VM that powered off, say. What it started goes again
     /// when it fails. A VM that gets a network gets it once it is up
@@ -2570,15 +2576,26 @@ mod tests {
         let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-f", Path::new("/r"));
         vm.start(&spec, &firecracker, None).await?;
         let (close, got) = vsock_stand_in(&vm.vsock())?;
+        // The VM's first frame, which each link carries, comes back.
+        let echoed = || async {
+            let until = Instant::now() + Duration::from_secs(5);
+            while got.lock().map(|g| g.clone()).unwrap_or_default() != b"\0\0\0\x02hi" {
+                assert!(Instant::now() < until, "the VM's frame didn't come back");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if let Ok(mut g) = got.lock() {
+                g.clear();
+            }
+        };
+        // Linked as hosts from before the filter linked it: not filtered.
+        vm.link_network(&passt, None).await?;
+        assert!(vm.linked() && !vm.filtered());
+        echoed().await;
+        // Through the filter, to passt and back.
         vm.link_network(&passt, Some(&agent)).await?;
         let first = vm.pid("filter");
-        assert!(vm.linked() && first.is_some());
-        // The VM's first frame went through the filter to passt, and back.
-        let until = Instant::now() + Duration::from_secs(5);
-        while got.lock().map(|g| g.clone()).unwrap_or_default() != b"\0\0\0\x02hi" {
-            assert!(Instant::now() < until, "the VM's frame didn't come back");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        assert!(vm.linked() && vm.filtered() && first.is_some());
+        echoed().await;
         // Linked again: the first filter goes.
         vm.link_network(&passt, Some(&agent)).await?;
         let alive = |pid: u32| {

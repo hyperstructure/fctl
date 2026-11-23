@@ -1098,13 +1098,15 @@ impl FirecrackerDriver {
             if matches!(answers.await, Ok(Ok(_))) {
                 // Running, its disk is past any state saved before.
                 self.drop_saved(&vm, &spec.name)?;
-                // Its passt exited, or was stopped: the VM gets another.
-                if !vm.linked() {
+                // Its passt exited, or was stopped: the VM gets another. One
+                // linked by a host from before the network's filter, which
+                // still runs, gets it as its session starts.
+                let filter = self.net_filter().await?;
+                if !vm.linked() || (filter.is_some() && !vm.filtered()) {
                     log(format!("Linking the network of {} again", spec.name));
                     let passt = self
                         .passt()
                         .context("passt is not installed: it gives the VMs their network")?;
-                    let filter = self.net_filter().await?;
                     vm.link_network(&passt, filter.as_deref()).await?;
                 }
                 self.serve_caches_again(&vm, spec, log).await;

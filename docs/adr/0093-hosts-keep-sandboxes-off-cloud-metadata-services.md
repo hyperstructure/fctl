@@ -43,11 +43,12 @@ a way out to the host.
   covers sandboxes from before it.
 - **Firecracker VMs' frames to those addresses are dropped on the host**,
   by `fctl-agent net-filter`, which the host starts between the VM's link
-  and its `passt`, out of the VM's reach. It answers IPv4 ones with an ICMP
-  "administratively prohibited", so that a connection there fails at once
-  with "No route to host" rather than hanging; IPv6 ones are dropped. It
-  runs detached, as passt does, so the network outlives the host's
-  restarts.
+  and its `passt`, out of the VM's reach. It answers IPv4 ones with an
+  ICMP "administratively prohibited", so that a connection there fails at
+  once with "No route to host" rather than hanging; IPv6 ones are dropped.
+  It runs detached, as passt does, so the network outlives the host's
+  restarts. A VM that a host from before it linked gets it as a session
+  next starts in it, which links its network again.
 - **Apple container and Lima VMs, and the process driver, aren't kept off
   them**: what the host could set inside a VM, the VM's root takes out. The
   docs say to use Docker or Firecracker on cloud machines.
