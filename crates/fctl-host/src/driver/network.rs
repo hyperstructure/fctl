@@ -352,6 +352,28 @@ pub(crate) fn own_doing_line(target: &str, why: &str) -> String {
     )
 }
 
+/// Why a session's sandbox can't start for now: sandboxes don't reach the
+/// network, or the sandbox didn't start again after a restart of Apple's
+/// `container`. The session goes back to the queue rather than fail.
+#[derive(Debug)]
+pub struct Down(pub String);
+
+impl std::fmt::Display for Down {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Down {}
+
+/// Why a session waits whose sandbox `name` didn't start again after the
+/// host restarted Apple's `container` (`why`).
+pub(crate) fn not_started_line(name: &str, why: &str) -> String {
+    format!(
+        "{name} didn't start again after the host restarted Apple's `container` ({why}); the host starts it again as soon as it can"
+    )
+}
+
 /// What a session's log says when neither its sandbox nor this Mac reaches
 /// `target`: restarting Apple's `container` wouldn't help.
 pub(crate) fn offline_line(target: &str, why: &str) -> String {

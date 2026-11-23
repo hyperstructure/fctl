@@ -645,6 +645,12 @@ impl StuckApple {
         Ok(std::fs::write(self.dir.path().join("refuse-start"), "")?)
     }
 
+    /// Its `start`s succeed again.
+    pub fn accept_starts(&self) -> Result<()> {
+        let _ = std::fs::remove_file(self.dir.path().join("refuse-start"));
+        Ok(())
+    }
+
     /// A driver that plays it ([`Self::driver`]), whose sandboxes should
     /// reach `target` (this Mac reaches what answers there), and which
     /// looks at their network every `look_every` and restarts Apple's

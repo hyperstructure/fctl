@@ -675,10 +675,11 @@ impl ContainerDriver {
         let _looking = self.network.looking.lock().await;
         // Another look restarted Apple's `container` meanwhile, and this
         // sandbox with it.
-        if self.network.restarted().is_some_and(|at| at >= asked)
-            && !matches!(self.reach_in(sb).await, Some(Reach::Unreachable(_)))
-        {
-            return Ok(());
+        if self.network.restarted().is_some_and(|at| at >= asked) {
+            self.started_again(sb).await?;
+            if !matches!(self.reach_in(sb).await, Some(Reach::Unreachable(_))) {
+                return Ok(());
+            }
         }
         if !self.mac_reaches(log).await {
             return Ok(());
@@ -688,7 +689,8 @@ impl ContainerDriver {
         match self.reach_fresh(agent.as_deref(), &images).await {
             Some(Reach::Unreachable(fresh)) => {
                 self.bring_back(&fresh, true, agent.as_deref(), &images, log)
-                    .await
+                    .await?;
+                self.started_again(sb).await
             }
             Some(Reach::Reached) => {
                 self.network.note_own_doing(&sb.name, Instant::now());
@@ -987,7 +989,7 @@ impl ContainerDriver {
                 .map(|at| now.saturating_duration_since(at));
             let down = network::down_line(&target, &why, ago, None);
             self.network.set_down(Some(down.clone()));
-            anyhow::bail!("{down}");
+            return Err(network::Down(down).into());
         }
         let line = network::restarting_line(&target, &why);
         tracing::warn!("{line}");
@@ -996,7 +998,7 @@ impl ContainerDriver {
             let down = network::down_line(&target, &why, None, Some(&format!("{e:#}")));
             tracing::warn!("Apple's `container`: {down}");
             self.network.set_down(Some(down.clone()));
-            anyhow::bail!("{down}");
+            return Err(network::Down(down).into());
         }
         let mut after = self.reach_fresh_again(agent, images).await;
         if matches!(after, Some(Reach::Unreachable(_))) {
@@ -1007,13 +1009,35 @@ impl ContainerDriver {
             let down = network::down_line(&target, &after, Some(Duration::ZERO), None);
             tracing::warn!("Apple's `container`: {down}");
             self.network.set_down(Some(down.clone()));
-            anyhow::bail!("{down}");
+            return Err(network::Down(down).into());
         }
         self.network.set_down(None);
         let line = network::restarted_line(&target);
         tracing::info!("{line}");
         log(format!("{line}."));
         Ok(())
+    }
+
+    /// Whether the sandbox `sb` runs again after a restart of Apple's
+    /// `container`, which stopped it: the restart starts again what ran,
+    /// and the host tries once more here what it couldn't ([`start_left`]).
+    /// A [`network::Down`] error while `sb` still doesn't run: its session
+    /// goes back to the queue rather than fail on its first command, and
+    /// the host's next look starts it again.
+    async fn started_again(&self, sb: &Sandbox) -> Result<()> {
+        if !self.network.left().contains(&sb.name) {
+            return Ok(());
+        }
+        let started = run_cmd_within(&self.bin, &["start", &sb.name], self.pace.command).await;
+        match started {
+            Ok(_) => {
+                self.network.started(&sb.name);
+                Ok(())
+            }
+            Err(e) => {
+                Err(network::Down(network::not_started_line(&sb.name, &format!("{e:#}"))).into())
+            }
+        }
     }
 
     /// Restarts Apple's `container` ([`restart_apple`]) in a task of its
@@ -4985,6 +5009,38 @@ esac
         apple.serve_again()?;
         let _ = network_down(&apple, &driver).await?;
         assert!(apple.runs(ours)? && apple.runs(theirs)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_sandbox_a_restart_left_stopped_waits() -> Result<()> {
+        let (_github, at) = github()?;
+        let ours = "fctl-ses-net-k1";
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.lose_network()?;
+        apple.mends_on_restart()?;
+        apple.refuse_starts()?;
+        // The restart brought the network back, but didn't start the
+        // session's sandbox again: the session waits rather than fail.
+        let e = readied(&apple, &driver, ours)
+            .await
+            .err()
+            .context("the session went on")?;
+        let down = e.downcast_ref::<network::Down>().context("not a wait")?;
+        assert!(
+            down.0.starts_with(&format!(
+                "{ours} didn't start again after the host restarted Apple's `container`"
+            )),
+            "{}",
+            down.0
+        );
+        assert!(!apple.runs(ours)?);
+        // The host's next look starts it.
+        apple.accept_starts()?;
+        assert_eq!(network_down(&apple, &driver).await?, None);
+        assert!(apple.runs(ours)?);
+        assert!(readied(&apple, &driver, ours).await?.is_empty());
         Ok(())
     }
 

@@ -1326,7 +1326,13 @@ async fn run(
                     // goes back to the control plane's queue, to start once
                     // a runner can start it, rather than fail. Not when
                     // someone stopped it meanwhile.
-                    if let Some(why) = ctx.recheck_driver().await
+                    // So does one whose sandbox can't start for now, Apple's
+                    // `container` having lost the network
+                    // (`driver::network`).
+                    let down = e
+                        .downcast_ref::<crate::driver::network::Down>()
+                        .map(|d| d.0.clone());
+                    if let Some(why) = ctx.recheck_driver().await.or(down)
                         && !stop_asked(&mut cmds)
                     {
                         let reason = not_ready(&ctx, &why);
@@ -2619,8 +2625,19 @@ mod tests {
             1
         );
         assert!(!calls.iter().any(|c| c.contains(" serve ")), "{calls:?}");
-        // Its sandbox stops, for another runner may start the session.
-        assert!(!apple.runs(&sandbox_name("ses_01OFFLINE"))?);
+        // The next session that comes meanwhile goes back too, without
+        // another restart, and its sandbox stops, for another runner may
+        // start it.
+        let (status, _) = run_to_end(&ctx, "ses_01OFFLINE2").await?;
+        assert_eq!(status, SessionStatus::Queued);
+        let calls = apple.calls()?;
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "system stop").count(),
+            1
+        );
+        let name = sandbox_name("ses_01OFFLINE2");
+        assert!(calls.contains(&format!("stop -t 20 {name}")), "{calls:?}");
+        assert!(!apple.runs(&name)?);
         // The next heartbeat says so, until the network comes back.
         assert!(ctx.driver_problem().is_some());
         apple.mend_network()?;
