@@ -125,7 +125,11 @@ It answers with the session, `queued`. A session is:
   `project#12`, however old: add `reviews=1`, `archived=1` and `hidden=1`
   to find any), `?limit=` (50 unless set, at most 200), `?before=` (a
   `created_at`). Answers `{"sessions": […], "next_before": …}`.
-- `GET /api/v1/sessions/{id}`: one session.
+- `GET /api/v1/sessions/{id}`: one session, with its `snapshot` where it
+  has one: whether it holds the conversation and uncommitted work, its
+  `size`, when and on which runner it was saved, until when it is kept,
+  and what it left out to stay within the instance's limit
+  ([Session snapshots](architecture.md#session-snapshots)).
 - `GET /api/v1/search?q=…`: the sessions whose title, description,
   messages or agent's replies have the words, with `?workspace=`,
   `?project=` and `?limit=` (20, at most 50). Each result has the `session`,
@@ -581,7 +585,16 @@ tokens as the bearer token, as `fctl host install --enroll` does: `GET
 /api/v1/runner/enroll` says what the token enrolls in (or why it can't),
 and `POST /api/v1/runner/enroll` with `{"name": "…", "facts": {…}}` answers
 with the runner and its own runner token
-([Enrollment tokens](architecture.md#enrollment-tokens)). The routes are listed in
+([Enrollment tokens](architecture.md#enrollment-tokens)). With that token,
+a host uploads the snapshot of a session it runs (`PUT
+/api/v1/runner/sessions/{id}/snapshots/{snapshot}/parts/{n}`, then `POST
+/api/v1/runner/sessions/{id}/snapshots/{snapshot}`) and downloads one
+(`GET …/parts/{n}`) ([Session snapshots](architecture.md#session-snapshots)).
+A workspace's admins choose whether its sessions keep snapshots and for
+how long (`PATCH /api/v1/workspaces/{id}` with `snapshots` and
+`snapshot_days`), and an instance's admins whether any workspace does and
+how large one may be (`snapshots`, `max_snapshot_mb` in `PATCH
+/api/v1/admin/settings`). The routes are listed in
 [`crates/fctl-control/src/lib.rs`](../crates/fctl-control/src/lib.rs), and
 [`crates/fctl-client/src/api.rs`](../crates/fctl-client/src/api.rs), the
 CLI's client, calls each with its types.

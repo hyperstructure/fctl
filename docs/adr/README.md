@@ -99,3 +99,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0091](0091-autopilots-delete-stale-memory-notes-once-they-crowd-the-memory.md) | Autopilots delete stale memory notes once they crowd the memory (experimental) |
 | [0092](0092-projects-choose-how-long-stale-memory-notes-stay.md) | Projects choose how long stale memory notes stay |
 | [0093](0093-hosts-keep-sandboxes-off-cloud-metadata-services.md) | Hosts keep sandboxes off cloud metadata services |
+| [0096](0096-sessions-keep-their-conversation-in-encrypted-snapshots.md) | Sessions keep their conversation in encrypted snapshots |

@@ -19,6 +19,7 @@ trusts.
 | Workspace avatars | images in D1 | the workspace's members, people it invited, instance admins |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
 | Images agents read | the session's Durable Object, for 7 days | people who can see the session |
+| Session snapshots (Claude's conversation and the work the agent hadn't pushed) | the session's Durable Object, encrypted (AES-256-GCM) in the sandbox with the session's own key, which D1 keeps encrypted with the master key | the session's agent, on the runner that runs it |
 | Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |
 | GitHub App key | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to mint short-lived tokens |
 | GitHub webhook secret | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to check that deliveries come from GitHub |
@@ -958,7 +959,22 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   them), or sooner when their disk has less free than `min_free_disk_gb`
   (20 GiB by default), which the sessions running there are told. Resuming
   after that starts a new sandbox on the session's branch, with everything
-  that was pushed, and a new Claude conversation. With less than 2 GiB
+  that was pushed, and the session's snapshot where it has one, or else a
+  new Claude conversation.
+- A session's snapshot, saved as its sandbox stops, holds Claude's
+  conversation (what the agent read and ran, and what it was told, images
+  too) and each repository's work its agent hadn't pushed, its untracked
+  files with it, but not what `.gitignore` leaves out. The agent encrypts
+  it in the sandbox with a key of the session's own, which D1 keeps
+  encrypted with the master key and the control plane gives only to the
+  runner that runs the session: the control plane keeps it without
+  opening it, but whoever has both the instance's storage and its master
+  key can read it, as they can the other secrets. Its session's
+  Durable Object keeps it for 30 days after it was saved, or the days its
+  workspace chooses (1 to 365), and only the newest; the hourly job
+  deletes it then, and within the hour once its workspace, or the
+  instance, turns snapshots off. Deleting its project deletes it with the
+  transcript. Review agents' sessions save none. With less than 2 GiB
   free, Firecracker hosts pause their running sandboxes, which keep what
   their sessions wrote in memory until there is room.
 - An identity token is kept nowhere by the control plane: it goes to the

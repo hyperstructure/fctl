@@ -99,7 +99,7 @@ fctl sessions --since 1h         # at work in the last hour: those that haven't 
 fctl pulls                       # the open pull requests agents opened (drafts and merge queues too), each with its sessions: "(asks you)" where its agent waits for an answer, "(archived)" where someone archived it
 fctl pulls -p my-app --state merged --mine --json
 fctl sessions -w acme --limit 100   # a workspace's (30 unless --limit says)
-fctl show my-app#12              # status, who started it (an autopilot, for whom) and from which schedule, branch, pull requests with their checks and review, model and effort, usage
+fctl show my-app#12              # status, who started it (an autopilot, for whom) and from which schedule, its snapshot, branch, pull requests with their checks and review, model and effort, usage
 fctl edit my-app#12 --title "Fix the flaky login test"
 fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
 fctl edit my-app#12 --effort medium     # its agent works at medium effort from its next step
@@ -313,6 +313,8 @@ fctl workspaces set --slug side            # its address in URLs (create takes -
 fctl workspaces set --base-role editor     # every member starts sessions in every project
 fctl workspaces set --require-two-factor on   # closed to members without a second factor
 fctl workspaces set --skip-invites on      # a workspace for one: its setup stops asking for people
+fctl workspaces set --snapshot-days 7      # keep each session's snapshot a week after it stops (30 by default)
+fctl workspaces set --snapshots off        # sessions keep no snapshots: one that resumes elsewhere starts its conversation again
 
 fctl workspaces runners                    # the runners its sessions start on, with their ids
 fctl workspaces add-runner studio-mac      # one of yours runs its sessions too (its name or id)
@@ -1125,7 +1127,10 @@ conversation. An autopilot whose next wake starts a fresh session anyway
 agents nobody sees: when sessions run on the machine, it lists them and asks
 before it stops them, or, without a terminal, needs `--wait` or `--force`.
 Stopped this way, their agents stop and push their work, and a message
-resumes each on another runner, in a new sandbox without its conversation.
+resumes each on another runner, in a new sandbox: with its conversation
+and uncommitted work, from the snapshot its agent saved as it stopped,
+where its workspace keeps them
+([Session snapshots](architecture.md#session-snapshots)).
 The runner keeps draining until `fctl host undrain`. A runner that enrolled
 with an enrollment token is removed instead, with its token file: the
 machine enrolls again with `fctl host install --enroll`.
@@ -1407,7 +1412,8 @@ starts and every hour, looks after them too:
   stopped sandbox here mounts stay, emptied, until the sandbox goes.
 - Below `min_free_disk_gb`, it empties caches, those used least recently
   first, before it removes stopped sandboxes: an empty cache costs the
-  next session downloads, a removed sandbox Claude's conversation.
+  next session downloads, a removed sandbox its resume the time to
+  restore its snapshot, or, without one, Claude's conversation.
 
 It leaves alone the caches of a project with a session running here, and
 a session that starts while the host measures or empties its project's
@@ -1549,6 +1555,8 @@ fctl admin set --export-interval 1d        # people export their data once a day
 fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (on by default)
 fctl admin set --members-create-workspaces off # only instance admins create workspaces (on by default: everyone)
 fctl admin set --max-workspaces 50         # each person can be in 50 workspaces (5 by default; any: any number)
+fctl admin set --max-snapshot-mb 500       # sessions' snapshots up to 500 MiB each (200 by default, 2048 at most)
+fctl admin set --snapshots off             # no workspace keeps sessions' snapshots; those kept go within the hour
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them
