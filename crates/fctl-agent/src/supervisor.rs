@@ -28,8 +28,8 @@ use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
 use fctl_domain::models::ModelName;
 use fctl_domain::{files, published, validate};
 use fctl_proto::agent::{
-    AUTOPILOT_ENV, AgentConfig, AgentHello, AgentToHost, FEATURE_CLAUDE_RELAY, HostToAgent,
-    SESSION_SOCKET_ENV, SessionReply, SessionRequest,
+    AUTOPILOT_ENV, AgentConfig, AgentHello, AgentToHost, FEATURE_AGENT_SNAPSHOTS,
+    FEATURE_CLAUDE_RELAY, HostToAgent, SESSION_SOCKET_ENV, SessionReply, SessionRequest,
 };
 use fctl_proto::api::{AgentAnswer, AgentCall};
 use fctl_proto::event::{
@@ -87,6 +87,10 @@ struct Persisted {
     /// the next message tells Claude they didn't finish.
     #[serde(default)]
     unfinished: Vec<Task>,
+    /// What the next message tells Claude of the snapshot this sandbox
+    /// resumed from: work it couldn't put back, where it is.
+    #[serde(default)]
+    snapshot_note: Option<String>,
     /// The pull requests fctl-agent follows for the session.
     #[serde(default)]
     pulls: Pulls,
@@ -156,6 +160,12 @@ const REVIEW_POSTED: &str = "Finished: its review is posted";
 
 pub(crate) enum Work {
     Prepared(Result<(), String>),
+    /// A snapshot was restored as the workspace was prepared, or why not,
+    /// with the snapshot as the spec named it.
+    Restored(
+        Result<crate::snapshot::Restored, String>,
+        Box<fctl_proto::runner::SnapshotRef>,
+    ),
     /// Claude opened a connection to the Anthropic API, which waits for
     /// the host to open its channel ([`relay`]).
     ClaudeConnection(String),
@@ -271,6 +281,8 @@ pub struct Supervisor {
     /// Files that came before `Configure` (the task's): saved once the
     /// sandbox's home is known.
     pending_files: Vec<(Attachment, String)>,
+    /// The snapshot this sandbox waits for, as the host sends its parts.
+    snapshot_in: Option<IncomingSnapshot>,
     /// Said once that the sandbox's fctl cannot rename the session.
     told_no_fctl: bool,
     /// The sandbox's Claude Code, once checked.
@@ -393,6 +405,7 @@ impl Supervisor {
                 syncing: false,
                 turn_ended: false,
                 pending_files: Vec::new(),
+                snapshot_in: None,
                 told_no_fctl: false,
                 claude_version: None,
                 publishing: HashMap::new(),
@@ -491,15 +504,19 @@ impl Supervisor {
             status: self.state.status,
             agent_seq: self.journal.last_seq(),
             claude_version: self.claude_version.map(|v| v.to_string()),
-            features: [FEATURE_ATTACHMENTS, FEATURE_SETTINGS]
-                .into_iter()
-                // Where the host's channels can come in.
-                .chain(
-                    (self.relay_socket.is_some() || self.relay.is_some())
-                        .then_some(FEATURE_CLAUDE_RELAY),
-                )
-                .map(str::to_owned)
-                .collect(),
+            features: [
+                FEATURE_ATTACHMENTS,
+                FEATURE_SETTINGS,
+                FEATURE_AGENT_SNAPSHOTS,
+            ]
+            .into_iter()
+            // Where the host's channels can come in.
+            .chain(
+                (self.relay_socket.is_some() || self.relay.is_some())
+                    .then_some(FEATURE_CLAUDE_RELAY),
+            )
+            .map(str::to_owned)
+            .collect(),
             claude_relay: self.relay.is_some(),
         })
     }
@@ -537,6 +554,16 @@ impl Supervisor {
     async fn on_frame(&mut self, frame: HostToAgent) {
         match frame {
             HostToAgent::Ping => self.send(&AgentToHost::Pong),
+            HostToAgent::SnapshotPart { id, n, data, last } => {
+                self.on_snapshot_part(&id, n, &data, last)
+            }
+            HostToAgent::SnapshotMissing { id, why } => {
+                if let Some(mut s) = self.snapshot_in.take_if(|s| s.id == id)
+                    && let Some(done) = s.done.take()
+                {
+                    let _ = done.send(Err(why));
+                }
+            }
             HostToAgent::Configure { config } => {
                 if self.config.is_none() {
                     self.configure(*config);
@@ -1342,6 +1369,9 @@ impl Supervisor {
                 self.notice(NoticeLevel::Warn, "repo_unavailable", why, None);
             }
         }
+        // A sandbox resumed without the conversation: the host fetches the
+        // session's last snapshot while the workspace is prepared.
+        let restore = self.wanted_snapshot(&home);
         let work = self.work_tx.clone();
         tokio::spawn(async move {
             let (log_tx, mut log_rx) = mpsc::unbounded_channel::<(LogLevel, String)>();
@@ -1360,6 +1390,11 @@ impl Supervisor {
                     spec.credentials.github_read.as_ref(),
                 )?;
                 workspace::prepare(&paths, &spec, &log_tx).await?;
+                // Before the setup script, which then sees the work as it was.
+                if let Some(r) = restore {
+                    let (restored, snapshot) = restore_snapshot(&paths, &spec, r).await;
+                    let _ = work.send(Work::Restored(restored, Box::new(snapshot)));
+                }
                 if let Some(script) = spec
                     .project
                     .settings
@@ -1427,6 +1462,13 @@ impl Supervisor {
                     self.finish().await;
                 }
             }
+            Work::Restored(Ok(done), r) => self.on_restored(&done, &r),
+            Work::Restored(Err(why), _) => self.notice(
+                NoticeLevel::Warn,
+                "snapshot_unusable",
+                &fctl_domain::snapshots::unusable_words(&why),
+                None,
+            ),
             Work::Prepared(Err(e)) => {
                 self.notice(NoticeLevel::Error, "prepare_failed", &e, None);
                 self.set_status(SessionStatus::Failed, Some(e));
@@ -2054,6 +2096,15 @@ impl Supervisor {
             let note = prompt::unfinished_tasks(&std::mem::take(&mut self.persisted.unfinished));
             self.persist();
             format!("{note}\n\n{text}")
+        };
+        // The first after a snapshot put the conversation back, but not all
+        // of the work.
+        let text = match self.persisted.snapshot_note.take() {
+            Some(note) => {
+                self.persist();
+                format!("{note}\n\n{text}")
+            }
+            None => text,
         };
         // The first after the kernel killed processes while Claude waited.
         let text = match self.killed_unheard.take() {
@@ -3000,6 +3051,215 @@ impl Supervisor {
         }
     }
 
+    /// The snapshot to restore here, when the spec names one and this
+    /// sandbox doesn't have the conversation: asked of the host now, its
+    /// parts go to a file the workspace's preparation waits for. One saved
+    /// before the session's last run carried on elsewhere says so, and
+    /// stays where it is.
+    fn wanted_snapshot(&mut self, home: &Path) -> Option<Restore> {
+        let config = self.config.as_ref()?;
+        let spec = &config.spec;
+        let snap = spec.snapshot.as_ref()?;
+        let r = snap.restore.clone()?;
+        if self.persisted.claude_started
+            || claude::conversation_exists(home, &spec.claude_session_id)
+            || !(r.conversation || r.changes)
+        {
+            return None;
+        }
+        if config.first_agent_seq.unwrap_or(0) > r.agent_seq {
+            self.notice(
+                NoticeLevel::Warn,
+                "snapshot_unusable",
+                &fctl_domain::snapshots::unusable_words(
+                    "its last snapshot is older than its last run, which carried on after it was saved",
+                ),
+                None,
+            );
+            return None;
+        }
+        let Ok(key) = STANDARD.decode(snap.key.as_bytes()) else {
+            tracing::warn!("the snapshot key isn't base64");
+            return None;
+        };
+        let claude_bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
+        let scratch = self.state_dir.join("snapshot");
+        if let Err(e) = std::fs::create_dir_all(&scratch) {
+            tracing::warn!("making {}: {e}", scratch.display());
+            return None;
+        }
+        let (done, file) = oneshot::channel();
+        self.snapshot_in = Some(IncomingSnapshot {
+            id: r.id.clone(),
+            path: scratch.join(format!("{}.in", r.id)),
+            file: None,
+            next: 0,
+            done: Some(done),
+        });
+        self.send(&AgentToHost::SnapshotWanted { id: r.id.clone() });
+        Some(Restore {
+            snapshot: r,
+            key,
+            file,
+            scratch,
+            claude_bin,
+        })
+    }
+
+    /// A part of the snapshot this sandbox waits for, in order: the last
+    /// hands the file to the workspace's preparation.
+    fn on_snapshot_part(&mut self, id: &str, n: u32, data: &str, last: bool) {
+        use std::io::Write;
+        let Some(s) = self.snapshot_in.as_mut().filter(|s| s.id == id) else {
+            return;
+        };
+        let written = (|| -> std::result::Result<(), String> {
+            if n != s.next {
+                return Err(format!("its part {n} came where part {} was due", s.next));
+            }
+            let bytes = STANDARD
+                .decode(data.as_bytes())
+                .map_err(|e| format!("a part of it wasn't base64: {e}"))?;
+            if s.file.is_none() {
+                s.file = Some(std::fs::File::create(&s.path).map_err(|e| e.to_string())?);
+            }
+            if let Some(f) = s.file.as_mut() {
+                f.write_all(&bytes)
+                    .map_err(|e| format!("writing it failed: {e}"))?;
+            }
+            s.next += 1;
+            Ok(())
+        })();
+        if written.is_err() || last {
+            if let Some(mut s) = self.snapshot_in.take() {
+                drop(s.file.take());
+                if let Some(done) = s.done.take() {
+                    let _ = done.send(written.map(|()| s.path.clone()));
+                }
+            }
+        }
+    }
+
+    /// The transcript says what the snapshot put back, and Claude hears, in
+    /// the next message, of work it couldn't.
+    fn on_restored(
+        &mut self,
+        done: &crate::snapshot::Restored,
+        r: &fctl_proto::runner::SnapshotRef,
+    ) {
+        let text = fctl_domain::snapshots::restored_words(
+            done.conversation,
+            !done.changes.is_empty(),
+            r.size,
+            r.saved_on.as_deref(),
+        );
+        self.notice(NoticeLevel::Info, "snapshot_restored", &text, None);
+        if done.images_left_out > 0 {
+            self.log(
+                LogSource::Agent,
+                LogLevel::Info,
+                &format!(
+                    "{} left out of the saved conversation, to keep it within the size the instance allows",
+                    match done.images_left_out {
+                        1 => "An image was".to_owned(),
+                        n => format!("{n} images were"),
+                    }
+                ),
+            );
+        }
+        if !done.moved.is_empty()
+            && let Some(config) = &self.config
+        {
+            let at = crate::snapshot::wip_ref(config.spec.session_id.as_str());
+            self.notice(
+                NoticeLevel::Warn,
+                "snapshot_work_aside",
+                &format!(
+                    "The branch moved on since the snapshot, so its uncommitted work in {} is at {at}, not in the working tree",
+                    done.moved.join(", ")
+                ),
+                None,
+            );
+            self.persisted.snapshot_note = Some(prompt::snapshot_work_aside(&done.moved, &at));
+            self.persist();
+        }
+    }
+
+    /// Saves the session's snapshot, as the sandbox stops, and hands it to
+    /// the host in parts: its conversation and the work not on GitHub.
+    /// Saving what is too large, or failing, says so in the transcript.
+    async fn save_snapshot(&mut self) {
+        let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
+            return;
+        };
+        let Some(snap) = config.spec.snapshot.as_ref().filter(|s| s.save) else {
+            return;
+        };
+        // Claude never ran here: nothing of this run's to keep.
+        if !self.persisted.claude_started {
+            return;
+        }
+        let Ok(key) = STANDARD.decode(snap.key.as_bytes()) else {
+            return;
+        };
+        let dir = self.state_dir.join("snapshot");
+        let version = self.claude_version.map(|v| v.to_string());
+        let seq = self.journal.last_seq();
+        match crate::snapshot::save(
+            &paths,
+            &config.spec,
+            &key,
+            snap.max_bytes,
+            version.as_deref(),
+            seq,
+            &dir,
+        )
+        .await
+        {
+            Ok(Some(saved)) => self.send_snapshot(saved),
+            Ok(None) => {}
+            Err(e) => {
+                let msg = format!(
+                    "The session's snapshot wasn't saved: {e:#}. A resume on another runner starts from the task and the branch."
+                );
+                self.notice(NoticeLevel::Warn, "snapshot_not_saved", &msg, None);
+                self.flush();
+            }
+        }
+    }
+
+    /// Hands a saved snapshot to the host, part by part, the last with what
+    /// it holds.
+    fn send_snapshot(&mut self, saved: crate::snapshot::Saved) {
+        let id = fctl_domain::ids::new_id("snp", now_ms());
+        let sent = (|| -> std::io::Result<()> {
+            let mut f = std::fs::File::open(&saved.file)?;
+            let mut n = 0u32;
+            let mut buf = vec![0u8; fctl_proto::runner::SNAPSHOT_PART_BYTES];
+            let mut len = read_full(&mut f, &mut buf)?;
+            loop {
+                let data = STANDARD.encode(buf.get(..len).unwrap_or_default());
+                let next = read_full(&mut f, &mut buf)?;
+                let last = next == 0;
+                self.send(&AgentToHost::SnapshotPart {
+                    id: id.clone(),
+                    n,
+                    data,
+                    saved: last.then(|| saved.saved.clone()),
+                });
+                if last {
+                    return Ok(());
+                }
+                n += 1;
+                len = next;
+            }
+        })();
+        if let Err(e) = sent {
+            tracing::warn!("sending the snapshot: {e}");
+        }
+        let _ = std::fs::remove_file(&saved.file);
+    }
+
     /// Stops the session for the reason its status gives (`why`): once the
     /// turn under way ends, interrupted, or after `grace_ms` anyway.
     async fn begin_stop(&mut self, why: String, grace_ms: u64) {
@@ -3086,10 +3346,88 @@ impl Supervisor {
         };
         self.set_status(status, reason.clone());
         self.flush();
+        // The session's snapshot, after its last event, for a resume on
+        // another runner.
+        self.save_snapshot().await;
         self.send(&AgentToHost::Exited { status, reason });
         // Give the host a moment to read everything.
         self.exit_after = Some(Instant::now() + Duration::from_secs(3));
     }
+}
+
+/// How long a sandbox waits for the snapshot it asked for before Claude
+/// starts without it.
+const SNAPSHOT_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// The snapshot this sandbox waits for ([`Supervisor::wanted_snapshot`]):
+/// its parts go to `path` as they come.
+struct IncomingSnapshot {
+    id: String,
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    next: u32,
+    done: Option<oneshot::Sender<std::result::Result<PathBuf, String>>>,
+}
+
+/// What the workspace's preparation restores, once the host's parts are in.
+struct Restore {
+    snapshot: fctl_proto::runner::SnapshotRef,
+    key: Vec<u8>,
+    file: oneshot::Receiver<std::result::Result<PathBuf, String>>,
+    scratch: PathBuf,
+    claude_bin: String,
+}
+
+/// Waits for the snapshot's file, then restores it into this sandbox, as
+/// the Claude Code here reads it.
+async fn restore_snapshot(
+    paths: &Paths,
+    spec: &fctl_proto::runner::SessionSpec,
+    r: Restore,
+) -> (
+    std::result::Result<crate::snapshot::Restored, String>,
+    fctl_proto::runner::SnapshotRef,
+) {
+    let file = match tokio::time::timeout(SNAPSHOT_WAIT, r.file).await {
+        Err(_) => Err("it didn't come within ten minutes".to_owned()),
+        Ok(Err(_)) => Err("the host stopped sending it".to_owned()),
+        Ok(Ok(got)) => got,
+    };
+    let result = match file {
+        Ok(path) => {
+            let version = claude::check_version(&r.claude_bin)
+                .await
+                .ok()
+                .flatten()
+                .map(|v| v.to_string());
+            let out = crate::snapshot::restore(
+                paths,
+                spec,
+                &path,
+                &r.key,
+                &r.snapshot.sha256,
+                version.as_deref(),
+                &r.scratch,
+            )
+            .await;
+            let _ = std::fs::remove_file(&path);
+            out
+        }
+        Err(why) => Err(why),
+    };
+    (result, r.snapshot)
+}
+
+/// Reads until `buf` is full or the input ends: how much it read.
+fn read_full(r: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(buf.get_mut(n..).unwrap_or_default())? {
+            0 => break,
+            m => n += m,
+        }
+    }
+    Ok(n)
 }
 
 /// When the first of a session's GitHub tokens expires.

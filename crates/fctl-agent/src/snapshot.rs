@@ -453,7 +453,9 @@ struct Unseal<R: Read> {
 impl<R: Read> Unseal<R> {
     fn new(mut input: R, key: &[u8]) -> Result<Self> {
         let mut header = [0u8; HEADER];
-        input.read_exact(&mut header).context("reading the snapshot")?;
+        input
+            .read_exact(&mut header)
+            .context("reading the snapshot")?;
         let opener = Opener::new(key, &header).map_err(|e| anyhow!("{e}"))?;
         let mut first = vec![0u8; SEGMENT + TAG];
         let n = read_full(&mut input, &mut first)?;
@@ -652,7 +654,13 @@ pub async fn restore(
 /// and resets to the commit before it, so that what was uncommitted is
 /// again. False when the branch moved on elsewhere: the work stays at its
 /// ref.
-async fn put_back(home: &Path, repo: &Path, bundle: &Path, meta: &RepoMeta, session: &str) -> Result<bool> {
+async fn put_back(
+    home: &Path,
+    repo: &Path,
+    bundle: &Path,
+    meta: &RepoMeta,
+    session: &str,
+) -> Result<bool> {
     if !repo.join(".git").exists() {
         bail!("{} isn't a repository here", repo.display());
     }
@@ -721,7 +729,11 @@ mod tests {
     async fn sandbox(root: &Path, name: &str, origin: &Path) -> Result<Paths> {
         let home = root.join(name);
         std::fs::create_dir_all(&home)?;
-        sh(&home, &format!("git clone -q {} workspace", origin.display())).await?;
+        sh(
+            &home,
+            &format!("git clone -q {} workspace", origin.display()),
+        )
+        .await?;
         let state = home.join(".state");
         Ok(Paths::new(&home.join("workspace"), &home, &state))
     }
@@ -753,7 +765,10 @@ mod tests {
             .join(".claude/projects")
             .join(conversation_dir(&a.workdir));
         std::fs::create_dir_all(conv.join(id).join("tool-results"))?;
-        std::fs::write(conv.join(format!("{id}.jsonl")), "{\"type\":\"user\",\"message\":{\"content\":\"remember banana\"}}\n")?;
+        std::fs::write(
+            conv.join(format!("{id}.jsonl")),
+            "{\"type\":\"user\",\"message\":{\"content\":\"remember banana\"}}\n",
+        )?;
         std::fs::write(conv.join(id).join("tool-results/x.txt"), "long output")?;
         // A commit not pushed, then work not committed.
         sh(
@@ -762,14 +777,27 @@ mod tests {
         )
         .await?;
         let key = [9u8; 32];
-        let saved = save(&a, &s, &key, 10_000_000, Some("2.1.140"), 42, &root.path().join("out"))
-            .await?
-            .ok_or_else(|| anyhow!("nothing saved"))?;
+        let saved = save(
+            &a,
+            &s,
+            &key,
+            10_000_000,
+            Some("2.1.140"),
+            42,
+            &root.path().join("out"),
+        )
+        .await?
+        .ok_or_else(|| anyhow!("nothing saved"))?;
         assert!(saved.saved.conversation && saved.saved.changes);
         assert_eq!((saved.saved.agent_seq, saved.saved.left_out.len()), (42, 0));
         // The sandbox it was saved in is as it was.
         let left = sh(&a.workdir, "git status --porcelain").await?;
-        assert!(left.contains(" M kept.txt") && left.contains(" D gone.txt") && left.contains("?? new.txt"), "{left}");
+        assert!(
+            left.contains(" M kept.txt")
+                && left.contains(" D gone.txt")
+                && left.contains("?? new.txt"),
+            "{left}"
+        );
         assert_eq!(sh(&a.workdir, "git log --format=%s -1").await?, "local");
         let b = sandbox(root.path(), "b", &origin).await?;
         let restored = restore(
@@ -790,17 +818,53 @@ mod tests {
             .join(".claude/projects")
             .join(conversation_dir(&b.workdir));
         assert!(std::fs::read_to_string(conv_b.join(format!("{id}.jsonl")))?.contains("banana"));
-        assert_eq!(std::fs::read_to_string(conv_b.join(id).join("tool-results/x.txt"))?, "long output");
+        assert_eq!(
+            std::fs::read_to_string(conv_b.join(id).join("tool-results/x.txt"))?,
+            "long output"
+        );
         assert_eq!(sh(&b.workdir, "git log --format=%s -1").await?, "local");
-        assert_eq!(std::fs::read_to_string(b.workdir.join("kept.txt"))?, "changed\n");
+        assert_eq!(
+            std::fs::read_to_string(b.workdir.join("kept.txt"))?,
+            "changed\n"
+        );
         assert!(!b.workdir.join("gone.txt").exists());
         let status = sh(&b.workdir, "git status --porcelain").await?;
-        assert!(status.contains(" M kept.txt") && status.contains(" D gone.txt") && status.contains("?? new.txt"), "{status}");
+        assert!(
+            status.contains(" M kept.txt")
+                && status.contains(" D gone.txt")
+                && status.contains("?? new.txt"),
+            "{status}"
+        );
         // Another key, a damaged file, an older Claude Code: refused.
         let scratch = root.path().join("scratch2");
-        assert!(restore(&b, &s, &saved.file, &[1; 32], &saved.saved.sha256, None, &scratch).await.is_err());
-        assert!(restore(&b, &s, &saved.file, &key, "00", None, &scratch).await.is_err());
-        let older = restore(&b, &s, &saved.file, &key, &saved.saved.sha256, Some("2.1.100"), &scratch).await;
+        assert!(
+            restore(
+                &b,
+                &s,
+                &saved.file,
+                &[1; 32],
+                &saved.saved.sha256,
+                None,
+                &scratch
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            restore(&b, &s, &saved.file, &key, "00", None, &scratch)
+                .await
+                .is_err()
+        );
+        let older = restore(
+            &b,
+            &s,
+            &saved.file,
+            &key,
+            &saved.saved.sha256,
+            Some("2.1.100"),
+            &scratch,
+        )
+        .await;
         assert!(older.is_err_and(|e| e.contains("2.1.140")));
         Ok(())
     }
@@ -831,18 +895,41 @@ mod tests {
             .await?
             .ok_or_else(|| anyhow!("nothing saved"))?;
         // Someone pushes to the branch meanwhile.
-        sh(&seed, &format!("echo theirs > b.txt && git add . && git commit -qm theirs && git push -q {} main", origin.display())).await?;
+        sh(
+            &seed,
+            &format!(
+                "echo theirs > b.txt && git add . && git commit -qm theirs && git push -q {} main",
+                origin.display()
+            ),
+        )
+        .await?;
         let b = sandbox(root.path(), "b", &origin).await?;
-        let restored = restore(&b, &s, &saved.file, &key, &saved.saved.sha256, None, &root.path().join("scratch"))
-            .await
-            .map_err(|e| anyhow!(e))?;
+        let restored = restore(
+            &b,
+            &s,
+            &saved.file,
+            &key,
+            &saved.saved.sha256,
+            None,
+            &root.path().join("scratch"),
+        )
+        .await
+        .map_err(|e| anyhow!(e))?;
         assert_eq!((restored.changes.len(), restored.moved.len()), (0, 1));
         assert_eq!(std::fs::read_to_string(b.workdir.join("a.txt"))?, "one\n");
-        let kept = sh(&b.workdir, &format!("git show {}:a.txt", wip_ref(s.session_id.as_str()))).await?;
+        let kept = sh(
+            &b.workdir,
+            &format!("git show {}:a.txt", wip_ref(s.session_id.as_str())),
+        )
+        .await?;
         assert_eq!(kept, "mine");
         // Nothing to save: no conversation, nothing changed.
         let c = sandbox(root.path(), "c", &origin).await?;
-        assert!(save(&c, &s, &key, 10_000_000, None, 1, &root.path().join("out3")).await?.is_none());
+        assert!(
+            save(&c, &s, &key, 10_000_000, None, 1, &root.path().join("out3"))
+                .await?
+                .is_none()
+        );
         // Over the limit with work alone: nothing fits.
         let big = save(&a, &s, &key, 10, None, 1, &root.path().join("out2")).await;
         assert!(big.is_err());

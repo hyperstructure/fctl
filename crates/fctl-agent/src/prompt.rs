@@ -1015,6 +1015,16 @@ pub fn fresh_resume(branch: &str, task: Option<&str>, other_repos: bool) -> Stri
     s
 }
 
+/// What Claude hears in the first message after a snapshot put its
+/// conversation back in a new sandbox, but not the uncommitted work of
+/// `repos`, whose branch moved on since: it is at `at`.
+pub fn snapshot_work_aside(repos: &[String], at: &str) -> String {
+    format!(
+        "(fctl: this session resumed in a new sandbox from its snapshot. The branch of {} moved on since it was saved, so the uncommitted work you had there wasn't put back: it is at {at}. `git diff HEAD {at}` shows it, and `git checkout {at} -- <path>` takes a file back.)",
+        repos.join(", ")
+    )
+}
+
 /// What comes before the first message after the session stopped while
 /// background tasks ran: they didn't finish. Claude Code reports the tasks
 /// it lost when it resumes the conversation too, in its own words.
