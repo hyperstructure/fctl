@@ -188,6 +188,160 @@ counts proxies rather than knowing them, so the server's port must be
 reachable only through them: a client that connects to it directly would
 choose its own address.
 
+### A private instance
+
+An instance can stay on your own network: people reach it over the
+company's network or VPN, runners dial out to it from there, and from
+the internet only four paths answer, each only where you use what calls
+it. Whoever runs your network's edge sets it up, in about an hour, with
+the instance's container already behind a reverse proxy inside.
+
+| Path | Who calls it from the internet | Without it |
+|---|---|---|
+| `/api/v1/github/webhook` | GitHub's deliveries, signed with `GITHUB_WEBHOOK_SECRET` | Sessions learn of merges and checks hours late, reviews start only when someone asks, and follow-ups and schedules that run on GitHub's events never come |
+| `/api/v1/linear/webhook` | Linear's deliveries, signed with `LINEAR_WEBHOOK_SECRET` | Delegating a ticket in Linear starts nothing |
+| `/oidc/` | AWS, Google Cloud and Azure, which fetch each workspace's issuer's documents and keys before they take its agents' [identity tokens](identity-tokens.md) | The clouds refuse agents' tokens |
+| `/api/v1/published/` | GitHub's image proxy, which fetches the screenshots agents publish in pull requests | Pull requests show broken images |
+
+Sign-ins with GitHub, Linear and Google come back through people's
+browsers, which are inside, and so need no path of their own.
+
+```text
+inside: people, runners                         internet: GitHub, Linear, clouds
+fctl.acme.dev → the internal proxy              fctl.acme.dev → the edge
+        │                                       the four paths, else 404
+        └──────────▶ fctl-control :8787 ◀─────────────┘
+```
+
+Both sides use the same address, `https://fctl.acme.dev`: your network's
+DNS answers it with the internal proxy, the public DNS with the edge. It
+has to be one address, scheme, host and port alike: it is
+`FCTL_PUBLIC_URL`, which every issuer and published link is under, and
+the app refuses changes from pages of another. The internal proxy's
+certificate can't come from an HTTP challenge, which would reach the
+edge: use a DNS challenge, or your own certificate authority.
+
+**Paths with `..` in them.** fctl resolves `.` and `..` in a path, and
+`%2e` as a dot, so `/oidc/../api/v1/sessions` reaches
+`/api/v1/sessions`. An edge that matches the path as it came lets such a
+request through as one for `/oidc/`: each setup below turns them away
+first, and the check at the end makes sure.
+
+#### With a Cloudflare Tunnel
+
+Where `acme.dev` is on Cloudflare, `cloudflared` on the instance's
+machine connects out to Cloudflare, which sends it the requests for the
+paths its rules let in:
+
+```sh
+cloudflared tunnel login
+cloudflared tunnel create fctl                 # prints the tunnel's id, and writes its credentials
+cloudflared tunnel route dns fctl fctl.acme.dev
+```
+
+`/etc/cloudflared/config.yml`, with the tunnel's id:
+
+```yaml
+tunnel: 6ff42ae2-765d-4adf-8112-31c55c1551ef
+credentials-file: /etc/cloudflared/6ff42ae2-765d-4adf-8112-31c55c1551ef.json
+ingress:
+  - hostname: fctl.acme.dev       # any . or .. segment: never to the instance
+    path: '(^|[/\\])\.\.?([/\\]|$)'
+    service: http_status:404
+  - hostname: fctl.acme.dev
+    path: ^/api/v1/(github|linear)/webhook$
+    service: http://localhost:8787
+  - hostname: fctl.acme.dev
+    path: ^/oidc/
+    service: http://localhost:8787
+  - hostname: fctl.acme.dev
+    path: ^/api/v1/published/
+    service: http://localhost:8787
+  - service: http_status:404
+```
+
+```sh
+sudo cloudflared tunnel ingress validate --config /etc/cloudflared/config.yml
+sudo cloudflared --config /etc/cloudflared/config.yml service install
+```
+
+Rules match the path decoded, but with its dots as they came, and the
+first one that matches wins. Also turn on **Normalize URLs to origin**
+under the zone's **Rules → Settings**, so that Cloudflare resolves dot
+segments before the tunnel sees them. Cloudflare adds the client's
+address to `X-Forwarded-For` and `cloudflared` adds none, so
+`FCTL_TRUST_PROXY=1` holds for requests from both sides. Your network's
+DNS answers `fctl.acme.dev` itself, with the internal proxy.
+
+#### With an AWS load balancer
+
+On AWS, an internet-facing Application Load Balancer takes the four
+paths and answers the rest with a 404, while an internal one serves
+everything to your network. Each has a target group of its own, as an
+ALB takes no other's, with the instance's port 8787 in it; a Route 53
+private hosted zone answers `fctl.acme.dev` inside with the internal
+one, and the public zone with the internet-facing one. On the
+internet-facing one's HTTPS listener, with a certificate for
+`fctl.acme.dev`:
+
+```sh
+aws elbv2 modify-listener --listener-arn "$EDGE_LISTENER" --default-actions \
+  '[{"Type":"fixed-response","FixedResponseConfig":{"StatusCode":"404","ContentType":"text/plain","MessageBody":"Not found"}}]'
+aws elbv2 create-rule --listener-arn "$EDGE_LISTENER" --priority 10 --actions Type=forward,TargetGroupArn="$EDGE_TARGETS" \
+  --conditions '[{"Field":"path-pattern","PathPatternConfig":{"Values":["/api/v1/github/webhook","/api/v1/linear/webhook"]}},
+                 {"Field":"http-request-method","HttpRequestMethodConfig":{"Values":["POST"]}}]'
+aws elbv2 create-rule --listener-arn "$EDGE_LISTENER" --priority 20 --actions Type=forward,TargetGroupArn="$EDGE_TARGETS" \
+  --conditions '[{"Field":"path-pattern","PathPatternConfig":{"Values":["/oidc/*","/api/v1/published/*"]}},
+                 {"Field":"http-request-method","HttpRequestMethodConfig":{"Values":["GET","HEAD"]}}]'
+```
+
+Let only the two load balancers' security groups reach port 8787. Each
+adds one address to `X-Forwarded-For`: `FCTL_TRUST_PROXY=1`. ALBs match
+rules after normalizing the path, which AWS doesn't say in full: if the
+check at the end lets a dot segment through, put AWS WAF in front of
+the internet-facing one, with a rule that blocks the other paths after
+its `NORMALIZE_PATH` transformation.
+
+#### Not with Tailscale Funnel
+
+Funnel makes a port of a machine public or private as a whole, and
+only under its `ts.net` name: with the app on port 443 for your tailnet
+and the four paths on 8443 for the internet, the issuer and published
+links would have to be under the 8443 address, where people's browsers
+find no app. Use a tunnel or a load balancer instead.
+
+#### Check it
+
+From outside your network (a phone off the VPN, say), the paths you
+opened answer and nothing else does:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://fctl.acme.dev/api/v1/health                    # 404
+curl -s -o /dev/null -w '%{http_code}\n' --path-as-is https://fctl.acme.dev/oidc/../api/v1/health  # 404
+curl -s -o /dev/null -w '%{http_code}\n' https://fctl.acme.dev/oidc/%2e%2e/api/v1/health          # 404
+curl -s https://fctl.acme.dev/oidc/wsp_01JC3F5W5Q0Q7A2N9X4D1V6ZBK/.well-known/openid-configuration  # the issuer's document
+```
+
+The sign-in page answers 404 too, while inside it opens and
+`/api/v1/health` answers `{"ok":true,…}`. `fctl projects identity -p
+web` prints a workspace's issuer. On GitHub, the app's **Advanced →
+Recent Deliveries** show `200` for each delivery, and Linear's webhook
+page shows them delivered.
+
+- **Narrowing the webhooks to their senders.** fctl turns away any
+  webhook that its secret didn't sign, so this is a second fence, not
+  the first. GitHub lists the addresses its webhooks come from under
+  `hooks` in `https://api.github.com/meta`, which changes now and then
+  (it grew on 2026-10-29), and Linear lists its own in its security
+  docs. An ALB rule takes few addresses: an AWS WAF IP set, or a
+  Cloudflare WAF rule, takes them all. Published screenshots can't be
+  narrowed: GitHub's image proxy has no published addresses.
+- **Google Cloud alone** can trust an issuer it doesn't reach, with its
+  keys uploaded (`--jwk-json-path` on the provider). The instance makes
+  a new key every 30 days, two days before it signs with it, so the
+  upload has to follow each one. AWS and Azure fetch the keys
+  themselves.
+
 ### Webhooks to your own network
 
 [Webhooks](automation.md#webhooks) post to `https://` addresses on the
@@ -461,8 +615,9 @@ create`, `show`, `set`, `add` and `remove`
 
 - **Signing in.** A new account has no password until someone sets one:
   `password` as you create it, or the link
-  `POST /api/v1/admin/users/{user}/reset-link` makes (emailed to them where
-  the instance sends [email](#email-optional)). Where the instance has
+  `POST /api/v1/admin/users/{user}/reset-link` makes, which works for an
+  hour (emailed to them where the instance sends [email](#email-optional)).
+  Where the instance has
   [Google sign-in](#google-sign-in-optional) and Google hosts the address
   (a Google Workspace account's, or Gmail), the person can sign in with
   Google instead: while the account has no way in at all (no password,

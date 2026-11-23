@@ -9,13 +9,13 @@ for the details.
 
 | You want to… | With | Read |
 |---|---|---|
-| Run fctl on your own machines, cluster or Cloudflare account | A self-hosted instance | [Your own instance](#your-own-instance) |
-| Create, change and close people's accounts from your identity provider or HR system | Admin tokens, on an instance of yours | [People from your directory](#people-from-your-directory) |
-| Let a portal, a chat bot or a form start agents for your people, each on their own Claude subscription | Service accounts | [Agents from your own portal or bot](#agents-from-your-own-portal-or-bot) |
+| Run fctl on your own machines, cluster or Cloudflare account, and keep it off the internet | A self-hosted instance | [Your own instance](#your-own-instance), [A private instance](self-hosting.md#a-private-instance) |
+| Create, change and close people's accounts from your identity provider or HR system, and let in no one else | Admin tokens, on an instance of yours | [People from your directory](#people-from-your-directory), [Accounts only from your directory](#accounts-only-from-your-directory) |
+| Let a portal, a chat bot or a form start agents for your people, each on their own Claude subscription | Service accounts | [Agents from your own portal or bot](#agents-from-your-own-portal-or-bot), and a guide for Slack: [A Slack bot of your own](chat-bot.md) |
 | Let CI, a pipeline or another tool start agents as one person | Access tokens and schedules | [Agents from CI and other tools](#agents-from-ci-and-other-tools) |
-| Tell your chat, deploy pipeline or dashboards what agents do | Webhooks | [Your tools hear what agents do](#your-tools-hear-what-agents-do) |
+| Tell your chat, deploy pipeline or dashboards what agents do | Webhooks | [Your tools hear what agents do](#your-tools-hear-what-agents-do), and a guide for your warehouse: [Agents' work in your data warehouse](data-warehouse.md) |
 | Let agents call your own services, and AWS, Google Cloud or Azure, without keys of yours | Identity tokens (OIDC) | [Agents in your own systems, with OIDC](#agents-in-your-own-systems-with-oidc) |
-| Bring a fleet of machines online as runners without signing in on each | Enrollment tokens | [Runners for a fleet](#runners-for-a-fleet) |
+| Bring a fleet of machines online as runners without signing in on each | Enrollment tokens | [Runners for a fleet](#runners-for-a-fleet), and a guide for each cloud: [Runners in your cloud](runners-in-your-cloud.md) |
 | Know who did what, and with which credential | Audit logs | [Oversight](#oversight) |
 
 Whatever starts it, a session is a person's: it runs on their Claude
@@ -50,7 +50,9 @@ docker run -d --name fctl --restart unless-stopped \
 
 Set `FCTL_MASTER_KEY` from your secret store too, so that copies of the
 data directory don't hold the key that encrypts what's in them
-([Settings](self-hosting.md#settings)).
+([Settings](self-hosting.md#settings)). To keep the instance on your own
+network, with only the paths GitHub, Linear and the clouds call open to
+the internet, see [A private instance](self-hosting.md#a-private-instance).
 
 Once the first account exists, these are the settings an organization
 usually changes, under **Admin → Access**, **Admin → Settings** and each
@@ -117,8 +119,9 @@ them.
   (your Google Workspace, or Gmail), and that first sign-in links Google
   to their account. Otherwise they set a password with the link `fctl
   admin reset-link ada@acme.dev` makes (`POST
-  /api/v1/admin/users/{user}/reset-link`), which fctl emails them where
-  the instance sends [email](self-hosting.md#email-optional). Once an
+  /api/v1/admin/users/{user}/reset-link`), which works for an hour and
+  which fctl emails them where the instance sends
+  [email](self-hosting.md#email-optional). Once an
   account has a way in, a Google account links to it only from its
   Settings, as anyone's does.
 - **Leaving.** Disabling an account signs its person out everywhere and
@@ -140,6 +143,106 @@ them.
   --members-create-workspaces off`, or **Admin → Settings → Workspaces**):
   then they work only in the workspaces your sync puts them in, and those
   they're invited to.
+
+### Accounts only from your directory
+
+Where your directory alone decides who has an account, nobody signs up
+by themselves or makes workspaces of their own, everyone signs in with a
+second factor, and an account closes the day its person leaves. An
+instance admin sets that up in about ten minutes, once your sync makes
+accounts with an admin token (above); taking access from another admin
+takes the primary instance owner.
+
+1. **Give each account an allowlist entry of its own.** An account that
+   an admin token made, or an invitation, has one. Someone who signed up
+   with Google through a domain's entry (`*@acme.dev`) has none, and
+   removing the domain's entry in the next step disables every account
+   that no other entry admits. Allowing the address of an account that
+   exists sends no invitation:
+
+   ```sh
+   fctl admin users --json \
+     | jq -r '.users[] | select(.status == "active") | .email | select(endswith("@acme.dev"))' \
+     | while read -r email; do fctl admin allow "$email"; done
+   ```
+
+   An address that has an entry already answers "This email or domain
+   is already allowed", and the loop goes on. `fctl admin allowlist`
+   then lists each address on its own.
+2. **Take the domain off the allowlist**, so that nobody signs up with
+   Google by themselves:
+
+   ```sh
+   fctl admin disallow '*@acme.dev'
+   ```
+
+   It prints `Removed *@acme.dev`, and the accounts it disabled after
+   `Disabled:`, which should be none. From then on, an address gets in
+   only as your sync's admin token or an admin's invitation lets it.
+3. **Keep workspaces to your admins**, so that people work only in the
+   workspaces your sync puts them in:
+
+   ```sh
+   fctl admin set --members-create-workspaces off
+   ```
+
+4. **Require a second factor**, of password sign-ins and Google's too:
+
+   ```sh
+   fctl admin set --require-two-factor on --two-factor-google on
+   ```
+
+   `fctl admin users` then says who has it. Until someone sets one up,
+   they can only do that, in the browser or with `fctl account two-factor
+   enable`.
+5. **Sign each person in for the first time.** Where the instance has
+   [Google sign-in](self-hosting.md#google-sign-in-optional) and Google
+   hosts your people's addresses (your Google Workspace), Ada presses
+   **Sign in with Google**: as the account has no way in yet, that first
+   sign-in links Google to it. Otherwise, make Ada a link when Ada is
+   about to start, as it works for an hour:
+
+   ```sh
+   fctl admin reset-link ada@acme.dev
+   ```
+
+   With email, fctl sends it to Ada and doesn't show it; without, it
+   prints it for you to pass on. Ada chooses a password, and may link
+   Google later under **Settings → Security**. Either way, Ada then sets
+   up a second factor (step 4).
+6. **Close accounts the day people leave**, from the same sync:
+
+   ```sh
+   fctl admin disable ada@acme.dev
+   ```
+
+   That signs Ada out everywhere, and stops Ada's tokens and the
+   sessions that run on Ada's Claude subscription. Delete the account
+   later (`fctl admin delete-user`), once nobody needs what only Ada
+   has.
+
+What can go wrong:
+
+- **"Google can't vouch for this address, as it doesn't host it…"**
+  Ada's address isn't a Google Workspace or Gmail one, so Google doesn't
+  sign Ada in: send a link (step 5).
+- **"An account with this email exists. Sign in with your password, then
+  link Google in Settings."** The account has a way in already, a
+  password your sync set, say: Ada signs in that way, then links Google.
+- **"This email is not allowed on this instance. Ask an admin for
+  access."** Someone your sync hasn't made an account for tried to sign
+  up with Google. That's the setup working: their account comes from
+  your directory.
+- **"Removing this entry would take access from admins (…). Only the
+  primary instance owner can."** An admin has no entry of their own: give
+  them one (step 1), or have the primary instance owner remove the
+  domain's entry.
+- **Someone's account was disabled in step 2.** They had no entry of
+  their own: `fctl admin allow` with their address enables it again.
+
+fctl doesn't sign people in through your identity provider (SAML or
+OpenID Connect), nor take its SCIM: your sync calls the people endpoints
+instead.
 
 ## Agents from your own portal or bot
 
@@ -223,6 +326,11 @@ the secret as `FCTL_TOKEN` and the person as `--on-behalf-of`: `fctl run
   its page, in `fctl show`, in the workspace's audit log and in what
   webhooks post (`data.session.service_account`).
 
+[A Slack bot of your own](chat-bot.md) puts this together for Slack:
+`@fctl` in a project's channel starts a session for whoever wrote it,
+and the agent's questions, replies and pull requests come back to the
+thread, where people answer with a click.
+
 ## Agents from CI and other tools
 
 Which credential starts the work depends on whose session it should be:
@@ -298,6 +406,10 @@ A webhook posts while whoever chose its address still manages it: when
 they leave the workspace or lose the role, fctl turns it off and says
 why, and the admin who turns it on again keeps it from then on.
 
+[Agents' work in your data warehouse](data-warehouse.md) keeps every
+event in BigQuery or Snowflake, with the queries for sessions a day,
+time to review and merged pull requests.
+
 ## Agents in your own systems, with OIDC
 
 An agent proves to your services and clouds that a request comes from one
@@ -354,6 +466,12 @@ Their sessions start from fctl's sandbox image, a project's own, or one
 built from its repository; a host's `allowed_images` and `allowed_builds`
 hold it to the images you choose
 ([Which images a host runs](sandbox-images.md#which-images-a-host-runs)).
+
+[Runners in your cloud](runners-in-your-cloud.md) builds such a fleet on
+AWS, Google Cloud or Azure, step by step: a machine image with Docker,
+fctl and the sandbox image ready, a group that grows and shrinks, and a
+hook that lets each machine's agents finish their turns before the cloud
+takes it.
 
 Each token's runners are a pool. Give it labels, and keep one pool of
 large machines for the projects that ask for them and one in another
