@@ -211,6 +211,9 @@ pub fn setup_required_error(ctx: &Ctx) -> AppError {
 pub struct Pending {
     /// A Google sign-in: the page it started from.
     pub return_to: Option<String>,
+    /// A provider's sign-in: the domain of the address it vouched for,
+    /// which the session keeps (`fctl_domain::sign_in::SignedIn`).
+    pub auth_domain: Option<String>,
     /// A password reset: the link's token hash, and the new password.
     pub reset_hash: Option<String>,
     pub password_hash: Option<String>,
@@ -228,8 +231,8 @@ pub async fn challenge(
     let expires_at = ctx.now + CHALLENGE_TTL_MS;
     q(
         &ctx.db,
-        "INSERT INTO sign_in_challenges (hash, user_id, reason, return_to, reset_hash, password_hash, created_at, expires_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sign_in_challenges (hash, user_id, reason, return_to, reset_hash, password_hash, created_at, expires_at, auth_domain) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(&hash_secret(&secret)),
             s(&user.id),
@@ -239,6 +242,7 @@ pub async fn challenge(
             os(pending.password_hash.as_deref()),
             n(ctx.now),
             n(expires_at),
+            os(pending.auth_domain.as_deref()),
         ],
     )?
     .run()
@@ -290,6 +294,22 @@ struct ChallengeRow {
     password_hash: Option<String>,
     #[serde(deserialize_with = "crate::db::int")]
     expires_at: i64,
+    #[serde(default)]
+    auth_domain: Option<String>,
+}
+
+impl ChallengeRow {
+    /// How the sign-in that waits was made, as its session keeps it.
+    fn how(&self, reason: ChallengeReason) -> fctl_domain::sign_in::SignedIn {
+        use fctl_domain::sign_in::{GOOGLE, Method, SignedIn};
+        match reason {
+            ChallengeReason::Password | ChallengeReason::PasswordReset => SignedIn::password(),
+            ChallengeReason::Google => SignedIn {
+                method: Some(Method::Provider(GOOGLE.to_owned())),
+                domain: self.auth_domain.clone(),
+            },
+        }
+    }
 }
 
 fn expired() -> AppError {
@@ -307,7 +327,7 @@ async fn waiting(ctx: &Ctx, req: &Request) -> AppResult<(String, ChallengeRow)> 
     let hash = hash_secret(&secret);
     let row: Option<ChallengeRow> = q(
         &ctx.db,
-        "SELECT user_id, reason, return_to, reset_hash, password_hash, expires_at FROM sign_in_challenges WHERE hash = ?",
+        "SELECT user_id, reason, return_to, reset_hash, password_hash, expires_at, auth_domain FROM sign_in_challenges WHERE hash = ?",
         &[s(&hash)],
     )?
     .first()
@@ -406,7 +426,7 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         apply_reset(ctx, &user, &row).await?;
         crate::api::auth::password_reset_notice(ctx, &user).await?;
     }
-    auth::start_web_session(ctx, &user, true).await?;
+    auth::start_web_session(ctx, &user, true, row.how(reason)).await?;
     let (factor, passkey) = match &used {
         CodeUse::Totp => ("totp", None),
         CodeUse::Recovery { .. } => ("recovery_code", None),

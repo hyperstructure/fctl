@@ -37,6 +37,7 @@ mod push;
 mod reviews;
 mod schedules;
 mod service_accounts;
+mod sign_in;
 mod slugs;
 mod snapshots;
 mod spec;
@@ -261,7 +262,7 @@ async fn dispatch(
         (Post, ["auth", "passkey"]) => api::passkeys::sign_in(ctx, req).await,
         (Get, ["auth", "google", "start"]) => api::google::start(ctx, req).await,
         (Get, ["auth", "google", "callback"]) => api::google::callback(ctx, req).await,
-        (Delete, ["auth", "identities", id]) => api::google::unlink(ctx, id).await,
+        (Delete, ["auth", "identities", id]) => api::sign_in::unlink(ctx, id).await,
         (Get, ["auth", "tokens"]) => api::tokens::list(ctx).await,
         (Post, ["auth", "tokens"]) => api::tokens::create(ctx, req).await,
         (Delete, ["auth", "tokens", id]) => api::tokens::delete(ctx, id).await,
@@ -330,6 +331,8 @@ async fn dispatch(
         (Delete, ["admin", "access-requests", id]) => api::early_access::remove(ctx, id).await,
         (Get, ["admin", "audit"]) => api::admin::audit(ctx, req).await,
         (Get, ["admin", "settings"]) => api::admin::settings(ctx).await,
+        (Get, ["admin", "sign-in"]) => api::sign_in::overview(ctx).await,
+        (Post, ["admin", "sign-in", "preview"]) => api::sign_in::preview(ctx, req).await,
         (Patch, ["admin", "settings"]) => api::admin::update_settings(ctx, req).await,
         (Post, ["admin", "transfer"]) => api::admin::transfer(ctx, req).await,
         (Get, ["admin", "workspaces"]) => api::admin::workspaces(ctx).await,

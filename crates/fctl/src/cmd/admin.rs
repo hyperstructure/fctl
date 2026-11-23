@@ -140,6 +140,17 @@ pub enum AdminCmd {
         #[command(subcommand)]
         cmd: Option<EarlyAccessCmd>,
     },
+    /// How people sign in: the providers, the domains whose people sign in
+    /// with one only, and who has which way in. `require` and `unrequire`
+    /// change those domains.
+    #[command(
+        name = "sign-in",
+        after_help = "Examples:\n  fctl admin sign-in\n  fctl admin sign-in require acme.com acme.dev   # people at acme.com and acme.dev sign in with Google only\n  fctl admin sign-in require acme.com --passkeys # passkeys alone sign them in too\n  fctl admin sign-in unrequire acme.dev\n  fctl admin set --self-sign-up off              # accounts only from invitations and admin tokens"
+    )]
+    SignIn {
+        #[command(subcommand)]
+        cmd: Option<crate::cmd::sign_in::SignInCmd>,
+    },
     /// Show who may sign up.
     Allowlist,
     /// Allow an email (invites them) or a domain (`*@example.com`).
@@ -210,8 +221,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces", "snapshots", "max_snapshot_mb"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces", "snapshots", "max_snapshot_mb", "self_sign_up"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces\n  fctl admin set --self-sign-up off   # accounts only from invitations and admin tokens"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -286,6 +297,13 @@ pub enum AdminCmd {
         /// then its uncommitted work, then saves none.
         #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u32).range(1..=2048))]
         max_snapshot_mb: Option<u32>,
+        /// Let signing in with Google make an account for an address the
+        /// allowlist admits, `*@domain` entries included: on by default.
+        /// Off, only invitations, addresses you allow one by one and admin
+        /// tokens make accounts, and the sign-in page tells people without
+        /// one to ask an admin.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        self_sign_up: Option<bool>,
     },
 }
 
@@ -597,6 +615,29 @@ fn print_snapshots(s: &InstanceSettings) {
 
 fn print_settings(s: &InstanceSettings) {
     print_snapshots(s);
+    println!(
+        "Sign-in                {}",
+        match s.sign_in.len() {
+            0 => style::dim("any way, at any domain"),
+            _ => style::accent(&format!(
+                "{} with a provider only",
+                fctl_domain::sign_in::domains_words(
+                    &s.sign_in
+                        .iter()
+                        .flat_map(|r| r.domains.iter().cloned())
+                        .collect::<Vec<_>>()
+                )
+            )),
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.self_sign_up {
+            "Signing in with Google makes an account for an address the allowlist admits. `fctl admin sign-in` says more."
+        } else {
+            "Only invitations, addresses allowed one by one and admin tokens make accounts. `fctl admin sign-in` says more."
+        })
+    );
     println!(
         "Published screenshots  {}",
         if s.publish_screenshots {
@@ -1250,6 +1291,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             print_audit(&list);
         }
+        AdminCmd::SignIn { cmd } => crate::cmd::sign_in::run(&api, cmd, json).await?,
         AdminCmd::Settings => {
             let settings = api.instance_settings().await?;
             if json {
@@ -1269,6 +1311,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             max_workspaces,
             snapshots,
             max_snapshot_mb,
+            self_sign_up,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
@@ -1283,6 +1326,8 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     max_workspaces,
                     snapshots,
                     max_snapshot_mb,
+                    self_sign_up,
+                    sign_in: None,
                 })
                 .await?;
             if json {

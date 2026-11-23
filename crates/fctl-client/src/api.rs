@@ -2261,6 +2261,25 @@ impl Api {
         self.get("/admin/settings").await
     }
 
+    /// How people sign in to the instance: its providers, the domains that
+    /// require one, and whom they cover (admins).
+    pub async fn sign_in_overview(&self) -> Result<SignInOverview> {
+        self.get("/admin/sign-in").await
+    }
+
+    /// What saving `rules` in place of the instance's sign-in rules would
+    /// do, before anything changes (admins). Saving them is
+    /// [`Self::update_instance_settings`] with `sign_in`.
+    pub async fn sign_in_preview(&self, rules: &[SignInRule]) -> Result<SignInPreview> {
+        self.post(
+            "/admin/sign-in/preview",
+            &SignInPreviewRequest {
+                rules: rules.to_vec(),
+            },
+        )
+        .await
+    }
+
     /// Invites an address to the instance, and to workspaces you are an
     /// admin of.
     pub async fn invite(&self, req: &CreateInviteRequest) -> Result<Invite> {

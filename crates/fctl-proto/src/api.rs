@@ -33,6 +33,43 @@ pub struct InstanceInfo {
     /// No owner yet: the setup link must be used first.
     pub setup_required: bool,
     pub features: Features,
+    /// How people sign in here: the providers' buttons, the domains whose
+    /// people sign in with one only, and whether signing in makes
+    /// accounts. Absent from control planes before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sign_in: Option<SignInInfo>,
+}
+
+/// What the sign-in page shows ([`InstanceInfo::sign_in`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInInfo {
+    /// The providers people sign in with, in the order the page shows
+    /// their buttons.
+    pub providers: Vec<SignInProvider>,
+    /// Domains whose people sign in with a provider only
+    /// ([`InstanceSettings::sign_in`]): an address at one turns the page's
+    /// form into that provider's button.
+    pub rules: Vec<SignInRule>,
+    /// Signing in makes accounts where the allowlist admits the address
+    /// ([`InstanceSettings::self_sign_up`]). Off, the page tells people
+    /// without an account to ask an admin.
+    pub self_sign_up: bool,
+}
+
+/// A provider people sign in with: Google, or (later) another OpenID
+/// Connect provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInProvider {
+    /// As tokens, identities and rules name it: `google`.
+    pub id: String,
+    /// What its button says after "Continue with": `Google`.
+    pub name: String,
+    /// The path its sign-in starts at (`/api/v1/auth/google/start`), which
+    /// takes `intent` (`login` or `link`), `return_to` and `login_hint`.
+    pub start: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -205,6 +242,11 @@ pub struct User {
     /// How many workspaces it is a member of (for instance admins).
     #[serde(default)]
     pub workspaces: u32,
+    /// The providers whose accounts sign in to it (`google`), once each
+    /// (for instance admins; empty elsewhere, and from control planes
+    /// before it).
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 impl User {
@@ -278,6 +320,30 @@ pub struct Me {
     /// How often you can export your data, and when you can next. Absent
     /// for limited tokens, and from control planes before it.
     pub export: Option<DataExport>,
+    /// The provider you sign in with only, where the instance requires one
+    /// of the people at a domain of one of your addresses
+    /// ([`InstanceSettings::sign_in`]). Absent where none does.
+    pub sign_in: Option<SignInRequirement>,
+}
+
+/// How someone signs in, as a domain of one of their addresses requires
+/// ([`Me::sign_in`]).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInRequirement {
+    /// The provider's id (`google`) and name (`Google`).
+    pub provider: String,
+    pub provider_name: String,
+    /// Their domains it requires it of (`acme.com`): they sign in with it
+    /// as an address at one of these.
+    pub domains: Vec<String>,
+    /// A passkey alone signs them in too.
+    pub passkeys: bool,
+    /// They are the primary instance owner: their password and passkeys
+    /// sign them in whatever the rule says, as the instance's way in while
+    /// the provider is down.
+    pub exempt: bool,
 }
 
 /// Exporting your data (`GET /api/v1/me/export`), which the instance allows
@@ -1045,6 +1111,11 @@ pub struct TokenInfo {
     /// What an access token is limited to. Absent: it does everything its
     /// person may (browser sessions and the CLI's sign-ins always do).
     pub scope: Option<TokenScope>,
+    /// How the sign-in it comes from was made: `password`, `passkey`, or a
+    /// provider's id (`google`). A CLI's sign-in takes the method of the
+    /// browser that approved it, and an access token that of the sign-in
+    /// that made it. Absent for those from before fctl recorded it.
+    pub method: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1649,6 +1720,193 @@ pub struct InstanceSettings {
     /// conversation's images out, then its uncommitted work, then saves
     /// none. [`DEFAULT_MAX_SNAPSHOT_MB`] by default.
     pub max_snapshot_mb: u32,
+    /// Domains whose people sign in with a provider only: "acme.com and
+    /// acme.dev: Google only" ([`SignInRule`]). A rule covers an account
+    /// when any of its addresses is at one of its domains. Passwords, other
+    /// providers and sign-ins made before stop working for it, and passkeys
+    /// too unless the rule allows them; the primary instance owner keeps
+    /// every way in. None by default.
+    pub sign_in: Vec<SignInRule>,
+    /// Signing in with a provider makes an account for an address the
+    /// allowlist admits, `*@domain` entries included. Off, only
+    /// invitations, addresses admins allow one by one and admin tokens
+    /// make accounts: a domain's entry admits the accounts at it, and makes
+    /// none. On by default.
+    pub self_sign_up: bool,
+}
+
+/// How the people at some domains sign in ([`InstanceSettings::sign_in`]):
+/// with `provider` only, as an address at one of `domains` that the
+/// provider vouches for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInRule {
+    /// Lowercase, without `*@`: `acme.com`. A domain is in one rule at
+    /// most.
+    pub domains: Vec<String>,
+    /// The provider's id ([`SignInProvider::id`]): `google`.
+    pub provider: String,
+    /// A passkey alone signs its people in too. Quick, but past the
+    /// provider's checks (its two-step verification, device checks,
+    /// offboarding). Off by default; passkeys still stand in for codes
+    /// after the provider's sign-in, and confirm sensitive actions.
+    #[serde(default)]
+    pub passkeys: bool,
+}
+
+/// `GET /api/v1/admin/sign-in`: how people sign in to the instance.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInOverview {
+    /// The providers the instance knows, those its deployment didn't set
+    /// up included.
+    pub providers: Vec<SignInProviderStatus>,
+    /// [`InstanceSettings::sign_in`].
+    pub rules: Vec<SignInRule>,
+    /// For each of `rules`, in order: whom it covers.
+    pub coverage: Vec<SignInCoverage>,
+    /// [`InstanceSettings::self_sign_up`].
+    pub self_sign_up: bool,
+    /// Active accounts.
+    pub active: u32,
+    /// Of them, those with a password.
+    pub passwords: u32,
+    /// Those with a passkey.
+    pub passkeys: u32,
+    /// Those with no way to sign in yet: admin tokens made them, and
+    /// nobody has signed in to them.
+    pub no_way_in: u32,
+    /// The primary instance owner, who keeps their password and passkeys
+    /// whatever the rules say.
+    pub owner: Option<SignInPerson>,
+    /// How your sign-in, the one this request comes with, was made
+    /// ([`TokenInfo::method`]), and the domain of the address a provider
+    /// vouched for in it: a rule for that domain and provider would keep
+    /// you signed in.
+    pub method: Option<String>,
+    pub method_domain: Option<String>,
+    /// The instance sends email: people hear when a rule changes how they
+    /// sign in.
+    pub email: bool,
+}
+
+/// A provider as instance admins see it ([`SignInOverview::providers`]).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInProviderStatus {
+    /// `google`.
+    pub id: String,
+    /// `Google`.
+    pub name: String,
+    /// The instance's deployment set it up: for Google, `GOOGLE_CLIENT_ID`
+    /// and `GOOGLE_CLIENT_SECRET`. Rules require only providers that are.
+    pub configured: bool,
+    /// What sets it up: `GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET`.
+    pub setup: String,
+    /// Where the provider sends people back after they sign in: its OAuth
+    /// client takes it as an authorized redirect URI.
+    pub redirect_url: String,
+    /// Active accounts that one of its accounts signs in to.
+    pub people: u32,
+}
+
+/// Whom a rule covers ([`SignInOverview::coverage`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInCoverage {
+    /// Active accounts with an address at one of its domains.
+    pub people: u32,
+    /// Of them, those an account of its provider, as an address at one of
+    /// its domains, signs in to already.
+    pub linked: u32,
+    /// Those who still have a password, which doesn't sign them in: it
+    /// goes at their next sign-in with the provider. The primary instance
+    /// owner's, which stays, doesn't count.
+    pub passwords: u32,
+}
+
+/// Someone a change to how people sign in concerns.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInPerson {
+    pub id: UserId,
+    pub name: String,
+    pub email: String,
+    pub avatar_url: Option<String>,
+}
+
+/// `POST /api/v1/admin/sign-in/preview`: what saving `rules` in place of
+/// the instance's would do, before anything changes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInPreviewRequest {
+    pub rules: Vec<SignInRule>,
+}
+
+/// The answer to [`SignInPreviewRequest`]. The lists name at most
+/// [`SignInPreview::LIMIT`] people each; the counts are whole.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInPreview {
+    /// Active accounts the rules would cover.
+    pub covered: u32,
+    /// Of them, those whose password would stop working: it goes at their
+    /// next sign-in with the provider.
+    pub passwords: Vec<SignInPerson>,
+    pub password_count: u32,
+    /// Those whose passkeys would stop signing them in alone. They still
+    /// stand in for codes after the provider's sign-in, and confirm
+    /// sensitive actions.
+    pub passkeys: Vec<SignInPerson>,
+    pub passkey_count: u32,
+    /// Those an account of the provider, as an address at a covered
+    /// domain, signs in to already.
+    pub linked: u32,
+    /// Those with no way to sign in yet (admin tokens made them): their
+    /// first sign-in with the provider links it.
+    pub first: u32,
+    /// Accounts the rules cover now and would no longer: they sign in as
+    /// they did before (those who still have a password, with it).
+    pub released: u32,
+    /// Active accounts the rules wouldn't cover: nothing changes for them.
+    pub others: u32,
+    /// The primary instance owner, when the rules would cover them: they
+    /// keep their password and passkeys, the way in while the provider is
+    /// down.
+    pub owner: Option<SignInPerson>,
+    /// What the change does to your own sign-in.
+    pub you: SignInYou,
+    /// The instance sends email: those whose password or passkeys stop
+    /// working hear of it.
+    pub email: bool,
+}
+
+impl SignInPreview {
+    pub const LIMIT: usize = 200;
+}
+
+/// What a change to how people sign in does to the sign-in of the admin
+/// who makes it ([`SignInPreview::you`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum SignInYou {
+    /// No rule would cover you.
+    Outside,
+    /// You are the primary instance owner: every way in stays yours.
+    Owner,
+    /// A rule would cover you, and the sign-in you made this change with
+    /// meets it.
+    Meets,
+    /// A rule would cover you, and your sign-in doesn't meet it: the
+    /// change waits until you sign in with its provider, as an address at
+    /// one of its domains, so that it signs nobody out who can't sign in
+    /// again.
+    SignsOut,
 }
 
 /// How many MiB one session snapshot may take until an instance's admins
@@ -1675,6 +1933,8 @@ impl Default for InstanceSettings {
             max_workspaces: DEFAULT_MAX_WORKSPACES,
             snapshots: true,
             max_snapshot_mb: DEFAULT_MAX_SNAPSHOT_MB,
+            sign_in: Vec::new(),
+            self_sign_up: true,
         }
     }
 }
@@ -1699,6 +1959,10 @@ pub struct UpdateInstanceSettingsRequest {
     pub snapshots: Option<bool>,
     /// 1 to [`MAX_SNAPSHOT_MB`].
     pub max_snapshot_mb: Option<u32>,
+    /// Replaces the domains' rules: `[]` for none. One that would sign out
+    /// the admin who saves it is refused ([`SignInYou::SignsOut`]).
+    pub sign_in: Option<Vec<SignInRule>>,
+    pub self_sign_up: Option<bool>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────

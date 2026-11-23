@@ -77,7 +77,15 @@ pub struct UserRow {
     /// When they last exported their data.
     #[serde(deserialize_with = "opt_int", default)]
     pub exported_at: Option<i64>,
+    /// The providers whose accounts sign in to theirs (JSON array), where
+    /// a query asks for them ([`PROVIDERS_COLUMN`]).
+    #[serde(default)]
+    pub providers: Option<String>,
 }
+
+/// The column of the providers linked to the account of the users table
+/// aliased `u`, for [`UserRow::providers`].
+pub const PROVIDERS_COLUMN: &str = "(SELECT json_group_array(DISTINCT i.provider) FROM identities i WHERE i.user_id = u.id) AS providers";
 
 impl UserRow {
     pub fn role(&self) -> InstanceRole {
@@ -90,6 +98,42 @@ impl UserRow {
 
     pub fn is_active(&self) -> bool {
         self.status == "active"
+    }
+
+    /// The primary instance owner's: it keeps every way in whatever the
+    /// sign-in rules say.
+    pub fn is_owner(&self) -> bool {
+        self.role() == InstanceRole::Owner
+    }
+
+    /// All their addresses: the primary one, then those connected to it.
+    pub fn addresses(&self) -> Vec<String> {
+        let mut all = vec![self.email.clone()];
+        all.extend(self.other_emails());
+        all
+    }
+
+    /// What the instance's sign-in rules require of them, where one covers
+    /// a domain of theirs: never of the primary instance owner.
+    pub fn sign_in_required(
+        &self,
+        settings: &fctl_proto::api::InstanceSettings,
+    ) -> Option<fctl_domain::sign_in::Required> {
+        let addresses = self.addresses();
+        let addresses: Vec<&str> = addresses.iter().map(String::as_str).collect();
+        fctl_domain::sign_in::required(&settings.sign_in, &addresses, self.is_owner())
+    }
+
+    /// Whether a sign-in made `how` lets them in under the instance's
+    /// sign-in rules; else what the rules require.
+    pub fn admits(
+        &self,
+        settings: &fctl_proto::api::InstanceSettings,
+        how: &fctl_domain::sign_in::SignedIn,
+    ) -> Result<(), fctl_domain::sign_in::Required> {
+        let addresses = self.addresses();
+        let addresses: Vec<&str> = addresses.iter().map(String::as_str).collect();
+        fctl_domain::sign_in::admits(&settings.sign_in, &addresses, self.is_owner(), how)
     }
 
     pub fn has_password(&self) -> bool {
@@ -179,6 +223,12 @@ impl UserRow {
             last_active_at: self.last_active_at,
             emails: self.other_emails(),
             workspaces: self.workspace_count.max(0) as u32,
+            providers: self
+                .providers
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<Option<String>>>(j).ok())
+                .map(|v| v.into_iter().flatten().collect())
+                .unwrap_or_default(),
         }
     }
 

@@ -7,7 +7,7 @@ use crate::ctx::Ctx;
 use crate::db::{Count, batch, n, os, q, s};
 use crate::error::{AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
-use crate::model::{AllowRow, UserRow, user_columns};
+use crate::model::{AllowRow, PROVIDERS_COLUMN, UserRow, user_columns};
 use fctl_domain::allowlist::AllowPattern;
 use fctl_domain::perm;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
@@ -25,7 +25,7 @@ pub async fn users(ctx: &Ctx) -> AppResult<Response> {
     let rows: Vec<UserRow> = q(
         &ctx.db,
         &format!(
-            "SELECT {} FROM users u ORDER BY u.created_at",
+            "SELECT {}, {PROVIDERS_COLUMN} FROM users u ORDER BY u.created_at",
             user_columns("u")
         ),
         &[],
@@ -340,6 +340,16 @@ pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         return Err(forbidden(
             "Only the primary instance owner can reset an admin's password",
         ));
+    }
+    // A password wouldn't sign them in: their provider's first sign-in
+    // links to their account.
+    if let Some(required) = target.sign_in_required(&ctx.settings()) {
+        return Err(conflict(&format!(
+            "{}, so a password wouldn't sign {} in: they continue with {} on the sign-in page, which links it to their account the first time.",
+            crate::sign_in::says(&required),
+            target.name,
+            crate::sign_in::provider_name(&required.provider)
+        )));
     }
     // Without email the link comes back here, and signs in as them: as
     // much as deleting their account, a stolen session mustn't do it alone.
@@ -1060,7 +1070,23 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         }
         settings.max_snapshot_mb = mb;
     }
+    if let Some(on) = body.self_sign_up {
+        settings.self_sign_up = on;
+    }
+    // No admin signs themselves out who might not sign in again: they
+    // sign in with the provider first, which shows it works.
+    let mut change = None;
+    if let Some(rules) = &body.sign_in {
+        let rules = fctl_domain::sign_in::check_rules(rules, &crate::sign_in::providers(&ctx.cfg))
+            .map_err(crate::error::AppError)?;
+        change = Some(crate::api::sign_in::check(ctx, &settings.sign_in, &rules).await?);
+        settings.sign_in = rules;
+    }
     crate::instance::save(&ctx.db, &settings).await?;
+    // Who hears that their password or passkeys stop signing them in.
+    if let Some(change) = change {
+        crate::api::sign_in::tell(ctx, change, &settings.sign_in);
+    }
     if gravatar_off {
         // The copies go, and turned on again, it looks for everyone anew.
         crate::db::batch(
