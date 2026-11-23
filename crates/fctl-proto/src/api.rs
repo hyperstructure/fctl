@@ -1815,6 +1815,7 @@ pub struct Workspace {
     /// keeps them ([`InstanceSettings::snapshots`]). False from control
     /// planes before snapshots.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub snapshots: bool,
     /// Days a session's snapshot stays after it was saved, 1 to 365: then
     /// it goes, and the session resumes elsewhere from its task and branch.

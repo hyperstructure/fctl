@@ -81,4 +81,18 @@ members_create_workspaces: boolean,
  * says. Lowering it takes nobody out of a workspace: those in more
  * join and create no more until they are in fewer.
  */
-max_workspaces: number, };
+max_workspaces: number, 
+/**
+ * Sessions' snapshots (their conversation and uncommitted work,
+ * encrypted) are kept in the control plane, for the workspaces that
+ * keep them ([`Workspace::snapshots`]), so that a session resumes on
+ * any runner as it was. On by default; off, no workspace saves any,
+ * and those kept go within the hour.
+ */
+snapshots: boolean, 
+/**
+ * The most MiB one snapshot may take: past it, an agent leaves its
+ * conversation's images out, then its uncommitted work, then saves
+ * none. [`DEFAULT_MAX_SNAPSHOT_MB`] by default.
+ */
+max_snapshot_mb: number, };

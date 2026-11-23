@@ -2075,6 +2075,8 @@ function SignInSettings({
     service_account_consent: true,
     members_create_workspaces: true,
     max_workspaces: 5,
+    snapshots: true,
+    max_snapshot_mb: 200,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

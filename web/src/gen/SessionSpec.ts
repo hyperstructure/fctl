@@ -11,6 +11,7 @@ import type { PullRequestRef } from "./PullRequestRef";
 import type { ReviewSpec } from "./ReviewSpec";
 import type { SessionCredentials } from "./SessionCredentials";
 import type { SessionId } from "./SessionId";
+import type { SnapshotSpec } from "./SnapshotSpec";
 import type { TicketsSpec } from "./TicketsSpec";
 import type { UserRef } from "./UserRef";
 
@@ -165,4 +166,14 @@ crew_of?: AutopilotAuthor,
  * hosts leave it out of the agent's configuration, and their agents
  * mint none.
  */
-id_tokens?: IdTokensSpec, };
+id_tokens?: IdTokensSpec, 
+/**
+ * Snapshots of the session (docs/architecture.md#session-snapshots):
+ * its agent saves one as the sandbox stops, and restores the one it
+ * names in a sandbox that doesn't have the conversation, so that the
+ * session resumes on any runner with its conversation and uncommitted
+ * work. Absent where its workspace or instance keeps none, for review
+ * agents, from older control planes, and for hosts that don't announce
+ * [`FEATURE_SNAPSHOTS`]; older agents ignore it.
+ */
+snapshot?: SnapshotSpec, };

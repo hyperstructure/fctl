@@ -96,6 +96,20 @@ own_runners: boolean,
  */
 autopilots: boolean, 
 /**
+ * Its sessions save snapshots as their sandboxes stop (their
+ * conversation and uncommitted work, encrypted), so that a session
+ * resumes on any runner as it was: on by default, where the instance
+ * keeps them ([`InstanceSettings::snapshots`]). False from control
+ * planes before snapshots.
+ */
+snapshots?: boolean, 
+/**
+ * Days a session's snapshot stays after it was saved, 1 to 365: then
+ * it goes, and the session resumes elsewhere from its task and branch.
+ * Absent from control planes before snapshots.
+ */
+snapshot_days?: number, 
+/**
  * Its own autopilot, which works in all its projects: the project it
  * works from, and how it stands. Absent while it has none.
  */
