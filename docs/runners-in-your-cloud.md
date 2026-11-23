@@ -14,16 +14,16 @@ autoscaling groups in the cloud account, and about two hours, half of
 them waiting for builds.
 
 ```text
-the cloud's group             the machine                            fctl
-scales out ───────────────▶ boots from the image
-                            reads the token from the secret store
-                            fctl host install ──────────────────▶ runner aws-i-0a1b… online
-                                                                  sessions start on it
-scales in: picks it ──────▶ the drain watcher sees it
-                            fctl host uninstall --wait ─────────▶ no new sessions here
-                            …turns end; waiting sessions stop      a message resumes them elsewhere
-                            the runner is removed ──────────────▶ gone from the Runners tab
-deletes it ◀─────────────── "go on"
+the group          the machine                     fctl
+scales out ──────▶ boots from the image
+                   reads the token
+                   fctl host install ────────────▶ a runner, online:
+                                                   sessions start
+scales in ───────▶ the watcher hears of it
+                   fctl host uninstall --wait ───▶ no new sessions
+                   turns end, idle sessions stop
+                   the runner goes ──────────────▶ off the Runners tab
+deletes it ◀────── "go on"
 ```
 
 The diagram: a machine the group adds boots from the image, reads the
@@ -112,9 +112,8 @@ machines of their own size, or keep `capacity` lower.
 
 ## 3. Write the machine's scripts
 
-The image needs a handful of files, the same on every cloud. In a
-directory of its own, `runner/` holds them, beside the Packer template
-of step 4.
+The image needs a handful of files, the same on every cloud. They go in
+a directory, `runner/`, beside the Packer template of step 4.
 
 `runner/provision.sh` prepares the image, as root:
 
@@ -717,10 +716,10 @@ autoscaling set-desired-capacity --desired-capacity 1`; Google Cloud:
 `gcloud compute instance-groups managed resize --size=1`; Azure: `az
 vmss scale --new-capacity 1`).
 
-**Check:** within a minute, one of the runners says it drains. Once its
-turns have ended, it leaves the Runners tab, and the cloud deletes the
-machine. A session that ran there says so in its transcript, and a
-message resumes it on another runner.
+**Check:** within a minute or two, one of the runners says it drains.
+Once its turns have ended, it leaves the Runners tab, and the cloud
+deletes the machine. A session that ran there stops once its turn has
+ended, and a message resumes it on another runner.
 
 ## The clouds side by side
 

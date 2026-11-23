@@ -19,13 +19,12 @@ lets create and install apps installs it, and someone runs it on a
 machine that reaches both.
 
 ```text
-Slack                         the bot (Socket Mode)                 fctl
-#web  @fctl Fix the login…  ─▶ who asked: users.info → ada@acme.dev
-                               which project: #web → web       ─▶ POST /projects/web/sessions
-                                                                   Fctl-On-Behalf-Of: ada@acme.dev
-      thread: Started web#12 ◀─ keeps web#12 ↔ the thread
-      Grace replies          ─▶ POST /sessions/…/messages      ─▶ the agent reads it
-      buttons: web#12 asks…  ◀─ webhook: session.question      ◀─ the agent asks something
+Slack                    the bot                     fctl
+@fctl Fix the login… ──▶ who: ada@acme.dev
+in #web                  project: web ─────────────▶ starts web#12 for Ada
+thread: Started web#12 ◀ keeps web#12's thread
+Grace replies ─────────▶ a message, as Grace ──────▶ the agent reads it
+buttons: web#12 asks… ◀─ posts what fctl says ◀───── webhook: a question
 ```
 
 The diagram: a mention in a channel goes to the bot, which looks up who

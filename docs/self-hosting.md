@@ -197,8 +197,8 @@ the instance's container already behind a reverse proxy inside.
 
 | Path | Who calls it from the internet | Without it |
 |---|---|---|
-| `/api/v1/github/webhook` | GitHub, `POST`s signed with `GITHUB_WEBHOOK_SECRET` | Sessions learn of merges and checks hours late, reviews start only when someone asks, and follow-ups and schedules that run on GitHub's events never come |
-| `/api/v1/linear/webhook` | Linear, `POST`s signed with `LINEAR_WEBHOOK_SECRET` | Delegating a ticket in Linear starts nothing |
+| `/api/v1/github/webhook` | GitHub's deliveries, signed with `GITHUB_WEBHOOK_SECRET` | Sessions learn of merges and checks hours late, reviews start only when someone asks, and follow-ups and schedules that run on GitHub's events never come |
+| `/api/v1/linear/webhook` | Linear's deliveries, signed with `LINEAR_WEBHOOK_SECRET` | Delegating a ticket in Linear starts nothing |
 | `/oidc/` | AWS, Google Cloud and Azure, which fetch each workspace's issuer's documents and keys before they take its agents' [identity tokens](identity-tokens.md) | The clouds refuse agents' tokens |
 | `/api/v1/published/` | GitHub's image proxy, which fetches the screenshots agents publish in pull requests | Pull requests show broken images |
 

@@ -17,9 +17,9 @@ your Google Cloud project, or your AWS and Snowflake accounts, does the
 rest, in about an hour.
 
 ```text
-fctl ──webhook, signed──▶ the receiver ──a row──▶ BigQuery
-                              │                  or S3 ──Snowpipe──▶ Snowflake
-                              └─ on session.finished: GET /api/v1/sessions/{id}, for tokens and changed lines
+fctl ──webhook──▶ the receiver ──a row──▶ BigQuery
+                  │                       or S3 ──Snowpipe──▶ Snowflake
+                  └─ session.finished: GET /api/v1/sessions/{id} (stats)
 ```
 
 The diagram: fctl posts each event to the receiver, which checks it's
