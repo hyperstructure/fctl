@@ -22,6 +22,7 @@
 //! | `explore` | looks around the working directory first, as Claude Code does before it changes something: a thought (saying how far it got, `system/thinking_tokens`), then commands, searches and a read (two of them at once) with another thought among them |
 //! | `explore <n>` | looks around that many times over (at most 100), in one run of calls, as agents do in a long stretch of work: more than the newest 400 events, which a session page gets first |
 //! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
+//! | a line that starts with `draft <name>` | creates `<name>` in the working directory and leaves it uncommitted, as an agent part-way through its work does, and changes `README.md` too where there is one |
 //! | `push` | pushes the branch to `origin` with `git push`; a repository without one (the dev instance's projects have no repository) gets a bare one in `~/.fake-github` to stand in for GitHub |
 //! | `watch <seconds>` | watches the pull request's checks in one tool call that lasts that many seconds (at most ten minutes), as agents wait for CI before they end their turn |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
@@ -1458,6 +1459,36 @@ impl Session {
                     &commit,
                     false,
                 );
+            }
+        }
+        // Only at the start of a line: fctl's own messages speak of drafts.
+        if let Some(name) = line_starting(&lower, "draft ")
+            .flatten()
+            .and_then(|r| r.split_whitespace().next().map(str::to_owned))
+        {
+            let name: String = name
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || "._-".contains(*c))
+                .collect();
+            if !name.is_empty() {
+                let body = format!("# {name}\n\nA draft fake-claude hasn't committed yet.\n");
+                let _ = std::fs::write(&name, &body);
+                self.tool(
+                    "Write",
+                    json!({"file_path": name, "content": body}),
+                    &format!("File created successfully at: {name}"),
+                    false,
+                );
+                if let Ok(readme) = std::fs::read_to_string("README.md") {
+                    let changed = format!("{readme}\nSee {name}, a draft.\n");
+                    let _ = std::fs::write("README.md", &changed);
+                    self.tool(
+                        "Edit",
+                        json!({"file_path": "README.md", "old_string": readme, "new_string": changed}),
+                        "The file README.md has been updated.",
+                        false,
+                    );
+                }
             }
         }
         if says(&lower, "push") {
