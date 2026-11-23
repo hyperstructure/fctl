@@ -1837,8 +1837,9 @@ next start or resume; `fctl whoami` shows the address.
 
 The export holds your account, sign-in methods and two-factor sign-in
 (without the authenticator app's secret or the recovery codes), passkeys,
-devices and tokens, Claude connections (without their secrets),
-notification settings and browsers, addresses, workspaces, and from the
+devices and tokens, Claude connections (without their secrets, with
+their plan usage, when Claude last answered each and when it runs out,
+and 30 days of limit pauses and refusals), notification settings and browsers, addresses, workspaces, and from the
 workspaces open to you the projects you are a member of, the sessions you
 started with their transcripts and the sessions you follow, and your
 activity log. An export reads all of it, so the instance allows one a
