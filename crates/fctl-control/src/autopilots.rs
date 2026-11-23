@@ -1240,9 +1240,10 @@ pub async fn owner_moved(env: &Env, db: &D1Database, user_id: &str, now: i64) {
 
 /// After waking it failed once claimed (`why`): what woke it goes back
 /// for a retry, 5, 15 and 60 minutes on, then every hour, as for its
-/// session failing ([`ap::retry_in`]), each in its log. It never pauses for
-/// it: what failed may mend by itself, and people hear of it once
-/// ([`ap::FAILING_AFTER`]).
+/// session failing ([`ap::retry_in`], [`RETRY_AT`]), each in its log. It
+/// never pauses for it: what failed may mend by itself. People hear of it
+/// at the fourth failure in a row and every 24 after, while they go on
+/// ([`ap::tells`]).
 async fn wake_failed(
     env: &Env,
     db: &D1Database,

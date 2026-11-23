@@ -593,9 +593,9 @@ pub fn tells(failures: u32) -> bool {
         .is_some_and(|past| past % FAILING_AGAIN_AFTER == 0)
 }
 
-/// What people hear once its own sessions failed [`FAILING_AFTER`] times
-/// in a row (`failures`), the last because `why`; or (`waking`) fctl
-/// couldn't wake it as often.
+/// What people hear when its own sessions failed `failures` times in a row
+/// ([`tells`]), the last because `why`; or (`waking`) fctl couldn't wake it
+/// as often.
 pub fn failing(failures: u32, why: &str, waking: bool) -> String {
     let why = why.trim().trim_end_matches('.');
     let what = if waking {

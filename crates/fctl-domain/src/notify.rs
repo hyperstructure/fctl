@@ -46,7 +46,8 @@ pub enum Kind {
     AutopilotPaused,
     /// An autopilot's own sessions keep failing, which their failures
     /// don't say: fctl goes on trying every hour, and people hear of it
-    /// once (`fctl_domain::autopilot::FAILING_AFTER`).
+    /// at the fourth failure in a row and each day after
+    /// (`fctl_domain::autopilot::tells`).
     AutopilotFailing,
 }
 
@@ -110,9 +111,10 @@ pub enum Audience {
     /// started while it is on. People hear only what they ask: the
     /// autopilot hears when they finish a turn or fail, and goes on by
     /// itself; a pause on a usage limit continues by itself when the limit
-    /// resets. Should its own sessions keep failing, fctl says so once and
-    /// goes on trying ([`Kind::AutopilotFailing`]); its own session's other
-    /// failures, while the autopilot is paused or off, go unheard.
+    /// resets. Should its own sessions keep failing, fctl says so, and again
+    /// each day they go on, and goes on trying ([`Kind::AutopilotFailing`]);
+    /// its own session's other failures, while the autopilot is paused or
+    /// off, go unheard.
     Autopilot,
 }
 
