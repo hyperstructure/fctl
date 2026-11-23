@@ -111,6 +111,16 @@ pub enum HostCmd {
         /// short.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         agent_as_root: Option<bool>,
+        /// Retire this machine once its runner has run nothing for this
+        /// long (20m, 1h; never: keep it): it drains, runs
+        /// --retire-command, and leaves. For machines of a pool that grows
+        /// and shrinks.
+        #[arg(long, value_name = "DURATION|never", value_parser = retire_arg)]
+        retire_when_idle: Option<RetireAfter>,
+        /// What takes this machine away as it retires, run with `sh -c`:
+        /// an autoscaling group's terminate call, or `systemctl poweroff`.
+        #[arg(long, value_name = "COMMAND")]
+        retire_command: Option<String>,
     },
     /// Run the host service in the foreground (what the service runs).
     Run,
@@ -149,10 +159,20 @@ pub enum HostCmd {
     },
     /// Drain this runner: it takes no new sessions; the ones here carry on,
     /// and a message resumes them here.
+    #[command(after_help = "Examples:
+  fctl host drain                      # no new sessions; the ones here carry on
+  fctl host drain --wait               # until none runs here
+  fctl host drain --timeout 90s        # as a cloud takes the machine: stop what still runs after 90 s")]
     Drain {
         /// Wait until no session runs here.
         #[arg(long)]
         wait: bool,
+        /// Wait at most this long (90s, 10m, 1h), then stop the sessions
+        /// that still run: their agents stop and push their work, and a
+        /// message resumes each on another runner. Stopping takes up to a
+        /// minute more. Implies --wait.
+        #[arg(long, value_name = "DURATION", value_parser = timeout_arg)]
+        timeout: Option<std::time::Duration>,
     },
     /// Undrain this runner: it takes new sessions again.
     Undrain,
@@ -221,6 +241,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             build_image,
             auto_update,
             agent_as_root,
+            retire_when_idle,
+            retire_command,
         } => {
             const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token or --enroll";
             // Docker that refuses this user stops it before anything else.
@@ -270,6 +292,12 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             if let Some(on) = agent_as_root {
                 cfg.agent_as_root = on;
+            }
+            if let Some(RetireAfter(minutes)) = retire_when_idle {
+                cfg.retire_idle_minutes = minutes;
+            }
+            if let Some(c) = retire_command {
+                cfg.retire_command = Some(c.trim().to_owned()).filter(|c| !c.is_empty());
             }
             if let Some(problem) = cfg.image_problems().first() {
                 bail!("{problem}");
@@ -395,6 +423,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 );
             }
             println!("{}", style::dim(&updates_sentence(&cfg)));
+            if let Some(retires) = retire_sentence(&cfg) {
+                println!("{}", style::dim(&retires));
+            }
             // The process driver has no sandboxes, and runs fctl-agent as
             // this machine's user either way.
             if !cfg.agent_as_root && d.needs_linux_agent() {
@@ -519,6 +550,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             println!("image:    {}", cfg.image());
             println!("updates:  {}", updates_line(&cfg));
+            if let Some(retires) = retire_sentence(&cfg) {
+                println!("retires:  {}", style::dim(&retires));
+            }
             println!("agent:    {}", agent_line(&cfg));
             println!("claude:   {}", claude_line(&cfg));
             if let Some(d) = &driver {
@@ -672,7 +706,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             Ok(())
         }
         HostCmd::AutoUpdate { on } => auto_update(on, json).await,
-        HostCmd::Drain { wait } => {
+        HostCmd::Drain { wait, timeout } => {
+            let wait = wait || timeout.is_some();
             let api = runner_api()?;
             let mut d = api.drain_this_runner(true, false).await?;
             if !json {
@@ -688,7 +723,43 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 admin::print_sessions(&d.sessions);
             }
             if wait {
-                d = wait_until_drained(&api, d, json).await?;
+                d = wait_until_drained(&api, d, json, timeout).await?;
+                if !d.sessions.is_empty() {
+                    // Out of time: what still runs stops, and pushes.
+                    if !json {
+                        println!(
+                            "{}",
+                            style::amber(&format!(
+                                "Out of time: stopping {}. {} {} and push{} {} work, and a message resumes {} on another runner.",
+                                if d.sessions.len() == 1 {
+                                    "the session that still runs".to_owned()
+                                } else {
+                                    format!("the {} sessions that still run", d.sessions.len())
+                                },
+                                if d.sessions.len() == 1 {
+                                    "Its agent"
+                                } else {
+                                    "Their agents"
+                                },
+                                if d.sessions.len() == 1 {
+                                    "stops"
+                                } else {
+                                    "stop"
+                                },
+                                if d.sessions.len() == 1 { "es" } else { "" },
+                                if d.sessions.len() == 1 {
+                                    "its"
+                                } else {
+                                    "their"
+                                },
+                                if d.sessions.len() == 1 { "it" } else { "each" },
+                            ))
+                        );
+                    }
+                    let stopping = api.drain_this_runner(true, true).await?;
+                    wait_until_stopped(&api, stopping, json, STOP_AFTER_TIMEOUT).await?;
+                    d = api.this_runner().await?;
+                }
                 if !json {
                     print_autopilots(&d.autopilots, d.runner.drain.is_some());
                 }
@@ -928,7 +999,7 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                     );
                 }
                 let d = api.drain_this_runner(true, false).await?;
-                wait_until_drained(&api, d, json).await?;
+                wait_until_drained(&api, d, json, None).await?;
             } else {
                 let interactive = !json && std::io::stdin().is_terminal();
                 let stop =
@@ -951,7 +1022,7 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                 }
                 let d = api.drain_this_runner(true, true).await?;
                 if online {
-                    wait_until_stopped(&api, d, json).await?;
+                    wait_until_stopped(&api, d, json, std::time::Duration::from_secs(120)).await?;
                 } else {
                     // Nothing reaches its host: stop the sandboxes here.
                     if !json {
@@ -1187,13 +1258,18 @@ fn confirm(question: &str) -> Result<bool> {
     Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
-/// Waits, for two minutes at most, until the sessions this runner was asked
-/// to stop have stopped.
-async fn wait_until_stopped(api: &fctl_client::Api, mut d: RunnerDetail, json: bool) -> Result<()> {
+/// Waits, for `limit` at most, until the sessions this runner was asked to
+/// stop have stopped.
+async fn wait_until_stopped(
+    api: &fctl_client::Api,
+    mut d: RunnerDetail,
+    json: bool,
+    limit: std::time::Duration,
+) -> Result<()> {
     if !json {
         println!("{}", style::dim("Stopping…"));
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + limit;
     while !d.sessions.is_empty() && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         d = api.this_runner().await?;
@@ -1203,14 +1279,16 @@ async fn wait_until_stopped(api: &fctl_client::Api, mut d: RunnerDetail, json: b
             0 => println!("{} No sessions run here.", style::accent("✓")),
             1 => println!(
                 "{}",
-                style::amber(
-                    "A session hadn't stopped after two minutes; uninstalling anyway. Its agent stops on its own once it is idle."
-                )
+                style::amber(&format!(
+                    "A session hadn't stopped after {}; going on anyway. Its agent stops on its own once it is idle.",
+                    duration_words(limit)
+                ))
             ),
             n => println!(
                 "{}",
                 style::amber(&format!(
-                    "{n} sessions hadn't stopped after two minutes; uninstalling anyway. Their agents stop on their own once they are idle."
+                    "{n} sessions hadn't stopped after {}; going on anyway. Their agents stop on their own once they are idle.",
+                    duration_words(limit)
                 ))
             ),
         }
@@ -1534,7 +1612,9 @@ async fn wait_until_drained(
     api: &fctl_client::Api,
     mut d: RunnerDetail,
     json: bool,
+    timeout: Option<std::time::Duration>,
 ) -> Result<RunnerDetail> {
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
     let key = |d: &RunnerDetail| -> Vec<(String, &'static str)> {
         d.sessions
             .iter()
@@ -1544,12 +1624,22 @@ async fn wait_until_drained(
     if !json && !d.sessions.is_empty() {
         println!(
             "{}",
-            style::dim(
-                "Waiting until none runs here (Ctrl-C stops waiting; the runner keeps draining)…"
-            )
+            style::dim(&match timeout {
+                Some(t) => format!(
+                    "Waiting until none runs here, for {} at most (Ctrl-C stops waiting; the runner keeps draining)…",
+                    duration_words(t)
+                ),
+                None => {
+                    "Waiting until none runs here (Ctrl-C stops waiting; the runner keeps draining)…"
+                        .to_owned()
+                }
+            })
         );
     }
     while !d.sessions.is_empty() {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Ok(d);
+        }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         let next = api.this_runner().await?;
         if !json && key(&next) != key(&d) && !next.sessions.is_empty() {
@@ -1571,6 +1661,64 @@ async fn wait_until_drained(
         println!("{} No sessions run here.", style::accent("✓"));
     }
     Ok(d)
+}
+
+/// How long the sessions a drain that ran out of time stops get to stop:
+/// their agents push their work.
+const STOP_AFTER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `--timeout`: `90s`, `10m`, `1h`.
+fn timeout_arg(s: &str) -> std::result::Result<std::time::Duration, String> {
+    let t = s.trim().to_lowercase();
+    let (n, per) = if let Some(n) = t.strip_suffix('s') {
+        (n, 1)
+    } else if let Some(n) = t.strip_suffix('m') {
+        (n, 60)
+    } else if let Some(n) = t.strip_suffix('h') {
+        (n, 3600)
+    } else {
+        return Err(format!("{s:?} needs a unit: 90s, 10m or 1h"));
+    };
+    match n.trim().parse::<u64>() {
+        Ok(n) if n > 0 => Ok(std::time::Duration::from_secs(n * per)),
+        _ => Err(format!("{s:?} isn't a duration: use 90s, 10m or 1h")),
+    }
+}
+
+/// `90 seconds`, `10 minutes`, `1 hour`.
+fn duration_words(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        1 => "1 second".into(),
+        s if s < 60 || s % 60 != 0 => format!("{s} seconds"),
+        60 => "1 minute".into(),
+        s if s % 3600 != 0 => format!("{} minutes", s / 60),
+        3600 => "1 hour".into(),
+        s => format!("{} hours", s / 3600),
+    }
+}
+
+/// `--retire-when-idle`: minutes, or 0 for never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetireAfter(u32);
+
+fn retire_arg(s: &str) -> std::result::Result<RetireAfter, String> {
+    fctl_domain::enrollment::parse_minutes(s).map(|m| RetireAfter(m.unwrap_or(0)))
+}
+
+/// Whether and how this machine retires once idle, in a sentence.
+fn retire_sentence(cfg: &HostConfig) -> Option<String> {
+    let after = cfg.retire_after()?;
+    let minutes =
+        fctl_domain::enrollment::minutes(u32::try_from(after.as_secs() / 60).unwrap_or(u32::MAX));
+    Some(match &cfg.retire_command {
+        Some(c) => format!(
+            "Once its runner has run nothing for {minutes}, this machine drains, runs `{c}` and leaves (retire_idle_minutes)."
+        ),
+        None => format!(
+            "Once its runner has run nothing for {minutes}, this machine drains, leaves and stops its host service (retire_idle_minutes)."
+        ),
+    })
 }
 
 /// `--memory 8g`: MiB, at least 512.
