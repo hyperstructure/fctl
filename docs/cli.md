@@ -301,6 +301,9 @@ fctl workspaces own-runners on -w acme     # your sessions there run only on run
 fctl workspaces own-runners off -w acme    # …or on any of its runners for everyone's sessions too
 
 fctl workspaces members                    # its people, and the invitations nobody answered
+fctl workspaces members --claude           # admins: each member's Claude connection, plan, last answer and when it runs out
+fctl workspaces members --claude --problems   # …only those whose sessions can't run, or whose token runs out within 30 days
+fctl workspaces members --claude --expiring 7d --json   # …only tokens that run out within a week, as JSON
 fctl workspaces invite grace@example.com --admin
 fctl workspaces uninvite grace@example.com
 fctl workspaces role grace@example.com member
@@ -315,6 +318,9 @@ fctl workspaces set --require-two-factor on   # closed to members without a seco
 fctl workspaces set --skip-invites on      # a workspace for one: its setup stops asking for people
 fctl workspaces set --snapshot-days 7      # keep each session's snapshot a week after it stops (30 by default)
 fctl workspaces set --snapshots off        # sessions keep no snapshots: one that resumes elsewhere starts its conversation again
+fctl workspaces set --claude-oversight readiness   # its admins see only whether members' sessions can run (details by default, off for nothing)
+fctl workspaces set --claude-limit-pauses off      # …and not how often members' sessions paused on usage limits
+fctl workspaces set --claude-admin-email each      # its admins get an email for each token that runs out or stops working (weekly by default, or off)
 
 fctl workspaces runners                    # the runners its sessions start on, with their ids
 fctl workspaces add-runner studio-mac      # one of yours runs its sessions too (its name or id)
@@ -352,6 +358,30 @@ and `"unlimited": true` to whoever it doesn't hold). While the instance
 requires two-factor sign-in (`fctl admin set --require-two-factor on`),
 every workspace does, and `fctl workspaces set --require-two-factor off`
 fails.
+
+`fctl workspaces members --claude` shows a workspace's admins what each
+member's sessions there run on, as much of it as they see, never a token,
+its account or the label its person gave it:
+
+```
+$ fctl workspaces members -w acme --claude
+NAME          CLAUDE                     PLAN  ANSWERED  RUNS OUT       LIMIT PAUSES (7D)
+Ada Lovelace  login                      Max   5m ago    -              0
+Grace Hopper  token, set by admin token  Team  2h ago    ~Dec 14 (21d)  6
+Linus Lee     none                       -     -         -              -
+1 person has no Claude connection for Acme: their sessions here can't start.
+1 person's token runs out within 30 days: their sessions here stop then, unless they connect a new one before.
+They connect a new one in Settings → Claude: fctl tells them too.
+1 person's sessions paused on usage limits 5 times or more this week: their plan's limits are short for this work, and a Max or Ultra seat has more.
+```
+
+`~` marks a date fctl counted from when the token was connected, as
+nobody said when `claude setup-token` made it. With `--claude-oversight
+readiness`, the table shows only whether each member's sessions can run,
+when their token runs out and whether they wait for a usage limit to
+reset; with `off`, nothing. The instance's admins choose the most any
+workspace's admins see (`fctl admin set --claude-oversight`), and members
+read what theirs see in `fctl workspaces show`.
 
 A runner its admins add runs everyone's sessions there; one a member adds,
 and one an admin adds with `--personal`, runs only its owner's. With
@@ -1026,8 +1056,15 @@ fctl claude connect              # paste a token from `claude setup-token`: it l
 fctl claude connect --token sk-ant-oat01-…
 fctl claude connect --login      # full sign-in, on one of your runners (Remote Control), until Claude ends it
 fctl claude connect --on-runners # run on the token your runners keep, which you never give to fctl
-fctl claude status               # your connections, their ids, how much of each plan is used, and which runners keep your token
+fctl claude connect --made-at 2026-01-14   # …a token `claude setup-token` made that day: it runs out a year on
+fctl claude status               # your connections, their ids, when Claude last answered each, when a token runs out, how much of each plan is used, and which runners keep your token
 ```
+
+A long-lived token runs out a year after `claude setup-token` made it.
+fctl can't read that day from the token: without `--made-at` it counts the
+year from when you connect it, and says the token runs out *around* then.
+It tells you 30 and 7 days before (by email, where the instance sends
+it), and as soon as Claude refuses the token in sessions.
 
 To keep your token on your runners instead of in fctl, run these on each
 runner, then `fctl claude connect --on-runners` anywhere. Your sessions on
@@ -1631,6 +1668,12 @@ fctl admin set --members-create-workspaces off # only instance admins create wor
 fctl admin set --max-workspaces 50         # each person can be in 50 workspaces (5 by default; any: any number)
 fctl admin set --max-snapshot-mb 500       # sessions' snapshots up to 500 MiB each (200 by default, 2048 at most)
 fctl admin set --snapshots off             # no workspace keeps sessions' snapshots; those kept go within the hour
+fctl admin set --claude-oversight readiness   # the most workspace admins see of members' Claude connections (details by default, or off)
+fctl admin set --claude-limit-pauses off   # workspace admins don't see how often members' sessions paused on usage limits
+fctl admin set --claude-instance-view on   # instance admins see everyone's Claude connection (off by default)
+fctl admin set --claude-refusals 1         # mark a long-lived token ended the first time Claude refuses it (2 sessions by default, at most 5)
+fctl admin claude                          # everyone's Claude connection, with their address, where --claude-instance-view is on
+fctl admin claude --problems               # …only those whose sessions can't run, or whose token runs out within 30 days (--expiring 14d, --json)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them
@@ -1656,6 +1699,7 @@ fctl admin users set ada@acme.dev --email ada.lovelace@acme.dev   # their primar
 fctl admin users set ada@acme.dev --family-name Byron --preferred-name Ada --commit-email 1234+ada@users.noreply.github.com
 fctl admin users set ada@acme.dev --avatar ada.png   # or --avatar none
 echo "$SETUP_TOKEN" | fctl admin users set ada@acme.dev --claude-token - --claude-label "Acme seat"   # or --claude-token none
+echo "$SETUP_TOKEN" | fctl admin users set ada@acme.dev --claude-token - --claude-made-at today   # the day claude setup-token made it: it runs out a year on
 fctl admin users add ada@acme.dev -w acme -w platform:admin -p web:editor -p api:maintainer
 fctl admin users remove ada@acme.dev -p api -w platform
 fctl admin disable ada@acme.dev            # stops their sessions; then
@@ -1667,7 +1711,9 @@ admin API alone, until it expires, someone revokes it, or they stop being
 an active admin. It changes no roles, nor the primary instance owner's
 account, and only the primary instance owner's tokens change admins'.
 `--claude-token -` reads the token from stdin, so that it stays out of
-your shell's history. A new account has no password until someone sets
+your shell's history. Setting the same token again keeps the day it runs
+out; without `--claude-made-at`, a new one runs out around a year after
+it was set. A new account has no password until someone sets
 one: `--password-stdin`, or the link `fctl admin reset-link` makes, which
 works for an hour. Where the instance has Google sign-in and Google hosts
 the address (Google Workspace or Gmail), the person's first Google
