@@ -1231,7 +1231,8 @@ another, and has each grow and shrink with the sessions that wait for it
    - `fctl runners pools` and `fctl runners demand` (`--watch`, `--json`)
      show them; `--cloudwatch` puts `WaitingSessions`, `BusySlots` and
      `WantedRunners` into CloudWatch with the AWS CLI, with the pool's
-     name as the `Pool` dimension, and reads with an enrollment token in
+     name as the `Pool` dimension (its id where the name isn't ASCII,
+     which CloudWatch takes only), and reads with an enrollment token in
      `FCTL_ENROLL_TOKEN` where nobody signs in.
    - `GET /api/v1/metrics` gives Prometheus every workspace's pools, for
      the bearer token in the `FCTL_METRICS_TOKEN` secret
