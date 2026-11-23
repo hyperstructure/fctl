@@ -1202,6 +1202,12 @@ async fn run(
     let (jobs, mut ready) = files::start(api.clone(), session_id.clone());
     let (published_tx, mut published_rx) = mpsc::unbounded_channel::<Published>();
     let (answered_tx, mut answered_rx) = mpsc::unbounded_channel::<Answered>();
+    // A snapshot the agent hands over as it stops, and its upload, which
+    // ends before the run is said to have; and the parts of one fetched
+    // for an agent that restores it.
+    let mut spool: Option<crate::snapshots::Spool> = None;
+    let mut upload: Option<tokio::task::JoinHandle<()>> = None;
+    let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<HostToAgent>();
     // Screenshots and calls under way (`MAX_IN_FLIGHT`).
     let mut in_flight: usize = 0;
     let set_report = |status: SessionStatus, seq: Option<u64>| {
@@ -1604,6 +1610,46 @@ async fn run(
                             call(api.clone(), session_id.clone(), request_id, c, answered_tx.clone());
                         }
                     }
+                    AgentToHost::SnapshotPart { id, n, data, saved } => {
+                        if n == 0 {
+                            if let Some(old) = spool.take() {
+                                old.discard();
+                            }
+                            match crate::snapshots::Spool::start(&ctx.cfg.data_dir(), &session_id, &id) {
+                                Ok(s) => spool = Some(s),
+                                Err(e) => tracing::warn!("{session_id}: spooling its snapshot: {e}"),
+                            }
+                        }
+                        if let Some(mut s) = spool.take_if(|s| s.id == id) {
+                            match s.add(n, &data) {
+                                Err(e) => {
+                                    tracing::warn!("{session_id}: its snapshot: {e}");
+                                    s.discard();
+                                }
+                                Ok(()) => match saved {
+                                    Some(saved) => {
+                                        upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved));
+                                    }
+                                    None => spool = Some(s),
+                                },
+                            }
+                        }
+                    }
+                    AgentToHost::SnapshotWanted { id } => {
+                        let wanted = spec
+                            .as_ref()
+                            .and_then(|s| s.snapshot.as_ref())
+                            .and_then(|s| s.restore.as_ref())
+                            .filter(|r| r.id == id)
+                            .cloned();
+                        match wanted {
+                            Some(r) => crate::snapshots::fetch(api.clone(), session_id.clone(), r, snapshot_tx.clone()),
+                            None => l.send(HostToAgent::SnapshotMissing {
+                                id,
+                                why: "this runner's host doesn't know it: it restarted since the session started here".into(),
+                            }),
+                        }
+                    }
                     AgentToHost::Exited { status, reason } => {
                         set_report(status, None);
                         exited = Some((status, reason));
@@ -1715,6 +1761,10 @@ async fn run(
                     Some(l) => to_agent(l, HostToAgent::Deliver { delivery }, agent_files, &uplink),
                     None => queued.push(HostToAgent::Deliver { delivery }),
                 },
+            },
+            Some(frame) = snapshot_rx.recv() => match &link {
+                Some(l) => l.send(frame),
+                None => queued.push(frame),
             },
             Some((request_id, result)) = published_rx.recv() => {
                 in_flight = in_flight.saturating_sub(1);
@@ -1922,6 +1972,18 @@ async fn run(
 
     // Give the uplink a moment to deliver the agent's last events.
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    // The snapshot the agent saved is the session's before its run ends,
+    // so that a resume elsewhere finds it.
+    if let Some(up) = upload.take()
+        && tokio::time::timeout(crate::snapshots::UPLOAD_LIMIT, up)
+            .await
+            .is_err()
+    {
+        tracing::warn!("{session_id}: its snapshot's upload ran out of time");
+    }
+    if let Some(s) = spool.take() {
+        s.discard();
+    }
     let destroy = stop.map(|(d, _)| d).unwrap_or(false);
     let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
     if let Err(e) = stopped {

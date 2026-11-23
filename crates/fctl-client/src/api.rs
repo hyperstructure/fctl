@@ -929,6 +929,65 @@ impl Api {
         Ok(self.raw(Method::GET, &path, None, None).await?.to_vec())
     }
 
+    /// Uploads part `n` of a snapshot of the session its runner runs,
+    /// as fctl-agent saved it (at most `SNAPSHOT_PART_BYTES`).
+    pub async fn runner_snapshot_put(
+        &self,
+        session: &str,
+        snapshot: &str,
+        n: u32,
+        bytes: Vec<u8>,
+    ) -> Result<Ok> {
+        let path = format!(
+            "/runner/sessions/{}/snapshots/{}/parts/{n}",
+            enc(session),
+            enc(snapshot)
+        );
+        let body = self
+            .raw(
+                Method::PUT,
+                &path,
+                Some(bytes),
+                Some("application/octet-stream"),
+            )
+            .await?;
+        serde_json::from_slice(&body).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    /// Makes a snapshot whose parts are all uploaded the session's, in
+    /// place of the one before.
+    pub async fn runner_snapshot_commit(
+        &self,
+        session: &str,
+        snapshot: &str,
+        commit: &SnapshotCommit,
+    ) -> Result<Ok> {
+        self.post(
+            &format!(
+                "/runner/sessions/{}/snapshots/{}",
+                enc(session),
+                enc(snapshot)
+            ),
+            commit,
+        )
+        .await
+    }
+
+    /// Part `n` of the session's snapshot, for a sandbox that restores it.
+    pub async fn runner_snapshot_part(
+        &self,
+        session: &str,
+        snapshot: &str,
+        n: u32,
+    ) -> Result<Vec<u8>> {
+        let path = format!(
+            "/runner/sessions/{}/snapshots/{}/parts/{n}",
+            enc(session),
+            enc(snapshot)
+        );
+        Ok(self.raw(Method::GET, &path, None, None).await?.to_vec())
+    }
+
     /// An image a session's agent read, which the session keeps for a week
     /// (`kept` in the image's `source`, in the transcript).
     pub async fn kept_image(&self, session: &str, image: &str) -> Result<Vec<u8>> {

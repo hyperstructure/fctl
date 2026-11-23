@@ -196,8 +196,10 @@ impl Daemon {
     pub async fn new(cfg: HostConfig, token: String) -> Result<Self> {
         let data = cfg.data_dir();
         std::fs::create_dir_all(&data)?;
-        // What image builds left behind when the host last stopped.
+        // What image builds left behind when the host last stopped, and
+        // snapshots it was handed and never uploaded.
         let _ = std::fs::remove_dir_all(data.join("builds"));
+        let _ = std::fs::remove_dir_all(data.join("snapshots"));
         let driver = Driver::select(&cfg.driver, &cfg).await?;
         let ctx = Arc::new(HostCtx::new(cfg, driver, token));
         ctx.refresh_facts().await;
@@ -1086,13 +1088,15 @@ impl Daemon {
             allowed_images: images.allowed,
             allowed_builds: images.builds,
             min_free_disk_mb: self.ctx.cfg.min_free_disk_mb(),
-            // Its agents, of its own version, run review agents' sessions
-            // and know agents that triage; it says when its driver becomes
-            // ready or stops being, and takes no session while it isn't.
+            // Its agents, of its own version, run review agents' sessions,
+            // know agents that triage, and save and restore snapshots; it
+            // says when its driver becomes ready or stops being, and takes
+            // no session while it isn't.
             features: vec![
                 fctl_proto::runner::FEATURE_REVIEWS.to_owned(),
                 fctl_proto::runner::FEATURE_TRIAGE.to_owned(),
                 fctl_proto::runner::FEATURE_DRIVERS.to_owned(),
+                fctl_proto::runner::FEATURE_SNAPSHOTS.to_owned(),
             ],
             claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
             auto_update: Some(self.updates.is_some()),
