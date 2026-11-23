@@ -142,6 +142,9 @@ export function consequences(p: G.SignInPreview, provider: string, you?: string)
     lines.push(
       `${people(p.released)} ${p.released === 1 ? "signs in" : "sign in"} as they like again; those who still have a password, with it.`,
     );
+  // Nothing anyone signs in with stops or starts working: the rest is context.
+  if (p.password_count === 0 && p.passkey_count === 0 && p.released === 0)
+    return ["Nobody's way in changes.", ...lines];
   if (p.covered > 0 && p.others > 0)
     lines.push(`${people(p.others)} at other domains ${p.others === 1 ? "signs in" : "sign in"} as before.`);
   if (p.you === "owner")
@@ -152,7 +155,6 @@ export function consequences(p: G.SignInPreview, provider: string, you?: string)
     lines.push(
       `${p.owner.name}, the primary instance owner, keeps their password and passkeys: the way in if ${provider} is down.`,
     );
-  if (lines.length === 0) lines.push("Nobody's way in changes.");
   return lines;
 }
 

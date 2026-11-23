@@ -205,6 +205,11 @@ pub fn consequences(p: &SignInPreview, provider: &str) -> Vec<String> {
             }
         ));
     }
+    // Nothing anyone signs in with stops or starts working: the rest is context.
+    if p.password_count == 0 && p.passkey_count == 0 && p.released == 0 {
+        lines.insert(0, "Nobody's way in changes.".to_owned());
+        return lines;
+    }
     if p.covered > 0 && p.others > 0 {
         lines.push(format!(
             "{} at other domains {} as before.",
@@ -225,9 +230,6 @@ pub fn consequences(p: &SignInPreview, provider: &str) -> Vec<String> {
     if p.email && (p.password_count > 0 || p.passkey_count > 0) {
         lines.push("fctl emails each of them what changes.".to_owned());
     }
-    if lines.is_empty() {
-        lines.push("Nobody's way in changes.".to_owned());
-    }
     lines
 }
 
@@ -237,7 +239,10 @@ fn print_overview(o: &SignInOverview) {
             "{:<12} {}",
             style::bold(&p.name),
             if p.configured {
-                style::accent(&format!("set up · {} linked", people(p.people)))
+                style::accent(&match p.people {
+                    0 => "set up · nobody has linked it yet".to_owned(),
+                    n => format!("set up · {} linked", people(n)),
+                })
             } else {
                 style::dim(&format!("not set up: the deployment sets {}", p.setup))
             }

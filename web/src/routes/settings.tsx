@@ -1535,7 +1535,9 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
                     }`
                   : t.on
                     ? "Not set up: your passkeys are your second factor"
-                    : "Off: your password alone signs you in"}
+                    : me.user.has_password
+                      ? "Off: your password alone signs you in"
+                      : "Off: no code follows your sign-in"}
               </div>
             </div>
             {on ? (
