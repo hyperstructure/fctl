@@ -1456,10 +1456,13 @@ scale-in, and never removes a busy one:
    leaves fctl without going away itself.
 4. Once the command worked, an enrolled runner leaves its workspace
    (`DELETE /api/v1/runner`, as `fctl host uninstall` removes it), the
-   host forgets its token, uninstalls its service, so that nothing starts
-   it again, and stops. A runner a person registered stays, drained.
-   Without `retire_command`, it leaves at once, and whatever ran the host
-   takes the machine away.
+   host forgets its token, notes that the machine retired (`retired` in
+   its data directory), uninstalls its service and stops. Run otherwise,
+   it waits for the machine to go rather than exit, and `fctl host run`
+   on a machine that retired waits too, so that a unit or container that
+   restarts it doesn't make it a runner again: `fctl host install` does.
+   A runner a person registered stays, drained. Without `retire_command`,
+   it leaves at once, and whatever ran the host takes the machine away.
 
 While it retires, the host declines the sessions FleetDO still sends it
 (resumes into the sandboxes it keeps), which then start elsewhere, and

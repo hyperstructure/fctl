@@ -1043,7 +1043,9 @@ impl Daemon {
             tracing::info!("retire_command said: {said}");
         }
         let api = self.runner_api();
-        let marker = retire::marker(&self.ctx.cfg.data_dir());
+        let data_dir = self.ctx.cfg.data_dir();
+        let marker = retire::marker(&data_dir);
+        let command = self.ctx.cfg.retire_command.is_some();
         tokio::spawn(async move {
             if drained.enrolled {
                 match api.remove_this_runner().await {
@@ -1063,8 +1065,22 @@ impl Daemon {
                 );
             }
             retire::unmark(&marker);
+            // Whatever runs the host again finds it retired, and waits.
+            let at = fctl_domain::account::iso8601(expiry::now_ms());
+            if let Err(e) = std::fs::write(retire::retired_marker(&data_dir), &at) {
+                tracing::warn!("saving that this machine retired: {e}");
+            }
             tracing::info!("uninstalling the host service");
-            crate::service::retire();
+            // Stopping the service ends this process, on the signal the
+            // runtime has to be free to take.
+            let _ = tokio::task::spawn_blocking(crate::service::retire).await;
+            // Still here: something else runs the host. One whose machine
+            // goes waits for that rather than exit, so that what restarts it
+            // doesn't; one with no command leaves that to what ran it.
+            if command {
+                tracing::info!("retired: waiting for the machine to go");
+                std::future::pending::<()>().await;
+            }
             std::process::exit(0);
         });
     }

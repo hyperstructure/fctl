@@ -214,6 +214,15 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
     match cmd {
         HostCmd::Run => {
             let cfg = HostConfig::load()?;
+            // A machine that retired waits to be taken away, whatever runs
+            // the host again.
+            if let Some(at) = fctl_host::retire::retired(&cfg.data_dir()) {
+                eprintln!(
+                    "This machine retired at {at} (retire_idle_minutes): the host runs nothing here until `fctl host install` makes it a runner again."
+                );
+                tokio::signal::ctrl_c().await.ok();
+                return Ok(());
+            }
             let token = HostConfig::load_token()?;
             // The service manager may have started it without the group
             // that lets it use Docker, when its user joined that later.
@@ -296,6 +305,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             if let Some(RetireAfter(minutes)) = retire_when_idle {
                 cfg.retire_idle_minutes = minutes;
             }
+            // Installed again, it is a runner again.
+            let _ = std::fs::remove_file(fctl_host::retire::retired_marker(&cfg.data_dir()));
             if let Some(c) = retire_command {
                 cfg.retire_command = Some(c.trim().to_owned()).filter(|c| !c.is_empty());
             }
@@ -1725,10 +1736,10 @@ fn retire_sentence(cfg: &HostConfig) -> Option<String> {
         fctl_domain::enrollment::minutes(u32::try_from(after.as_secs() / 60).unwrap_or(u32::MAX));
     Some(match &cfg.retire_command {
         Some(c) => format!(
-            "Once its runner has run nothing for {minutes}, this machine drains, runs `{c}`, then leaves and uninstalls its host service (retire_idle_minutes)."
+            "Once its runner has run nothing for {minutes}, this machine drains, runs `{c}`, then leaves and runs nothing more until installed again (retire_idle_minutes)."
         ),
         None => format!(
-            "Once its runner has run nothing for {minutes}, this machine drains, leaves and uninstalls its host service (retire_idle_minutes)."
+            "Once its runner has run nothing for {minutes}, this machine drains, leaves and runs nothing more until installed again (retire_idle_minutes)."
         ),
     })
 }
@@ -2112,7 +2123,7 @@ mod tests {
         assert_eq!(
             retire_sentence(&cfg).as_deref(),
             Some(
-                "Once its runner has run nothing for 20 minutes, this machine drains, runs `systemctl poweroff`, then leaves and uninstalls its host service (retire_idle_minutes)."
+                "Once its runner has run nothing for 20 minutes, this machine drains, runs `systemctl poweroff`, then leaves and runs nothing more until installed again (retire_idle_minutes)."
             )
         );
     }

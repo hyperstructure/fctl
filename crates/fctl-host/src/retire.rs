@@ -93,6 +93,21 @@ pub fn unmark(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+/// Where a machine that retired says so, in the host's data directory:
+/// `fctl host run` then waits to be taken away rather than run again,
+/// whatever restarts it, until `fctl host install` makes it a runner
+/// again.
+pub fn retired_marker(data_dir: &Path) -> PathBuf {
+    data_dir.join("retired")
+}
+
+/// When this machine retired, as its marker says, if it did.
+pub fn retired(data_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(retired_marker(data_dir))
+        .ok()
+        .map(|s| s.trim().to_owned())
+}
+
 /// What a retirement that stopped short says, for the log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kept {
@@ -185,6 +200,10 @@ mod tests {
         assert_eq!(marked(&path), Some(d));
         unmark(&path);
         assert_eq!(marked(&path), None);
+        // A machine that retired says so, until installed again.
+        assert_eq!(retired(dir.path()), None);
+        std::fs::write(retired_marker(dir.path()), "2026-11-23T15:00:00Z\n")?;
+        assert_eq!(retired(dir.path()).as_deref(), Some("2026-11-23T15:00:00Z"));
         Ok(())
     }
 
