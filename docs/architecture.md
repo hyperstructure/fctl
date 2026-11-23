@@ -96,6 +96,20 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   [passkey](#passkeys). With [two-factor sign-in](#two-factor-sign-in), a
   code from an authenticator app follows the password. An account has one
   or more [email addresses](#email-addresses), and any of them signs in.
+- **Google links to an account that exists only from its Settings**, in
+  a browser that signed in within 15 minutes: linking by address would
+  let a Google account take over an account someone signs in to. The one
+  exception is an account with no way in at all (no password, passkey or
+  linked identity), as an admin token makes one (`api::provision`):
+  nobody has signed in to it, so its first Google sign-in links Google to
+  it, when the account is active and Google vouches for the address
+  (`fctl_domain::google::vouches_for`: Gmail, or a Workspace account's).
+  One statement checks again that it has no way in as it links
+  (`api::google::link_first`), the audit log records `identity.linked`
+  with `via: first_sign_in`, and fctl emails the account. Any other
+  account the address belongs to sends the person back to the sign-in
+  page, which names how that account signs in (`google_link_required`,
+  `google_link_passkey`, `google_link_other`).
 - **Access is an allowlist.** Admins add exact emails or `*@domain` patterns.
   Signing up requires a matching entry; removing an exact entry disables that
   user. Inviting an address adds its entry, which revoking the invitation

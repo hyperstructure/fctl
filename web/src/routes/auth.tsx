@@ -14,26 +14,12 @@ import type * as G from "@/gen";
 import { ApiFailure, api, emails } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { saveSent } from "@/lib/early-access";
+import { googleError } from "@/lib/google-sign-in";
 import { goTo } from "@/lib/history";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { appPath } from "@/lib/paths";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
-
-const GOOGLE_ERRORS: Record<string, string> = {
-  google_expired: "The Google sign-in took too long. Try again.",
-  google_state: "The Google sign-in could not be verified. Try again.",
-  google_cancelled: "Google sign-in was cancelled.",
-  google_exchange: "Google did not confirm the sign-in. Try again.",
-  google_invalid: "Google returned an invalid sign-in.",
-  google_unverified: "Your Google account's email is not verified.",
-  google_not_authoritative:
-    "Google can't vouch for this address, as it doesn't host it: sign up with the invitation sent to it, or with a Gmail or Google Workspace account.",
-  google_link_required:
-    "An account with this email exists. Sign in with your password, then link Google in Settings.",
-  not_allowed: "This email is not allowed on this instance. Ask an admin for access.",
-  disabled: "Your account is disabled. Ask an admin for access.",
-};
 
 /** sessionStorage: an invitation's token while its address signs in to connect it. */
 const PENDING_INVITE = "fctl:invite";
@@ -278,9 +264,7 @@ export function LoginPage() {
     },
   );
   const passkey = usePasskeySignIn((r) => r.me && signedIn(r.me, search.next, { passkey: true }));
-  const external = search.error
-    ? (GOOGLE_ERRORS[search.error] ?? "The sign-in did not work. Try again.")
-    : null;
+  const external = search.error ? googleError(search.error, instance?.features.email ?? false) : null;
   if (challenge) {
     const copy = challengeCopy(challenge, instance?.name);
     return (

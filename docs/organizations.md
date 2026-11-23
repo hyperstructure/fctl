@@ -70,9 +70,10 @@ fctl workspaces set --base-role editor -w acme # every member of acme starts ses
 People sign in with a password, with passkeys and two-factor codes, or
 with Google where the instance has
 [Google sign-in](self-hosting.md#google-sign-in-optional). fctl doesn't
-sign people in through SAML or another OpenID Connect provider: give
-people whose accounts your directory makes a password with a reset link,
-as below.
+sign people in through SAML or another OpenID Connect provider: people
+whose accounts your directory makes sign in with Google where it hosts
+their addresses, or with a password they choose from a reset link, as
+below.
 
 ## People from your directory
 
@@ -112,10 +113,14 @@ its workflow automation, or a job of yours reads your directory and calls
 them.
 
 - **Signing in.** A new account has no password: its person signs in
-  with Google where the instance has it, or sets one with the link `fctl
+  with Google where the instance has it and Google hosts their address
+  (your Google Workspace, or Gmail), and that first sign-in links Google
+  to their account. Otherwise they set a password with the link `fctl
   admin reset-link ada@acme.dev` makes (`POST
   /api/v1/admin/users/{user}/reset-link`), which fctl emails them where
-  the instance sends [email](self-hosting.md#email-optional).
+  the instance sends [email](self-hosting.md#email-optional). Once an
+  account has a way in, a Google account links to it only from its
+  Settings, as anyone's does.
 - **Leaving.** Disabling an account signs its person out everywhere and
   stops the sessions that run on their subscription. Deleting it then
   works as deleting their own would: the workspaces only they are in go
