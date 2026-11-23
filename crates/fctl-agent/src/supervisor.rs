@@ -3130,12 +3130,12 @@ impl Supervisor {
             s.next += 1;
             Ok(())
         })();
-        if written.is_err() || last {
-            if let Some(mut s) = self.snapshot_in.take() {
-                drop(s.file.take());
-                if let Some(done) = s.done.take() {
-                    let _ = done.send(written.map(|()| s.path.clone()));
-                }
+        if (written.is_err() || last)
+            && let Some(mut s) = self.snapshot_in.take()
+        {
+            drop(s.file.take());
+            if let Some(done) = s.done.take() {
+                let _ = done.send(written.map(|()| s.path.clone()));
             }
         }
     }

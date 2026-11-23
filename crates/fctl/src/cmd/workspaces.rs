@@ -148,7 +148,7 @@ pub enum WorkspacesCmd {
     },
     /// Change a workspace's name, address, avatar, rules or setup (admins).
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites", "autopilots"])),
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites", "autopilots", "snapshots", "snapshot_days"])),
         after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set --color '#2a9d8f'           # a color of its own\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on"
     )]
     Set {
@@ -186,6 +186,16 @@ pub enum WorkspacesCmd {
         /// has.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         autopilots: Option<bool>,
+        /// Whether its sessions save snapshots as their sandboxes stop
+        /// (their conversation and uncommitted work, encrypted), so that a
+        /// session resumes on any runner as it was: on by default; `off`
+        /// deletes those it kept within the hour.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        snapshots: Option<bool>,
+        /// Days a session's snapshot stays after it was saved, 1 to 365
+        /// (30 by default).
+        #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(1..=365))]
+        snapshot_days: Option<u32>,
     },
     /// Use this workspace by default.
     Use {
@@ -716,6 +726,8 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             require_two_factor,
             skip_invites,
             autopilots,
+            snapshots,
+            snapshot_days,
         } => {
             let w = resolve(&api, workspace).await?;
             let mut out = w.clone();
@@ -726,6 +738,8 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 || require_two_factor.is_some()
                 || skip_invites.is_some()
                 || autopilots.is_some()
+                || snapshots.is_some()
+                || snapshot_days.is_some()
             {
                 let (color, hex) = color.as_ref().map(Color::request).unzip();
                 out = api
@@ -740,6 +754,8 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                             require_two_factor,
                             skip_invites,
                             autopilots,
+                            snapshots,
+                            snapshot_days,
                         },
                     )
                     .await?;
