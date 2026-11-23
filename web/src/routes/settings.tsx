@@ -859,7 +859,9 @@ function Claude({ me }: { me: G.Me }) {
                         ? "Kept on your runners · never given to fctl · no Remote Control"
                         : c.kind === "oauth"
                           ? "Full login · Remote Control"
-                          : "Inference only · no Remote Control"}
+                          : c.provisioned
+                            ? "Set by your admins · inference only · no Remote Control"
+                            : "Inference only · no Remote Control"}
                       {planOf(c) && ` · ${planOf(c)}`}
                       {c.status === "invalid" && <span className="text-danger"> · needs reconnecting</span>}
                       {c.status !== "invalid" && c.answered_at
@@ -887,7 +889,12 @@ function Claude({ me }: { me: G.Me }) {
                     <EndedLogin onReconnect={reconnect} />
                   )}
                   {c.status === "invalid" && c.kind === "setup_token" && (
-                    <EndedToken endedAt={c.ended_at} onRunners={c.on_runners} onReconnect={reconnect} />
+                    <EndedToken
+                      endedAt={c.ended_at}
+                      onRunners={c.on_runners}
+                      provisioned={c.provisioned}
+                      onReconnect={reconnect}
+                    />
                   )}
                   {soon(c) && <RunsOutSoon credential={c} onReconnect={() => reconnect("token")} />}
                   {c.on_runners && <OnRunnersDetails />}
@@ -943,9 +950,13 @@ function RunsOutSoon({
         {c.expiry_estimated
           ? "That's a year after you connected it: fctl can't read the date from the token, so it may be sooner. "
           : ""}
-        {past
-          ? "Make a new one with claude setup-token and paste it here: sessions on this one may fail already."
-          : "Make a new one with claude setup-token and paste it here before then, or your sessions stop."}
+        {c.provisioned
+          ? past
+            ? "Your admins set this token: ask them for a new one, or connect one of your own here."
+            : "Your admins set this token, and set the next one: ask them if it doesn't come before then, or connect one of your own here."
+          : past
+            ? "Make a new one with claude setup-token and paste it here: sessions on this one may fail already."
+            : "Make a new one with claude setup-token and paste it here before then, or your sessions stop."}
       </p>
       <Button size="sm" icon={<KeyRound className="size-3.5" />} onClick={onReconnect}>
         Connect a new token

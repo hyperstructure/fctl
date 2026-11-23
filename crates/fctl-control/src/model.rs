@@ -1467,6 +1467,7 @@ impl CredentialRow {
             answered_at: self.answered_at,
             expiry_estimated: self.long_lived() && self.made_at.is_none(),
             ended_at: self.ended_at.filter(|_| self.status != "active"),
+            provisioned: self.provisioned,
         }
     }
 

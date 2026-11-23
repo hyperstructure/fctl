@@ -614,10 +614,13 @@ export function EndedLogin({ onReconnect }: { onReconnect: (way: Way) => void })
 export function EndedToken({
   endedAt,
   onRunners,
+  provisioned,
   onReconnect,
 }: {
   endedAt?: number;
   onRunners?: boolean;
+  /** Their admins set it with an admin token: they set the next one. */
+  provisioned?: boolean;
   onReconnect: (way: Way) => void;
 }) {
   const on = endedAt
@@ -629,7 +632,9 @@ export function EndedToken({
         Claude refused this token{on}, so sessions can't run on it: it was revoked, or its year ran out.{" "}
         {onRunners
           ? "Make a new one with claude setup-token, keep it on your runners with fctl host claude set-token, and use it here again."
-          : "Make a new one with claude setup-token and connect it here."}
+          : provisioned
+            ? "Your admins set this token: ask them for a new one, or make one of your own with claude setup-token and connect it here."
+            : "Make a new one with claude setup-token and connect it here."}
       </p>
       <div className="mt-2.5 flex flex-wrap gap-2">
         <Button

@@ -275,4 +275,16 @@ describe("your Claude connections, as they run out and end", () => {
     );
     expect(page.querySelector('[role="alert"]')).not.toBeNull();
   });
+
+  it("sends people to their admins for the next token an admin token set", () => {
+    const page = claudePage([token({ provisioned: true, expires_at: Date.now() + 5 * day })]);
+    expect(page.textContent).toContain("Set by your admins · inference only");
+    expect(page.textContent).toContain(
+      "Your admins set this token, and set the next one: ask them if it doesn't come before then, or connect one of your own here.",
+    );
+    const ended = claudePage([token({ provisioned: true, status: "invalid", ended_at: Date.now() - day })]);
+    expect(ended.textContent).toContain(
+      "Your admins set this token: ask them for a new one, or make one of your own with claude setup-token and connect it here.",
+    );
+  });
 });

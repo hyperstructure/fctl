@@ -51,4 +51,9 @@ expiry_estimated?: boolean,
  * When fctl found it ended (`status` is `invalid`): Claude refused the
  * token in sessions, or the login in renewing it.
  */
-ended_at?: number, };
+ended_at?: number, 
+/**
+ * An admin token set it (`PUT /api/v1/admin/users/{user}/claude`):
+ * their admins set the next one.
+ */
+provisioned?: boolean, };

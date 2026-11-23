@@ -4926,6 +4926,11 @@ pub struct ClaudeCredentialInfo {
     /// When fctl found it ended (`status` is `invalid`): Claude refused the
     /// token in sessions, or the login in renewing it.
     pub ended_at: Option<Millis>,
+    /// An admin token set it (`PUT /api/v1/admin/users/{user}/claude`):
+    /// their admins set the next one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub provisioned: bool,
 }
 
 /// How much a workspace's admins see of its members' Claude connections,
