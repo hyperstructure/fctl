@@ -453,7 +453,13 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
     case "admin_token.revoked":
       return ["revoked the admin token ", named(d.name, "")];
     case "identity.linked":
-      return ["linked their ", d.provider === "google" ? "Google" : named(d.provider, "other"), " sign-in"];
+      return [
+        "linked their ",
+        d.provider === "google" ? "Google" : named(d.provider, "other"),
+        " sign-in",
+        // An account with no way in yet (an admin token's) takes the first one.
+        d.via === "first_sign_in" ? " as they first signed in" : "",
+      ];
     case "identity.unlinked":
       return ["unlinked a sign-in"];
     case "device.approved":

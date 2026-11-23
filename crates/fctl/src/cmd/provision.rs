@@ -52,8 +52,9 @@ pub enum UsersCmd {
     },
     /// Create someone's account, as a member of the instance whose address
     /// the allowlist admits. They sign in with --password-stdin's
-    /// password, with Google where the instance has it, or with the link
-    /// `fctl admin reset-link` makes. Takes an admin token.
+    /// password, with the link `fctl admin reset-link` makes, or with
+    /// Google where the instance has it and Google hosts their address
+    /// (Google Workspace or Gmail). Takes an admin token.
     #[command(
         after_help = "Examples:\n  FCTL_TOKEN=fctl_adm_… fctl admin users create ada@acme.dev --given-name Ada --family-name Lovelace\n  echo \"$PASSWORD\" | fctl admin users create grace@acme.dev --given-name Grace --family-name Hopper --password-stdin"
     )]
