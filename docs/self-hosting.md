@@ -145,6 +145,7 @@ Docker and Kubernetes secrets do.
 | `FCTL_WEBHOOK_PRIVATE_HOSTS` | none | IP ranges and host names on your network that webhooks may post to ([webhooks to your own network](#webhooks-to-your-own-network)) |
 | `FCTL_WEBHOOK_HTTP` | `0` | `1` lets webhooks post over plain `http://` ([webhooks to your own network](#webhooks-to-your-own-network)) |
 | `FCTL_ADMIN_TOKENS` | `0` | `1` lets instance admins make admin tokens, which create and change people's accounts ([admin tokens](#provision-people-with-admin-tokens)) |
+| `FCTL_METRICS_TOKEN` | none | The bearer token Prometheus scrapes runner pools' demand with at `/api/v1/metrics`; none, no metrics ([runner pools in Prometheus](#runner-pools-in-prometheus)) |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
 | `GITHUB_REVIEW_APP_ID`, `GITHUB_REVIEW_APP_SLUG`, `GITHUB_REVIEW_APP_PRIVATE_KEY` | | [The app review agents post as](#a-review-app-optional) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET` | | [Linear](#connect-linear-optional) |
@@ -1041,7 +1042,41 @@ FCTL_SERVER=https://fctl.acme.dev FCTL_ENROLL_TOKEN=fctl_et_… fctl host instal
 
 The control plane enrolls them, holds the ones that wait for approval and
 removes the ones that go, in its own code and D1, the same with this image
-as on Cloudflare: nothing to set up for it.
+as on Cloudflare: nothing to set up for it. The runners a token enrolls
+are a pool, with the token's labels, which projects choose, and what it
+needs now, which an autoscaler reads
+([Runner pools](architecture.md#runner-pools)).
+
+### Runner pools in Prometheus
+
+Set `FCTL_METRICS_TOKEN` to a long random string (`openssl rand -hex 32`)
+and the server serves every workspace's pools to Prometheus at
+`/api/v1/metrics`, with that token as the bearer token; without it, the
+endpoint answers 404:
+
+```yaml
+scrape_configs:
+  - job_name: fctl
+    metrics_path: /api/v1/metrics
+    scheme: https
+    authorization:
+      credentials_file: /etc/prometheus/fctl-metrics-token
+    static_configs:
+      - targets: [fctl.acme.dev]
+```
+
+Each pool's gauges have the labels `workspace` (its slug), `pool` (its
+enrollment token's name) and `pool_id`: `fctl_pool_runners` by `state`
+(`online`, `draining`, `pending`, `starting`, `offline`),
+`fctl_pool_busy_runners`, `fctl_pool_slots` by `state` (`capacity`,
+`busy`, `free`), `fctl_pool_waiting_sessions`,
+`fctl_pool_oldest_wait_seconds` and `fctl_pool_wanted_runners`, the same
+numbers as `fctl runners demand`. Each workspace's
+`fctl_waiting_sessions` counts its sessions that wait by `reason`, and
+`fctl_unpooled_sessions` those no pool could run. They are counts only,
+with workspaces' slugs and pools' names: give the token to what scrapes
+them alone. On Cloudflare, set it as a secret (`wrangler secret put
+FCTL_METRICS_TOKEN`) to serve the same.
 
 Hosts download their release from `https://fctl.sh/releases` by default; set
 `download_base` in `host.toml` to mirror them elsewhere (`fctl host image

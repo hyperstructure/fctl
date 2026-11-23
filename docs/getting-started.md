@@ -307,6 +307,17 @@ uninstalling. A runner of the workspace keeps no one's Claude token: people
 who run their sessions only on their own runners, or keep their token on
 them, don't run sessions on it.
 
+The runners a token enrolls are a **pool**. Give the token labels (`--labels
+aws,large`), and a project that asks for them (Settings → Runners, or
+`fctl projects set -p ml --runners large`) runs its sessions only on runners
+that have them, which wait for one and say so. A token that removes offline
+runners packs sessions onto its busiest runners with room, so that idle
+machines empty out and can go. What a pool needs now, for an autoscaler,
+comes from `fctl runners demand` (`--json`, `--cloudwatch`), or from `GET
+/api/v1/runner/enroll/demand` with the enrollment token, which KEDA's
+metrics-api scaler reads as it is
+([Runner pools](architecture.md#runner-pools)).
+
 To enroll machines of your own instead, for your sessions alone, make a
 token for **Only my sessions** (any member can; a member's tokens are
 always for their own sessions, and admins choose), or

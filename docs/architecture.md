@@ -1129,6 +1129,100 @@ or as a member's own runners with a token they made for their own sessions
    FleetDO's own removals delete the row only while the runner is still
    offline and D1 hasn't heard from it since.
 
+### Runner pools
+
+The runners an enrollment token enrolled are a pool: an organization keeps
+one pool of large machines for one project and one in another region for
+another, and has each grow and shrink with the sessions that wait for it
+(`fctl_domain::pools`, `crate::pools`,
+[ADR 0093](adr/0093-runner-pools-scale-with-the-sessions-that-wait-for-them.md)).
+
+1. **Labels.** A token has labels (`enrollment_tokens.labels`; `fctl
+   runners enrollment-tokens create "AWS large" --labels aws,large`, or the
+   Runners tab), lowercase letters, digits, `-`, `_`, `.` and `:`, at most
+   16. Every runner it enrolled carries them beside the ones its host sets
+   in `host.toml` (`labels`), in FleetDO's placement and in the runners
+   list (`Runner.labels`, with `Runner.pool` naming its token). FleetDO
+   reads a pool's labels from D1 at each dispatch, never from a host's
+   hello, so that no machine joins a pool it didn't enroll in, and a
+   token's labels changed later (`PATCH
+   /api/v1/workspaces/{id}/enrollment-tokens/{token}`, `fctl runners
+   enrollment-tokens set`) move its runners at once, older hosts' too.
+2. **Projects choose by labels.** A project's `runner_labels` (`fctl
+   projects set --runners gpu`, Settings → Runners) are the labels a
+   runner needs to run its sessions, review agents' too: FleetDO passes
+   them to `fctl_domain::schedule::pick`, which takes only runners with
+   them all, home runners included. Without them, any runner of the
+   workspace runs them, as before pools. A project that would rather run
+   elsewhere than wait sets `runner_fallback_minutes` (`--runner-fallback
+   15m`): a session that has waited that long since it was queued is
+   placed without the labels.
+3. **Waiting says for what.** A session that no runner with its labels
+   takes names the pool that has them (of the workspace's pools with them
+   that run its person's sessions, the one with the fewest other labels,
+   then the oldest: `pools::first_with`), and why: "Waiting for AWS large:
+   a runner is starting" (it has runners that enrolled and never
+   connected), "none of its runners is online", "it has no runners yet",
+   "its runners are busy", "…and it is at its limit of 20 runners". Without
+   such a pool, "Waiting for a runner with the label gpu: none of the ones
+   online has it". With a fallback, it adds when any runner takes it.
+   FleetDO keeps the reason's kind in its queue (`queue.wait`,
+   `Wait::kind`) for demand, and reads the named pools also while no
+   runner is online, so that a pool that scaled to none says it is
+   starting.
+4. **Placement.** A token's placement (`enrollment_tokens.placement`)
+   says how its runners take the sessions that more than one runner could
+   run, once the session's home runner, labels, size and image have
+   narrowed them: `spread`, the least busy first, as on runners in no
+   pool, or `packed`, the busiest that still has room, so that in a pool
+   that grows and shrinks some runners empty out and can go. Runners that
+   spread take a session before runners that pack it
+   (`schedule::placed_before`): a fixed fleet runs what it can before a
+   pool that grows adds machines. A token that removes offline runners
+   packs unless it says otherwise (`pools::default_placement`): its
+   machines come and go.
+5. **Demand.** What a pool needs now (`PoolDemand`): its runners online
+   (taking sessions: approved, not draining, driver ready), busy,
+   draining, waiting for approval, starting (enrolled, never connected)
+   and offline; its slots (capacity, busy, free); the sessions that wait
+   that it could run, by reason, and since when the oldest has; and
+   `wanted`, the runners that would run every session its runners run and
+   every one that waits for it, at the capacity its runners announce,
+   never fewer than its runners that run a session (so that scaling down
+   to it never takes a busy one) and never more than its `max_runners`.
+   FleetDO counts it (`/demand`) from what its runners do, its queue and
+   D1 (`pools::rows`), with `pools::demand`: a waiting session counts
+   towards one pool, of those that could run it the one that may still
+   grow, whose runners said what they give, with the fewest labels it
+   doesn't ask for, then the oldest; sessions that wait for their home
+   runner (`home`), or for their last run to stop, count nowhere until
+   they would start elsewhere. With none of its runners online, a pool
+   answers from the shape its runners announced last
+   (`enrollment_tokens.shape`, `PoolShape`: capacity, sandbox limits,
+   images, labels, review agents, whether they keep their owner's Claude
+   token; FleetDO writes it at each hello), so that an autoscaler starts
+   it from none; a pool none of whose runners ever connected wants one
+   runner while a session with its labels waits, which then says what it
+   gives. Demand is counts only, never sessions, projects or people:
+   - `GET /api/v1/runner/enroll/demand`, with the enrollment token as the
+     bearer token, answers its pool's (KEDA's metrics-api scaler reads it
+     as it is, `valueLocation: wanted`); a revoked or expired token reads
+     nothing.
+   - `GET /api/v1/workspaces/{id}/runners/demand` (`?pool=` for one)
+     answers the pools the caller manages, as for revoking tokens: every
+     one for its admins, and for its service accounts acting for nobody,
+     which read as their keeper; a member's own for them. With them, every
+     session of the workspace that waits, and how many no pool could run.
+   - `fctl runners pools` and `fctl runners demand` (`--watch`, `--json`)
+     show them; `--cloudwatch` puts `WaitingSessions`, `BusySlots` and
+     `WantedRunners` into CloudWatch with the AWS CLI, with the pool's
+     name as the `Pool` dimension, and reads with an enrollment token in
+     `FCTL_ENROLL_TOKEN` where nobody signs in.
+   - `GET /api/v1/metrics` gives Prometheus every workspace's pools, for
+     the bearer token in the `FCTL_METRICS_TOKEN` secret
+     (`pools::prometheus`); without that secret, as on app.fctl.sh, there
+     are no metrics.
+
 ## Data
 
 **D1** (`crates/fctl-control/migrations`) holds relational state: users and
