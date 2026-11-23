@@ -96,20 +96,24 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   [passkey](#passkeys). With [two-factor sign-in](#two-factor-sign-in), a
   code from an authenticator app follows the password. An account has one
   or more [email addresses](#email-addresses), and any of them signs in.
+  An instance's admins can require a provider of the people at some
+  domains ([Sign-in providers and domain rules](#sign-in-providers-and-domain-rules)).
 - **Google links to an account that exists only from its Settings**, in
   a browser that signed in within 15 minutes: linking by address would
-  let a Google account take over an account someone signs in to. The one
-  exception is an account with no way in at all (no password, passkey or
-  linked identity), as an admin token makes one (`api::provision`):
-  nobody has signed in to it, so its first Google sign-in links Google to
-  it, when the account is active and Google vouches for the address
-  (`fctl_domain::google::vouches_for`: Gmail, or a Workspace account's).
-  One statement checks again that it has no way in as it links
-  (`api::google::link_first`), the audit log records `identity.linked`
-  with `via: first_sign_in`, and fctl emails the account. Any other
-  account the address belongs to sends the person back to the sign-in
-  page, which names how that account signs in (`google_link_required`,
-  `google_link_passkey`, `google_link_other`).
+  let a Google account take over an account someone signs in to. There
+  are two exceptions, both where Google vouches for the address
+  (`fctl_domain::google::vouches_for`: Gmail, or a Workspace account's)
+  and the account is active. An account with no way in at all (no
+  password, passkey or linked identity), as an admin token makes one
+  (`api::provision`): nobody has signed in to it, so its first Google
+  sign-in links Google to it. And an account at a domain whose rule makes
+  Google its people's way in, whatever else it has: the rule says Google
+  is authoritative there. One statement checks again as it links
+  (`api::sign_in::link_first`), the audit log records `identity.linked`
+  with `via: first_sign_in` or `sign_in_rule`, and fctl emails the
+  account. Any other account the address belongs to sends the person back
+  to the sign-in page, which names how that account signs in
+  (`google_link_required`, `google_link_passkey`, `google_link_other`).
 - **Access is an allowlist.** Admins add exact emails or `*@domain` patterns.
   Signing up requires a matching entry; removing an exact entry disables that
   user. Inviting an address adds its entry, which revoking the invitation
@@ -301,7 +305,7 @@ can't turn it off (`two_factor::workspace_requires`,
 their whole account closed, not only the workspace; once the instance stops
 requiring it, each workspace's own choice applies again.
 
-Admins require it of everyone (Admin → Settings → Sign-in, or `fctl admin
+Admins require it of everyone (Admin → Sign-in, or `fctl admin
 set --require-two-factor on`): of every account that signs in with a
 password and, once Google sign-ins ask for codes too
 (`--two-factor-google`), of every account. There, a [passkey](#passkeys)
@@ -376,6 +380,58 @@ Adding and removing a passkey go in the audit log, and adding one emails
 the person when email is set up. A passkey that is the account's last way
 in, or the second factor the instance requires, can't be removed until
 another takes its place ([ADR 0023](adr/0023-passkeys-sign-in-on-their-own.md)).
+
+### Sign-in providers and domain rules
+
+Google is a sign-in provider; another OpenID Connect provider would be one
+too. A provider's own module checks what the provider sent (`api::google`:
+the token exchange, the ID token's issuer, audience, expiry and nonce, and
+which address Google vouches for), and hands the rest to `api::sign_in`,
+which knows no provider: the account its identity is linked to
+(`identities`, keyed by provider and subject), the account of the address
+it vouches for, or a new one. Rules, tokens and identities name a provider
+by its id, `google` ([ADR 0097](adr/0097-domains-require-signing-in-with-their-provider.md)).
+
+- **How each sign-in was made.** Every browser session keeps it
+  (`tokens.auth_method`: `password`, `passkey` or a provider's id; and
+  `auth_domain`, for a provider's, the domain of the address it vouched
+  for). A CLI's sign-in takes it from the browser session that approved
+  the device code, and an access token from the sign-in that made it. A
+  sign-in that waits for its second factor keeps it in its challenge.
+  Sign-ins from before fctl kept it have none.
+- **Rules** (`InstanceSettings::sign_in`, Admin → Sign-in, `fctl admin
+  sign-in require`): "acme.com and acme.dev: Google only". A rule covers an
+  account when any of its addresses is at one of its domains, a connected
+  address as much as the primary one (`fctl_domain::sign_in`). A covered
+  account signs in only with the rule's provider, as an address at one of
+  its domains, and with a passkey alone only where the rule allows that:
+  `admits` checks each sign-in as it is made (passwords, passkeys, reset
+  links, invitations, an admin token's password, a provider's account
+  that isn't the organization's, such as a personal Gmail), and every
+  request's token as `auth::authenticate` reads it, so that sign-ins made
+  another way, before the rule too, stop working at once. A browser's is
+  signed out; a CLI's or an access token's request is refused with what to
+  do. Each domain is in one rule at most; an account at domains of two
+  rules gets in with either one's provider.
+- **The way in while the provider is down.** The primary instance owner
+  keeps every way in whatever the rules say. An admin who saves rules that
+  would cover them is refused unless the sign-in they save them with meets
+  them (`SignInYou::SignsOut`), which shows the provider works for them
+  first.
+- **Moving off passwords.** A covered account's first sign-in that meets
+  its rule links the provider's account by address, takes the account's
+  password, its reset links and the sign-ins made another way
+  (`api::sign_in::move_off_password`), and emails the person. Saving a
+  rule emails, in batches of a hundred, everyone whose password or
+  passkeys stop signing them in (`api::sign_in::tell`). Their addresses at
+  the domain stay on their accounts: only an instance admin, or an admin
+  token, removes one. Saving rules that let anyone sign in another way
+  (a domain let go, passkeys let in, another provider) is a sensitive
+  action (`Sensitive::RelaxSignIn`).
+- **Accounts only from the directory.** With `InstanceSettings::self_sign_up`
+  off, a provider's sign-in makes an account only for an address with an
+  allowlist entry of its own (an invitation's, or one an admin allowed):
+  a `*@domain` entry admits the accounts at its domain and makes none.
 
 ### Confirming it's you
 

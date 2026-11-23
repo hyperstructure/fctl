@@ -292,6 +292,30 @@ describe("what admin tokens do, in words", () => {
         ),
       ),
     ).toBe("linked their Google sign-in as they first signed in");
+    expect(
+      said(
+        describeAudit(
+          entry("identity.linked", "usr_ada", { provider: "google", via: "sign_in_rule" }, "Ada"),
+        ),
+      ),
+    ).toBe("linked their Google sign-in as their domain requires");
+  });
+
+  it("says who moved off their password, and which domains sign in with a provider", () => {
+    expect(
+      said(
+        describeAudit(
+          entry("user.password_removed", "usr_ada", { via: "sign_in_rule", provider: "google" }, "Ada"),
+        ),
+      ),
+    ).toBe("moved off their password, as their domain signs in with Google");
+    const rules = [{ domains: ["acme.com", "acme.dev"], provider: "google", passkeys: false }];
+    expect(said(describeAudit(entry("sign_in.rules_changed", undefined, { rules }, "Ada")))).toBe(
+      "required a provider at acme.com and acme.dev",
+    );
+    expect(said(describeAudit(entry("sign_in.rules_changed", undefined, { rules: [] }, "Ada")))).toBe(
+      "stopped requiring a provider at any domain",
+    );
   });
 
   it("names the admin tokens admins make and revoke", () => {

@@ -70,8 +70,10 @@ const login = createRoute({
     next: str(s.next),
     error: str(s.error),
     deleted: flag(s.deleted),
-    // A Google sign-in an account's domain refused: the domains it signs in as (api::sign_in::wrong_account).
+    // A Google sign-in an account's domain refused: the domains it signs in as, and with which provider
+    // (api::sign_in::wrong_account).
     ...(str(s.domains) ? { domains: str(s.domains) } : {}),
+    ...(str(s.provider) ? { provider: str(s.provider) } : {}),
   }),
   beforeLoad: async () => {
     const info = await instance();

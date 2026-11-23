@@ -1631,12 +1631,27 @@ fctl admin set --members-create-workspaces off # only instance admins create wor
 fctl admin set --max-workspaces 50         # each person can be in 50 workspaces (5 by default; any: any number)
 fctl admin set --max-snapshot-mb 500       # sessions' snapshots up to 500 MiB each (200 by default, 2048 at most)
 fctl admin set --snapshots off             # no workspace keeps sessions' snapshots; those kept go within the hour
+fctl admin set --self-sign-up off          # signing in makes no account: only invitations, allowed addresses and admin tokens do
+fctl admin sign-in                         # the providers, the domains that require one and whom each covers
+fctl admin sign-in require acme.com acme.dev   # their people sign in with Google alone: says whom it concerns, then asks
+fctl admin sign-in require acme.com --passkeys --yes   # passkeys alone sign them in too; without asking
+fctl admin sign-in unrequire acme.dev      # its people sign in as they like again
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them
 fctl admin tokens create "Okta provisioning" --days 365   # prints it once
 fctl admin tokens revoke "Okta provisioning"
 ```
+
+`fctl admin sign-in require` prints what the change does before it
+asks, on stderr, so that `--json` leaves stdout to how people sign in
+once it's saved: whose passwords and passkeys stop working, who signs in
+with the provider already, and who keeps a way in while it is down (the
+primary instance owner). It saves nothing that would sign you out: sign
+in with the provider first (`fctl login`, then continue with Google as
+your address there). A CLI whose sign-in a domain's rule doesn't meet
+says so, and signs in again with `fctl login`
+([Requiring Google for your domains](self-hosting.md#requiring-google-for-your-domains)).
 
 ### Provisioning people with an admin token
 

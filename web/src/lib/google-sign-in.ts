@@ -33,11 +33,13 @@ const GOOGLE_ERRORS: Record<string, string> = {
  * sends email, so Forgot? sends a link to choose a password. `domains`: for an account whose domain signs
  * in with Google, the domains of its addresses that do (`?domains=acme.com,acme.dev`).
  */
-export function googleError(code: string, email: boolean, domains?: string): string {
+export function googleError(code: string, email: boolean, domains?: string, provider = "Google"): string {
   if (code === "google_wrong_account") {
     // Their own Gmail, say, where their organization's domain signs in with its Google Workspace.
     const list = (domains ?? "").split(",").filter(Boolean);
     const at = list.length > 0 ? domainsWords(list, "or") : "your organization's";
+    if (provider !== "Google")
+      return `Your account signs in with ${provider} as your ${at} address, not with Google. Continue with ${provider} instead.`;
     return `Your account signs in with Google as your ${at} address. Choose that Google account when Google asks: the one you chose isn't one.`;
   }
   if (code === "google_not_authoritative") {

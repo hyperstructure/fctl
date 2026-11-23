@@ -432,7 +432,12 @@ async fn first_sign_in(
         ctx,
         &user,
         &format!("A {name} account was linked to your account"),
-        if by_rule && !user.is_owner() {
+        if by_rule && user.is_owner() {
+            format!(
+                "You signed in to your {instance} account ({}) with the {name} account {email}: it signs you in from now on, as {instance}'s admins require for your address. As the primary instance owner, you keep your password and passkeys too: the way in while {name} is down.\n\nIf it wasn't you, check your {name} account now.",
+                user.email,
+            )
+        } else if by_rule {
             format!(
                 "You signed in to your {instance} account ({}) with the {name} account {email}: it signs you in from now on, as {instance}'s admins require for your address.{}\n\nIf it wasn't you, tell an admin of {instance} now.",
                 user.email,

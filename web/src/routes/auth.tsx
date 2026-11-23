@@ -231,8 +231,10 @@ export function LoginPage() {
     },
   );
   const passkey = usePasskeySignIn((r) => r.me && signedIn(r.me, search.next, { passkey: true }));
+  // The provider the account's domain signs in with, where Google came back refused for it.
+  const wanted = instance?.sign_in?.providers.find((p) => p.id === search.provider)?.name;
   const external = search.error
-    ? googleError(search.error, instance?.features.email ?? false, search.domains)
+    ? googleError(search.error, instance?.features.email ?? false, search.domains, wanted)
     : null;
   // Accounts only from the directory: nobody makes one by signing in.
   const closed = instance?.sign_in?.self_sign_up === false;

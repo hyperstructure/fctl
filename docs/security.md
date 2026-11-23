@@ -111,6 +111,21 @@ owner and purpose), so a value copied between rows does not decrypt.
   that has one, so a stolen session can't add a way in, even with the
   password, and emails the person.
   Where two-factor is required, a passkey also counts as the second factor.
+- **A domain's provider.** Where an instance's admins require one for a
+  domain (Admin → Sign-in, `fctl admin sign-in require`; Google today),
+  the accounts with an address there sign in only with that provider, as
+  an address there that it vouches for: Google only where it hosts the
+  address (a Google Workspace account's, never a personal account's that
+  shows it). Each browser session keeps how it was made, and a CLI's and
+  an access token's take it from the sign-in that made them, so that every
+  request checks it: passwords, passkeys alone (unless the admins allow
+  them), reset links and sign-ins made before the rule stop working at
+  once. A covered account's first sign-in with the provider takes its
+  password, and its people can't disconnect an address there. The
+  primary instance owner keeps their password and passkeys, the way in
+  while the provider is down; an admin can't save a rule their own
+  sign-in doesn't meet, and letting a domain go, or passkeys in, is a
+  sensitive action.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
