@@ -36,6 +36,11 @@ pub struct Slot<'a> {
     /// a runner takes no session, not even a resume into the sandbox it
     /// has, as if it were offline.
     pub unready: Option<Unready<'a>>,
+    /// Its pool packs sessions (`fctl_proto::api::Placement::Packed`):
+    /// among the runners that could take a session, it takes it when it is
+    /// the busiest with room, and only once no runner that spreads them
+    /// can ([`pick`]).
+    pub packed: bool,
 }
 
 /// Why a runner's driver can't start sandboxes now.
@@ -80,10 +85,13 @@ pub struct Home<'a> {
 /// Why no runner takes a session now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wait {
-    /// No runner with the labels it needs is online.
+    /// No runner is online.
     NoRunner,
     /// Runners are online, but none of them runs its workspace's sessions.
     Workspace,
+    /// Runners of its workspace are online, but none has every label its
+    /// project asks for (`ProjectSettings::runner_labels`).
+    Labels { labels: Vec<String> },
     /// The runners that could take it run as many sessions as they may.
     Busy,
     /// The runner that keeps its sandbox runs as many sessions as it may.
@@ -116,6 +124,25 @@ pub enum Wait {
 }
 
 impl Wait {
+    /// Why, in a word, as demand counts sessions that wait
+    /// (`fctl_proto::api::PoolWaiting::reasons`) and the queue keeps it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::NoRunner => "no_runner",
+            Self::Workspace => "workspace",
+            Self::Labels { .. } => "labels",
+            Self::Busy => "busy",
+            Self::Home { .. } => "home",
+            Self::Draining => "draining",
+            Self::LowDisk { .. } => "low_disk",
+            Self::TooBig { .. } | Self::NoneGivesBoth { .. } => "too_big",
+            Self::Image { .. } => "image",
+            Self::Build { .. } => "build",
+            Self::Reviews => "reviews",
+            Self::Driver { .. } => "driver",
+        }
+    }
+
     /// What the queued session says.
     pub fn reason(&self) -> String {
         match self {
@@ -123,6 +150,11 @@ impl Wait {
             Self::Workspace => {
                 "Waiting for a runner: none of this workspace's runners is online".into()
             }
+            Self::Labels { labels } => format!(
+                "Waiting for a runner with {}: none of the ones online has {}",
+                crate::pools::labels_words(labels),
+                if labels.len() == 1 { "it" } else { "them all" }
+            ),
             Self::Home { name } => format!("Waiting for {name}, which has this session's sandbox"),
             Self::Draining => "Waiting for a runner: the ones online are draining".into(),
             Self::LowDisk { draining: false } => {
@@ -198,11 +230,13 @@ fn parts(cpus: Option<u32>, memory_mb: Option<u32>, memory_suffix: &str) -> Stri
         .join(" and ")
 }
 
-/// The least loaded online runner with a free slot that has every required
-/// label, runs or builds the image the session wants, gives a sandbox the
-/// size it wants, can start sandboxes now (its driver is ready) and, for a
-/// review agent's session (`review`), runs review agents. Ties go to the
-/// runner listed first.
+/// The online runner with a free slot that has every required label, runs
+/// or builds the image the session wants, gives a sandbox the size it
+/// wants, can start sandboxes now (its driver is ready) and, for a review
+/// agent's session (`review`), runs review agents: of those, the least
+/// loaded runner that spreads sessions, else the busiest one that packs
+/// them ([`Slot::packed`], [`placed_before`]). Ties go to the runner listed
+/// first.
 ///
 /// A session's `home` comes first when it is online and could take it, also
 /// while it drains or is low on disk: with a free slot it gets the session,
@@ -218,17 +252,22 @@ pub fn pick<'a>(
     home: Option<Home<'_>>,
     review: bool,
 ) -> Result<&'a Slot<'a>, Wait> {
-    let online: Vec<&Slot> = slots
-        .iter()
-        .filter(|s| s.online && s.enabled)
-        .filter(|s| required_labels.iter().all(|l| s.labels.contains(l)))
-        .collect();
+    let online: Vec<&Slot> = slots.iter().filter(|s| s.online && s.enabled).collect();
     if online.is_empty() {
         return Err(Wait::NoRunner);
     }
     let online: Vec<&Slot> = online.into_iter().filter(|s| s.serves).collect();
     if online.is_empty() {
         return Err(Wait::Workspace);
+    }
+    let online: Vec<&Slot> = online
+        .into_iter()
+        .filter(|s| has_labels(s, required_labels))
+        .collect();
+    if online.is_empty() {
+        return Err(Wait::Labels {
+            labels: required_labels.to_vec(),
+        });
     }
     let online: Vec<&Slot> = online
         .into_iter()
@@ -309,26 +348,54 @@ pub fn pick<'a>(
     ready
         .into_iter()
         .filter(|s| s.active < s.capacity)
-        .min_by(|a, b| {
-            // Compare active/capacity without floats: a.active * b.cap vs b.active * a.cap.
-            let la = a.active as u64 * b.capacity.max(1) as u64;
-            let lb = b.active as u64 * a.capacity.max(1) as u64;
-            la.cmp(&lb)
-        })
+        .min_by(|a, b| placed_before(a, b))
         .ok_or(Wait::Busy)
 }
 
+/// Which of two runners that could both take a session takes it first: one
+/// that spreads sessions before one that packs them, so that a fixed fleet
+/// runs what it can before a pool that grows adds machines; of two that
+/// spread, the less loaded; of two that pack, the busier, so that its
+/// other runners empty out and can go. Load is active sessions over
+/// capacity.
+pub fn placed_before(a: &Slot<'_>, b: &Slot<'_>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.packed, b.packed) {
+        (false, true) => Ordering::Less,
+        (true, false) => Ordering::Greater,
+        (packed, _) => {
+            // active/capacity without floats: a.active * b.cap vs b.active * a.cap.
+            let la = u64::from(a.active) * u64::from(b.capacity.max(1));
+            let lb = u64::from(b.active) * u64::from(a.capacity.max(1));
+            if packed { lb.cmp(&la) } else { la.cmp(&lb) }
+        }
+    }
+}
+
+/// Whether `slot` has every one of `labels`.
+pub fn has_labels(slot: &Slot<'_>, labels: &[String]) -> bool {
+    labels.iter().all(|l| slot.labels.contains(l))
+}
+
 /// Whether `slot` could run a session that wants `want` and `image` (a
-/// review agent's: `review`) now, its free slots aside, as [`pick`]
-/// judges it: online, running the session's workspace's sessions for its
-/// person, its image and a sandbox its size, with its driver ready. As the
-/// runner that keeps the session's sandbox (`home`), it takes the session
-/// back even while it drains or is low on disk; another runner takes it
-/// only while it does neither.
-pub fn could_run(slot: &Slot<'_>, want: Want, image: &ImageWant, review: bool, home: bool) -> bool {
+/// review agent's: `review`) and needs `labels` now, its free slots aside,
+/// as [`pick`] judges it: online, running the session's workspace's
+/// sessions for its person, with the labels, its image and a sandbox its
+/// size, with its driver ready. As the runner that keeps the session's
+/// sandbox (`home`), it takes the session back even while it drains or is
+/// low on disk; another runner takes it only while it does neither.
+pub fn could_run(
+    slot: &Slot<'_>,
+    labels: &[String],
+    want: Want,
+    image: &ImageWant,
+    review: bool,
+    home: bool,
+) -> bool {
     slot.online
         && slot.enabled
         && slot.serves
+        && has_labels(slot, labels)
         && (!review || slot.reviews)
         && slot.images.takes(image)
         && slot.sandbox.is_none_or(|l| want.fits(&l))
@@ -527,6 +594,7 @@ mod tests {
             images: HostImages::default(),
             reviews: false,
             unready: None,
+            packed: false,
         }
     }
 
@@ -601,6 +669,137 @@ mod tests {
         assert_eq!(
             pick(&slots[3..], &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Err(Wait::Busy)
+        );
+    }
+
+    #[test]
+    fn a_project_that_asks_for_labels_waits_for_a_runner_with_them_all() {
+        let none: Vec<String> = vec![];
+        let gpu = vec!["gpu".to_string()];
+        let gpu_large = vec!["gpu".to_string(), "large".to_string()];
+        let slots = vec![
+            slot("plain", 4, 0, &none),
+            slot("gpu-small", 4, 3, &gpu),
+            Slot {
+                online: false,
+                ..slot("gpu-large", 4, 0, &gpu_large)
+            },
+        ];
+        let any = Want::default();
+        // Only the runner with the label, busier as it is.
+        assert_eq!(
+            pick(&slots, &gpu, any, &ImageWant::Default, None, false).map(|s| s.id),
+            Ok("gpu-small")
+        );
+        // Every label: the one that has both is offline.
+        let wait = pick(&slots, &gpu_large, any, &ImageWant::Default, None, false)
+            .map(|s| s.id)
+            .err();
+        assert_eq!(
+            wait,
+            Some(Wait::Labels {
+                labels: gpu_large.clone()
+            })
+        );
+        assert_eq!(
+            wait.map(|w| (w.kind(), w.reason())),
+            Some((
+                "labels",
+                "Waiting for a runner with the labels gpu and large: none of the ones online has them all".into()
+            ))
+        );
+        assert_eq!(
+            Wait::Labels {
+                labels: gpu.clone()
+            }
+            .reason(),
+            "Waiting for a runner with the label gpu: none of the ones online has it"
+        );
+        // A home without the labels doesn't take it back.
+        assert_eq!(
+            pick(
+                &slots,
+                &gpu,
+                any,
+                &ImageWant::Default,
+                Some(Home {
+                    id: "plain",
+                    name: "plain",
+                    wait: true
+                }),
+                false
+            )
+            .map(|s| s.id),
+            Ok("gpu-small")
+        );
+        assert!(could_run(
+            &slots[1],
+            &gpu,
+            any,
+            &ImageWant::Default,
+            false,
+            false
+        ));
+        assert!(!could_run(
+            &slots[0],
+            &gpu,
+            any,
+            &ImageWant::Default,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn packed_pools_fill_their_busiest_runner_after_the_runners_that_spread() {
+        let none: Vec<String> = vec![];
+        let packed = |id, capacity, active| Slot {
+            packed: true,
+            ..slot(id, capacity, active, &none)
+        };
+        let any = Want::default();
+        let pick_one = |slots: &[Slot]| {
+            pick(slots, &[], any, &ImageWant::Default, None, false)
+                .map(|s| s.id.to_owned())
+                .ok()
+        };
+        // The busiest with room, not the emptiest.
+        let pool = [packed("a", 4, 1), packed("b", 4, 3), packed("c", 4, 0)];
+        assert_eq!(pick_one(&pool).as_deref(), Some("b"));
+        // Full ones are passed over.
+        let pool = [packed("a", 4, 1), packed("b", 4, 4), packed("c", 4, 0)];
+        assert_eq!(pick_one(&pool).as_deref(), Some("a"));
+        // Busier by share of capacity: 3 of 8 is less than 2 of 4.
+        let pool = [packed("big", 8, 3), packed("small", 4, 2)];
+        assert_eq!(pick_one(&pool).as_deref(), Some("small"));
+        // An empty pool takes it on the first runner listed.
+        let pool = [packed("a", 4, 0), packed("b", 4, 0)];
+        assert_eq!(pick_one(&pool).as_deref(), Some("a"));
+        // Runners that spread take it first, the least loaded of them.
+        let mixed = [
+            packed("pool", 4, 3),
+            slot("fixed-busy", 4, 3, &none),
+            slot("fixed", 4, 1, &none),
+        ];
+        assert_eq!(pick_one(&mixed).as_deref(), Some("fixed"));
+        let mixed = [
+            packed("pool", 4, 3),
+            slot("fixed", 4, 4, &none),
+            packed("pool-2", 4, 1),
+        ];
+        assert_eq!(pick_one(&mixed).as_deref(), Some("pool"));
+        // A resume still goes back to its sandbox, whatever the placement.
+        assert_eq!(
+            pick(
+                &mixed,
+                &[],
+                any,
+                &ImageWant::Default,
+                home("pool-2", true),
+                false
+            )
+            .map(|s| s.id),
+            Ok("pool-2")
         );
     }
 
@@ -1018,8 +1217,16 @@ mod tests {
         ];
         let want = memory(8192);
         for (i, (s, image, review, as_home, as_other)) in cases.into_iter().enumerate() {
-            assert_eq!(could_run(&s, want, image, review, true), as_home, "{i}");
-            assert_eq!(could_run(&s, want, image, review, false), as_other, "{i}");
+            assert_eq!(
+                could_run(&s, &[], want, image, review, true),
+                as_home,
+                "{i}"
+            );
+            assert_eq!(
+                could_run(&s, &[], want, image, review, false),
+                as_other,
+                "{i}"
+            );
             // As pick has it, with a free slot and without.
             for active in [0, 2] {
                 let slots = [Slot {

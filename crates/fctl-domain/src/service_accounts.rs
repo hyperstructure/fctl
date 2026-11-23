@@ -143,6 +143,16 @@ pub fn allows(acting_for: bool, method: &str, segs: &[&str]) -> Result<()> {
     ) {
         return Ok(());
     }
+    // What its workspace's runner pools need, for whatever scales them:
+    // counts, without sessions or people.
+    if !acting_for
+        && matches!(
+            (method, segs),
+            ("GET", ["workspaces", _, "runners", "demand"])
+        )
+    {
+        return Ok(());
+    }
     // Live connections check their token again as they stay open, which a
     // service account's isn't: its sessions' events come from
     // `GET /sessions/{id}/events`, and webhooks post what happens.
@@ -403,12 +413,17 @@ mod tests {
             ("GET", "service-account"),
             ("GET", "service-accounts/sva_1/people"),
             ("POST", "schedules/sch_1/runs"),
+            // What its runner pools need, for whatever scales them.
+            ("GET", "workspaces/acme/runners/demand"),
         ] {
             assert!(
                 allows(false, method, &segs(path)).is_ok(),
                 "{method} {path}"
             );
         }
+        // Not acting for someone, nor anything else of its runners.
+        assert!(allows(true, "GET", &segs("workspaces/acme/runners/demand")).is_err());
+        assert!(allows(false, "GET", &segs("workspaces/acme/runners")).is_err());
         for (method, path) in [
             ("POST", "projects/web/sessions"),
             ("POST", "sessions/ses_1/messages"),

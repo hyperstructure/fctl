@@ -32,6 +32,7 @@ const VARS = [
   "FCTL_WEBHOOK_HTTP",
   "FCTL_WEBHOOK_PRIVATE_HOSTS",
   "FCTL_ADMIN_TOKENS",
+  "FCTL_METRICS_TOKEN",
 ];
 
 const MASTER_KEY = /^[A-Za-z0-9+/]{43}=$/;

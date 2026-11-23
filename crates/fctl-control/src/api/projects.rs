@@ -160,6 +160,13 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
             ),
         ));
     }
+    s.runner_labels = fctl_domain::pools::check_labels("settings.runner_labels", &s.runner_labels)
+        .map_err(AppError)?;
+    s.runner_fallback_minutes = fctl_domain::pools::check_fallback(
+        "settings.runner_fallback_minutes",
+        s.runner_fallback_minutes,
+    )
+    .map_err(AppError)?;
     let mut env = std::collections::BTreeMap::new();
     for (k, v) in &s.env {
         let k = validate::env_name("settings.env", k)?;

@@ -1502,6 +1502,8 @@ fctl runners enrollment-tokens create "My cluster" -w acme --personal --remove-o
 fctl runners enrollment-tokens revoke "Build fleet" -w acme   # it enrolls no more; its runners stay
 ```
 
+Its runners are a pool, with labels and a placement: [Runner pools](#runner-pools).
+
 `create` prints the token once, on stdout. Without `--expires` it expires
 in 90 days (`1h` to `1y`, or `never`); without `--max-runners`, it enrolls
 any number of runners, and with it, that many at once: removed and
@@ -1535,6 +1537,46 @@ destroys do without uninstalling. Only time the control plane is up counts,
 so a deploy or an outage of its own removes none, but a runner that loses
 its network for longer is gone, and enrolls again: give a fleet whose
 machines stay up `15m` or more.
+
+### Runner pools
+
+The runners a token enrolls are a pool: they carry its labels, which
+projects choose them by, and take sessions as its placement says
+([Runner pools](architecture.md#runner-pools)):
+
+```sh
+fctl runners enrollment-tokens create "AWS large" -w acme --labels aws,large --max-runners 20 --remove-offline-after 5m
+fctl runners enrollment-tokens set "AWS large" -w acme --placement spread   # or packed; its runners follow at once
+fctl runners enrollment-tokens set "AWS large" -w acme --labels aws,xl --max-runners none
+fctl projects set -p ml --runners aws,large              # its sessions wait for a runner with both
+fctl projects set -p ml --runner-fallback 15m            # or run on any runner after 15 minutes (never: wait)
+fctl runners pools -w acme                               # each pool, with what it needs now
+fctl runners demand -w acme --pool "AWS large"           # in detail; --watch keeps it live
+fctl runners demand -w acme --pool "AWS large" --json    # what KEDA's metrics-api scaler reads (valueLocation: wanted)
+FCTL_SERVER=https://app.fctl.sh FCTL_ENROLL_TOKEN=fctl_et_… fctl runners demand --cloudwatch   # the token's pool, without signing in
+```
+
+`--placement packed` (the default for a token with
+`--remove-offline-after`) gives a session to the busiest runner that
+still has room, so that the others empty out and an autoscaler can take
+them away; `spread` gives it to the least busy. `--labels ""` takes a
+pool's labels away, and `fctl projects set --runners ""` a project's. A
+project's sessions run only on runners with all its labels: a pool's, or
+ones a host sets in its `host.toml` (`labels = ["gpu"]`, lowercase). One
+that waits says which pool it waits for and why.
+
+`fctl runners demand` shows each pool's runners (online, busy, starting,
+draining, waiting for approval, offline), its slots, the sessions that
+wait that it could run, by reason, and how many runners would run them
+all (`wanted`): never fewer than its runners that run a session, nor more
+than its `--max-runners`. With no runner online, it counts with what its
+runners said last, so that an autoscaler starts a pool from none.
+`--cloudwatch` puts `WaitingSessions`, `BusySlots` and `WantedRunners`
+into CloudWatch with the AWS CLI (`--namespace`, `fctl` by default), with
+the pool's name as the `Pool` dimension (its id where the name isn't
+ASCII, which CloudWatch takes only): once, or every minute with
+`--watch` (`--every`). Admins see every pool of the workspace, members
+their own; a service account reads them too.
 
 ## Admin
 
