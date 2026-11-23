@@ -3956,7 +3956,10 @@ impl SessionObject {
             }
             // Asked once the turn ended, whose end Linear heard of; an
             // autopilot's asks are its own business.
-            notify::Kind::Asking | notify::Kind::Autopilot | notify::Kind::AutopilotPaused => {}
+            notify::Kind::Asking
+            | notify::Kind::Autopilot
+            | notify::Kind::AutopilotPaused
+            | notify::Kind::AutopilotFailing => {}
             notify::Kind::Paused | notify::Kind::Failed => {
                 let status = s.status;
                 let reason = s.status_reason.clone();
@@ -4163,9 +4166,11 @@ impl SessionObject {
                 }
             }
             notify::Kind::Asking => (kind, s.question.as_ref().map(asked)),
-            // What its autopilot asks, and its pause, come by themselves
-            // (`crate::autopilots`).
-            notify::Kind::Autopilot | notify::Kind::AutopilotPaused => return,
+            // What its autopilot asks, and that its sessions keep failing,
+            // come by themselves (`crate::autopilots`).
+            notify::Kind::Autopilot
+            | notify::Kind::AutopilotPaused
+            | notify::Kind::AutopilotFailing => return,
             notify::Kind::Paused => (kind, None),
             notify::Kind::Failed => (kind, s.status_reason.clone()),
         };

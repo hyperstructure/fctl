@@ -41,9 +41,13 @@ pub enum Kind {
     /// (`fctl autopilot ask`): a decision, or a secret. It goes on with
     /// other work meanwhile, so it says this whatever the session's state.
     Autopilot,
-    /// fctl paused an autopilot whose sessions kept failing, which its
-    /// own session's failures don't say: people resume it once that's fixed.
+    /// fctl paused an autopilot whose sessions kept failing, as it did
+    /// before autopilots kept trying: what it said then may still go out.
     AutopilotPaused,
+    /// An autopilot's own sessions keep failing, which their failures
+    /// don't say: fctl goes on trying every hour, and people hear of it
+    /// once (`fctl_domain::autopilot::FAILING_AFTER`).
+    AutopilotFailing,
 }
 
 impl Kind {
@@ -65,7 +69,7 @@ impl Kind {
     /// something, and a review's not when its turn ends.
     pub fn notifies(self, audience: Audience) -> bool {
         match self {
-            Self::Asking | Self::Autopilot | Self::AutopilotPaused => true,
+            Self::Asking | Self::Autopilot | Self::AutopilotPaused | Self::AutopilotFailing => true,
             Self::Waiting => audience == Audience::People,
             Self::Paused | Self::Failed => audience != Audience::Autopilot,
         }
@@ -76,7 +80,7 @@ impl Kind {
         match self {
             Self::Waiting | Self::Asking | Self::Autopilot => settings.waiting,
             Self::Paused => settings.paused,
-            Self::Failed | Self::AutopilotPaused => settings.failed,
+            Self::Failed | Self::AutopilotPaused | Self::AutopilotFailing => settings.failed,
         }
     }
 
@@ -88,7 +92,7 @@ impl Kind {
                 Self::Waiting | Self::Asking => SessionStatus::Idle,
                 Self::Paused => SessionStatus::Paused,
                 Self::Failed => SessionStatus::Failed,
-                Self::Autopilot | Self::AutopilotPaused => return true,
+                Self::Autopilot | Self::AutopilotPaused | Self::AutopilotFailing => return true,
             }
     }
 }
@@ -106,9 +110,9 @@ pub enum Audience {
     /// started while it is on. People hear only what they ask: the
     /// autopilot hears when they finish a turn or fail, and goes on by
     /// itself; a pause on a usage limit continues by itself when the limit
-    /// resets. Should its own sessions keep failing, fctl pauses it and says
-    /// so ([`Kind::AutopilotPaused`]); its own session's other failures, while
-    /// the autopilot is paused or off, go unheard.
+    /// resets. Should its own sessions keep failing, fctl says so once and
+    /// goes on trying ([`Kind::AutopilotFailing`]); its own session's other
+    /// failures, while the autopilot is paused or off, go unheard.
     Autopilot,
 }
 
@@ -274,6 +278,7 @@ fn says(kind: Kind) -> &'static str {
         Kind::Failed => "failed",
         Kind::Autopilot => "asks you",
         Kind::AutopilotPaused => "is paused",
+        Kind::AutopilotFailing => "keeps failing",
     }
 }
 
@@ -324,6 +329,14 @@ pub fn compose(events: &[Event]) -> Option<PushMessage> {
         {
             Some(why) => format!("fctl paused it\n{why}"),
             None => "fctl paused it".to_owned(),
+        },
+        (Kind::AutopilotFailing, _) => match only
+            .detail
+            .as_deref()
+            .and_then(|why| excerpt(why, QUESTION_CHARS))
+        {
+            Some(why) => format!("Its sessions keep failing\n{why}"),
+            None => "Its sessions keep failing".to_owned(),
         },
     };
     Some(PushMessage {
@@ -416,6 +429,26 @@ mod tests {
             Some("It asks you\nWhich payment provider?".into())
         );
         assert!(Kind::Autopilot.still(SessionStatus::Running));
+    }
+
+    #[test]
+    fn an_autopilot_whose_sessions_keep_failing_says_why() {
+        let why = crate::autopilot::failing(4, "the runner is gone", false);
+        let e = Event {
+            title: "Shop's autopilot".into(),
+            url: Some("/p/shop?tab=autopilot".into()),
+            ..event(3, Kind::AutopilotFailing, Some(&why))
+        };
+        assert_eq!(
+            compose(&[e]).map(|m| m.body),
+            Some(format!("Its sessions keep failing\n{why}"))
+        );
+        assert!(Kind::AutopilotFailing.notifies(Audience::Autopilot));
+        assert!(Kind::AutopilotFailing.still(SessionStatus::Failed));
+        assert!(!Kind::AutopilotFailing.wanted(&NotificationSettings {
+            failed: false,
+            ..Default::default()
+        }));
     }
 
     #[test]

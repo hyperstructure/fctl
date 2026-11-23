@@ -1239,8 +1239,10 @@ pub async fn owner_moved(env: &Env, db: &D1Database, user_id: &str, now: i64) {
 }
 
 /// After waking it failed once claimed (`why`): what woke it goes back
-/// for a retry, 5, 15 and 60 minutes on, as for its session failing, each
-/// in its log; then it pauses, saying why.
+/// for a retry, 5, 15 and 60 minutes on, then every hour, as for its
+/// session failing ([`ap::retry_in`]), each in its log. It never pauses for
+/// it: what failed may mend by itself, and people hear of it once
+/// ([`ap::FAILING_AFTER`]).
 async fn wake_failed(
     env: &Env,
     db: &D1Database,
@@ -1249,13 +1251,7 @@ async fn wake_failed(
     now: i64,
 ) -> AppResult<()> {
     let failures = u32::try_from(row.failures + 1).unwrap_or(u32::MAX);
-    let Some(after) = ap::retry_in(failures) else {
-        let why = format!(
-            "fctl couldn't wake it {} times in a row, the last because: {why} Resume it once that's fixed.",
-            ap::RETRY_MS.len() + 1
-        );
-        return stop_for(db, row, &why, now).await;
-    };
+    let after = ap::retry_in(failures);
     q(
         db,
         "UPDATE autopilots SET failures = ?4, wake_reasons = CASE WHEN wake_reasons = '' THEN ?1 \
@@ -1283,6 +1279,17 @@ async fn wake_failed(
         now,
     )
     .await;
+    if failures == ap::FAILING_AFTER {
+        notify_people(
+            env,
+            db,
+            row,
+            fctl_domain::notify::Kind::AutopilotFailing,
+            &ap::failing(failures, why, true),
+            now,
+        )
+        .await;
+    }
     ring(env).await;
     Ok(())
 }
@@ -2227,40 +2234,37 @@ pub async fn session_moved(
                     .run()
                     .await?;
                     let why = reason.unwrap_or("it failed");
+                    // However often its sessions failed: what fails them
+                    // may mend by itself, and it carries on then.
+                    let after = ap::retry_in(failures);
                     log(
                         &db,
                         autopilot,
                         Entry::new(
                             AutopilotEntryKind::Problem,
-                            format!("Its session failed: {why}"),
+                            format!(
+                                "Its session failed: {}. fctl tries again in {} minutes.",
+                                why.trim().trim_end_matches('.'),
+                                after / 60_000
+                            ),
                         )
                         .about(Some(session_id)),
                         now,
                     )
                     .await;
-                    match ap::retry_in(failures) {
-                        Some(after) => {
-                            nudge(env, &db, autopilot, AutopilotWakeReason::Retry, now + after)
-                                .await?;
-                        }
-                        None => {
-                            let why = format!(
-                                "Its last {} sessions failed, the last because {why}. Resume it once that's fixed.",
-                                ap::RETRY_MS.len()
-                            );
-                            stop_for(&db, &row, &why, now).await?;
-                            // Its sessions' failures notify nobody: this
-                            // one waits for people to resume it.
-                            notify_people(
-                                env,
-                                &db,
-                                &row,
-                                fctl_domain::notify::Kind::AutopilotPaused,
-                                &why,
-                                now,
-                            )
-                            .await;
-                        }
+                    nudge(env, &db, autopilot, AutopilotWakeReason::Retry, now + after).await?;
+                    // Its sessions' failures notify nobody, but people hear
+                    // once that they keep failing.
+                    if failures == ap::FAILING_AFTER {
+                        notify_people(
+                            env,
+                            &db,
+                            &row,
+                            fctl_domain::notify::Kind::AutopilotFailing,
+                            &ap::failing(failures, why, false),
+                            now,
+                        )
+                        .await;
                     }
                 }
                 _ => {}
