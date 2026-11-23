@@ -2409,10 +2409,22 @@ impl FleetObject {
             } else {
                 self.home_of(&item.session_id)
             };
+            let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
             // With a snapshot, a resume starts elsewhere as it was rather
-            // than wait for its busy home (`crate::snapshots`).
-            let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS && !want.snapshot;
-            let picked = self.pick_runner(&want, &labels, home.as_deref(), wait);
+            // than wait for its busy home (`crate::snapshots`): on a runner
+            // whose host restores it, else it waits as before.
+            let picked =
+                match self.pick_runner(&want, &labels, home.as_deref(), wait && !want.snapshot) {
+                    Ok((id, _))
+                        if wait
+                            && want.snapshot
+                            && home.as_deref() != Some(id.as_str())
+                            && !self.host_has(&id, FEATURE_SNAPSHOTS) =>
+                    {
+                        self.pick_runner(&want, &labels, home.as_deref(), true)
+                    }
+                    picked => picked,
+                };
             let (runner_id, runner_name) = match picked {
                 Ok(r) => r,
                 // A session that cannot start now says why and lets the

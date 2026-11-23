@@ -493,6 +493,12 @@ impl DurableObject for SessionObject {
                     Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
                 }
             }
+            (worker::Method::Post, "/snapshot/prune") => {
+                match req.json::<internal::SnapshotParts>().await {
+                    Ok(b) => Ok(self.snapshot_prune(&b.id)),
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
             (worker::Method::Get, "/diff") => self.diff(&req),
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
@@ -4351,8 +4357,6 @@ impl SessionObject {
         }
     }
 
-    /// An image the agent read (`?id=`), until it expires. The Worker
-    /// checks that the caller can see the session.
     /// Part `n` of snapshot `id`, as the session's runner uploads it (at
     /// most `SNAPSHOT_PART_BYTES`), in chunks a row holds. An upload that
     /// never finished goes a day on.
@@ -4419,8 +4423,9 @@ impl SessionObject {
         Ok(serde_json::json!({ "ok": true }))
     }
 
-    /// Makes snapshot `b.id` the session's once every one of its parts is
-    /// here and they add up to its size: the one before goes.
+    /// Marks snapshot `b.id` whole once every one of its parts is here and
+    /// they add up to its size. The one before stays until D1 names this
+    /// one the session's, and `/snapshot/prune` lets it go.
     fn snapshot_commit(
         &self,
         b: &internal::SnapshotParts,
@@ -4447,22 +4452,27 @@ impl SessionObject {
                 "The snapshot's parts aren't all here: upload them again",
             ));
         }
-        for (stmt, params) in [
-            (
+        self.sql
+            .exec(
                 "UPDATE snapshots SET committed = 1 WHERE id = ?",
-                vec![sv(&b.id)],
-            ),
-            (
-                "DELETE FROM snapshot_chunks WHERE snapshot_id != ?",
-                vec![sv(&b.id)],
-            ),
-            ("DELETE FROM snapshots WHERE id != ?", vec![sv(&b.id)]),
-        ] {
-            self.sql
-                .exec(stmt, Some(params))
-                .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
-        }
+                Some(vec![sv(&b.id)]),
+            )
+            .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
         Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// Lets go of every whole snapshot but `id`, which D1 names the
+    /// session's now.
+    fn snapshot_prune(&self, id: &str) -> serde_json::Value {
+        for stmt in [
+            "DELETE FROM snapshot_chunks WHERE snapshot_id != ? AND snapshot_id IN (SELECT id FROM snapshots WHERE committed = 1)",
+            "DELETE FROM snapshots WHERE id != ? AND committed = 1",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, Some(vec![sv(id)])) {
+                worker::console_error!("letting go of older snapshots: {e}");
+            }
+        }
+        serde_json::json!({ "ok": true })
     }
 
     /// Part `n` of snapshot `id`, which is the session's.
@@ -4505,6 +4515,8 @@ impl SessionObject {
         serde_json::json!({ "ok": true })
     }
 
+    /// An image the agent read (`?id=`), until it expires. The Worker
+    /// checks that the caller can see the session.
     fn kept_image(&self, req: &Request) -> Result<Response> {
         #[derive(Deserialize)]
         struct Row {

@@ -81,8 +81,9 @@ pub async fn put_part(
 
 /// `POST /api/v1/runner/sessions/{id}/snapshots/{snapshot}`: once every
 /// part is uploaded, makes the snapshot the session's, in place of the one
-/// before. Refused, and its parts deleted, where the instance or the
-/// workspace keeps no snapshots, or it is larger than the instance allows.
+/// before. Refused, and its parts deleted, for a session whose specs carry
+/// no snapshot key, where the instance or the workspace keeps no
+/// snapshots, or past the size the instance allows.
 pub async fn commit(
     ctx: &Ctx,
     req: &mut Request,
@@ -105,15 +106,22 @@ pub async fn commit(
         size: body.saved.size,
     };
     let settings = crate::instance::settings(&ctx.db).await?;
-    if let Some(why) =
-        crate::snapshots::refusal(&ctx.db, &settings, session_id, body.saved.size).await?
-    {
+    // Only a session whose spec let it save one has a key, and a row.
+    let refused = match crate::snapshots::row(&ctx.db, session_id).await? {
+        None => Some("This session saves no snapshots".to_owned()),
+        Some(_) => {
+            crate::snapshots::refusal(&ctx.db, &settings, session_id, body.saved.size).await?
+        }
+    };
+    if let Some(why) = refused {
         let _: AppResult<serde_json::Value> =
             internal::post(&stub, "/snapshot/delete", &parts).await;
         return Err(AppError(ApiError::forbidden(why)));
     }
+    // Whole in SessionDO, then the session's in D1, and only then does the
+    // one before go: D1 never names a snapshot whose parts are gone.
     let _: serde_json::Value = internal::post(&stub, "/snapshot/commit", &parts).await?;
-    crate::snapshots::keep(
+    if let Err(e) = crate::snapshots::keep(
         &ctx.db,
         session_id,
         snapshot,
@@ -121,7 +129,21 @@ pub async fn commit(
         (&r.id, &r.name),
         ctx.now,
     )
-    .await?;
+    .await
+    {
+        let _: AppResult<serde_json::Value> =
+            internal::post(&stub, "/snapshot/delete", &parts).await;
+        return Err(e);
+    }
+    let pruned: AppResult<serde_json::Value> =
+        internal::post(&stub, "/snapshot/prune", &parts).await;
+    if let Err(e) = pruned {
+        // The next commit lets go of it, or the session's purge.
+        worker::console_error!(
+            "letting go of {session_id}'s older snapshot: {}",
+            e.0.message
+        );
+    }
     http::ok(&Done { ok: true })
 }
 

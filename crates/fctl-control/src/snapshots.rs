@@ -230,8 +230,8 @@ pub async fn keep(
     let changed = q(
         db,
         "UPDATE session_snapshots SET snapshot_id = ?, size = ?, sha256 = ?, parts = ?, claude_version = ?, \
-         agent_seq = ?, conversation = ?, changes = ?, left_out = ?, saved_at = ?, runner_id = ?, runner_name = ? \
-         WHERE session_id = ?",
+         agent_seq = ?, conversation = ?, changes = ?, left_out = ?, saved_at = ?, runner_id = ?, runner_name = ?, \
+         expire_tried_at = NULL WHERE session_id = ?",
         &[
             s(snapshot_id),
             n(i64::try_from(saved.size).unwrap_or(i64::MAX)),
@@ -263,7 +263,7 @@ pub async fn keep(
 /// The snapshots their sessions' workspaces no longer keep, at `now`, as
 /// `(session, snapshot)`: older than their days, or kept by a workspace,
 /// or an instance (`instance_keeps`), that stopped keeping them. At most
-/// 200.
+/// 200, the oldest first, those whose deletion failed after the others.
 pub async fn due(
     db: &D1Database,
     instance_keeps: bool,
@@ -280,7 +280,7 @@ pub async fn due(
          JOIN sessions se ON se.id = ss.session_id JOIN projects p ON p.id = se.project_id \
          JOIN workspaces w ON w.id = p.workspace_id WHERE ss.snapshot_id IS NOT NULL \
          AND (?1 = 0 OR w.snapshots = 0 OR ss.saved_at <= ?2 - COALESCE(w.snapshot_days, ?3) * 86400000) \
-         LIMIT 200",
+         ORDER BY COALESCE(ss.expire_tried_at, 0), ss.saved_at LIMIT 200",
         &[
             crate::db::b(instance_keeps),
             n(now),
@@ -301,7 +301,7 @@ pub async fn forget(db: &D1Database, session_id: &str, snapshot_id: &str) -> App
     q(
         db,
         "UPDATE session_snapshots SET snapshot_id = NULL, size = NULL, sha256 = NULL, parts = NULL, \
-         left_out = NULL WHERE session_id = ? AND snapshot_id = ?",
+         left_out = NULL, expire_tried_at = NULL WHERE session_id = ? AND snapshot_id = ?",
         &[s(session_id), s(snapshot_id)],
     )?
     .run()
@@ -328,10 +328,21 @@ pub async fn expire(env: &worker::Env, db: &D1Database, now: i64) -> AppResult<u
         .await;
         if let Err(e) = deleted {
             worker::console_error!("deleting {session_id}'s snapshot: {}", e.0.message);
+            // After the others next time, so that it holds none of them up.
+            let tried = q(
+                db,
+                "UPDATE session_snapshots SET expire_tried_at = ? WHERE session_id = ?",
+                &[n(now), s(&session_id)],
+            );
+            if let Ok(stmt) = tried {
+                let _ = stmt.run().await;
+            }
             continue;
         }
-        forget(db, &session_id, &snapshot_id).await?;
-        gone += 1;
+        match forget(db, &session_id, &snapshot_id).await {
+            Ok(()) => gone += 1,
+            Err(e) => worker::console_error!("forgetting {session_id}'s snapshot: {}", e.0.message),
+        }
     }
     Ok(gone)
 }
@@ -473,6 +484,41 @@ mod tests {
             [("ses_1".to_owned(), "snp_one".to_owned())]
         );
         assert_eq!(due(&db, false, NOW + DAY).await?.len(), 1);
+        // The oldest go first, and one whose deletion failed after the
+        // others, so that it holds none of them up.
+        q(
+            &db,
+            "INSERT INTO session_snapshots (session_id, key_enc) VALUES ('ses_off', 'sealed')",
+            &[],
+        )?
+        .run()
+        .await?;
+        keep(
+            &db,
+            "ses_off",
+            "snp_off",
+            &commit(1_000, 1),
+            ("rnr_1", "studio"),
+            NOW - DAY,
+        )
+        .await?;
+        let order = |d: Vec<(String, String)>| d.into_iter().map(|(s, _)| s).collect::<Vec<_>>();
+        assert_eq!(
+            order(due(&db, true, NOW + 30 * DAY).await?),
+            ["ses_off", "ses_1"]
+        );
+        q(
+            &db,
+            "UPDATE session_snapshots SET expire_tried_at = ? WHERE session_id = 'ses_off'",
+            &[n(NOW)],
+        )?
+        .run()
+        .await?;
+        assert_eq!(
+            order(due(&db, true, NOW + 30 * DAY).await?),
+            ["ses_1", "ses_off"]
+        );
+        forget(&db, "ses_off", "snp_off").await?;
         q(
             &db,
             "UPDATE workspaces SET snapshot_days = 3 WHERE id = 'wsp_acme'",

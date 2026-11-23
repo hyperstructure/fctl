@@ -1585,7 +1585,9 @@ up to 2,048). Review agents' sessions save none.
    processes.
 2. **Sealed in the sandbox.** It packs them into a gzipped tar and seals
    it with the session's key, in 1 MiB segments of AES-256-GCM, each
-   bound to the session and its place (`fctl_domain::snapshots`). The key
+   bound to the session and its place (`fctl_domain::snapshots`), in a
+   directory the session's user writes (`~/.fctl/state` where fctl-agent
+   protects itself from that user). The key
    is one random 256-bit key per session, made with its first spec that
    may save one and kept in D1 sealed with the master key for
    `snapshot:<session>` (`session_snapshots.key_enc`); each spec carries
@@ -1594,21 +1596,27 @@ up to 2,048). Review agents' sessions save none.
    no other: an older host's spec has none, and saves none. Past the
    instance's limit, it leaves the conversation's images out (each
    becomes a line that says so), then the work; past it still, it saves
-   none, and the transcript says why (`snapshot_not_saved`).
+   none, and the transcript says why (`snapshot_not_saved`), as it names
+   a repository whose work it couldn't take (`snapshot_work_left_out`).
 3. **Kept in SessionDO.** The agent hands the sealed file to its host in
    parts of 4 MiB (`AgentToHost::SnapshotPart`), which the host spools to
    its data directory and uploads with its runner token, for the session
    it runs: `PUT /api/v1/runner/sessions/{id}/snapshots/{snp}/parts/{n}`,
    then `POST /api/v1/runner/sessions/{id}/snapshots/{snp}` with what it
    holds. Only then does the host say the run ended (for ten minutes at
-   most), so that a message right after a stop finds it. SessionDO keeps
-   the parts in its storage, in rows of 1 MiB, and the commit makes the
-   snapshot the session's in place of the one before; D1's
-   `session_snapshots` says which is the session's, its size and SHA-256,
-   the Claude Code that wrote it, the agent's last event, and the runner
-   it was saved on. The control plane refuses one, and deletes its parts,
-   where the instance or the workspace keeps none or it is past the
-   instance's limit. It never opens one.
+   most), so that a message right after a stop finds it; a stop waits
+   three minutes, rather than one, for an agent that saves a snapshot,
+   and a minute more after each part. The host takes only the parts a
+   spec asks for, up to its size, and the transcript says when one is lost
+   on the way. SessionDO keeps the parts in its storage, in rows of 1 MiB;
+   the commit marks the snapshot whole, D1's `session_snapshots` then
+   names it the session's, and only then does SessionDO let go of the one
+   before, so that D1 never names one whose parts are gone. D1 says its
+   size and SHA-256, the Claude Code that wrote it, the agent's last
+   event, and the runner it was saved on. The control plane refuses one,
+   and deletes its parts, for a session whose specs carry no key, where
+   the instance or the workspace keeps none, or past the instance's
+   limit. It never opens one.
 4. **Restored where the conversation isn't.** A spec names the session's
    snapshot (`restore`) while it is kept. An agent whose sandbox lacks
    the conversation (another runner's, or a new one where the old was
@@ -1621,8 +1629,12 @@ up to 2,048). Review agents' sessions save none.
    (a fresh clone's is): the work checked out, then reset to the commit
    before it, so that what was uncommitted is again, and the commits not
    pushed are on the branch. Where the branch moved on elsewhere since,
-   the work stays at `refs/fctl/wip/<session>`, and Claude hears where
-   (`snapshot_work_aside`). Then Claude Code resumes the conversation
+   the work waits at `refs/fctl/wip/<session>`, and Claude hears where
+   (`snapshot_work_aside`); the snapshots saved after that carry it on,
+   as their work commit's second parent, until the branch has it. Work it
+   couldn't put back at all (history a force-push took away) the
+   transcript and Claude hear of too (`snapshot_work_lost`). Then Claude
+   Code resumes the conversation
    (`--resume`), and the transcript says so: "Resumed with its
    conversation and uncommitted work (12 MB), saved on studio"
    (`snapshot_restored`).
@@ -1637,9 +1649,12 @@ up to 2,048). Review agents' sessions save none.
 FleetDO still sends a resume to the runner that has the session's
 sandbox, which has everything, but doesn't wait for it: where that runner
 is busy or away, a session with a snapshot to restore starts on another
-at once, rather than after ten minutes (`SessionWants.snapshot`). The
-hourly job deletes the snapshots past their workspace's days, and those of
-workspaces, or an instance, that stopped keeping them; deleting a session
+at once, rather than after ten minutes (`SessionWants.snapshot`), on a
+runner whose host restores snapshots; where none can take it, it waits
+as before. The hourly job deletes the snapshots past their workspace's
+days, and those of workspaces, or an instance, that stopped keeping them,
+the oldest first and one whose deletion failed after the others;
+deleting a session
 or its project deletes its snapshot with its event log. `fctl show` and
 `GET /api/v1/sessions/{id}` say what the session's snapshot holds, where
 and when it was saved, and until when it is kept (`Session.snapshot`).
