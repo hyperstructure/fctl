@@ -295,7 +295,9 @@ pub fn uninstall_unit() {
     }
 }
 
-/// Stops the host service, which ends its process.
+/// Stops the host service, which ends its process. On macOS this also
+/// unloads its job, which launchd would otherwise start again
+/// (`KeepAlive`) when the process ends, plist or none.
 pub fn stop_unit() {
     if cfg!(target_os = "macos") {
         let _ = sh("launchctl", &["bootout", &format!("gui/{}/{LABEL}", uid())]);

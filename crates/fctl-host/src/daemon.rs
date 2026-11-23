@@ -1125,6 +1125,12 @@ impl Daemon {
             // Nothing starts the host again, before anything ends it.
             tracing::info!("uninstalling the host service");
             let _ = tokio::task::spawn_blocking(crate::service::uninstall_unit).await;
+            // launchd keeps a loaded job alive whatever its plist says, so
+            // on macOS the job goes too before a stop signal may end the
+            // host; systemd's went with its unit.
+            if cfg!(target_os = "macos") {
+                let _ = tokio::task::spawn_blocking(crate::service::stop_unit).await;
+            }
             // The runner is gone and the service with it: a stop signal
             // that waited, or the one stopping the service sends, ends the
             // host.
@@ -1132,7 +1138,9 @@ impl Daemon {
             let _ = wake.send(Chore::Left);
             // Stopping the service ends this process, on the signal the
             // runtime has to be free to take.
-            let _ = tokio::task::spawn_blocking(crate::service::stop_unit).await;
+            if !cfg!(target_os = "macos") {
+                let _ = tokio::task::spawn_blocking(crate::service::stop_unit).await;
+            }
             // Still here: something else runs the host. One whose machine
             // goes waits for that rather than exit, so that what restarts it
             // doesn't; one with no command leaves that to what ran it.
