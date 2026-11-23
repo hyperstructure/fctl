@@ -674,6 +674,20 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     "up to each member"
                 }
             );
+            // Control planes before snapshots say no days.
+            if let Some(days) = w.snapshot_days {
+                println!(
+                    "snapshot: {}",
+                    if w.snapshots {
+                        format!(
+                            "each session's, kept {} after it stops, so that it resumes on any runner as it was",
+                            style::count(days, "day", "days")
+                        )
+                    } else {
+                        "none: a session resumes on another runner without its conversation or uncommitted work".to_owned()
+                    }
+                );
+            }
             if w.blocked {
                 println!(
                     "{}",
