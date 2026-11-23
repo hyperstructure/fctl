@@ -47,30 +47,39 @@ Apple's `container` (1.7.1, read at its source):
   it, within 10 seconds, and prints what it found
   (`fctl_domain::reach`). An fctl-agent from before `reach` says nothing,
   and the sandbox is taken as it is.
-- **It asks a fresh sandbox, and the Mac**: a sandbox whose root changed
-  its `/etc/hosts`, say, keeps itself off the network, so the host asks a
-  fresh, short-lived sandbox too, from the session's image or the host's,
-  which runs only the host's own fctl-agent, mounted read-only; twice, 5
+- **It asks the Mac, and a fresh sandbox**: when the Mac doesn't reach
+  GitHub either, restarting Apple's `container` wouldn't help, and the
+  host leaves it, and its sandboxes, for 5 minutes. A sandbox whose root
+  changed its `/etc/hosts`, say, keeps itself off the network, so the
+  host then asks a fresh, short-lived sandbox, from the session's image or
+  the host's, which runs only the host's own fctl-agent, from a directory
+  of the host's that holds nothing else, mounted read-only; twice, 5
   seconds apart, as a network whose bridge has just come may carry
-  nothing for a moment. A sandbox that keeps itself off is left as it is,
-  its session's log says so, and the host doesn't ask it again for half
-  an hour. When the Mac doesn't reach GitHub either, restarting Apple's
-  `container` wouldn't help, and the host leaves it.
+  nothing for a moment. One that fails is removed. A sandbox that keeps
+  itself off is left as it is, its session's log says so, and the host
+  doesn't ask it again for half an hour.
 - **When fresh sandboxes don't reach GitHub and the Mac does, the host
   restarts Apple's `container`**: `container system stop`, `container
   system start`, then `container start` for each container that ran,
-  fctl's sandboxes and any other. What ran in them is gone, as after the
-  Mac restarts: a session at work has its turn cut off, and fctl-agent
-  carries it on. What starts a sandbox, or fctl-agent in one, waits for
-  the restart. The host's log says so, and the log of the session whose
-  start found it.
-- **At most once every 30 minutes**: a restart stops every sandbox on
-  the Mac, and one that didn't bring the network back may not the next
-  time either. Until a fresh sandbox reaches GitHub again, the apple
-  driver isn't ready, saying why: sessions wait for a runner rather than
-  fail, and one whose start found it goes back to the queue. The host
-  asks a fresh sandbox every minute meanwhile, and restarts Apple's
-  `container` again once 30 minutes have passed.
+  fctl's sandboxes and any other, going on past what fails; those it
+  can't start yet it starts once Apple's `container` answers. It runs in
+  a task of its own, which a session stopped meanwhile doesn't call off.
+  What ran in them is gone, as after the Mac restarts: a session at work
+  has its turn cut off, and fctl-agent carries it on. What starts a
+  sandbox, or fctl-agent in one, waits for the restart. The host's log
+  says so, and the log of the session whose start found it.
+- **At most once every 30 minutes**, one that failed included: a restart
+  stops every sandbox on the Mac, and one that didn't bring the network
+  back may not the next time either. After a restart the host asks fresh
+  sandboxes twice, 5 seconds apart. Until one reaches GitHub again, the
+  apple driver isn't ready, saying why: sessions wait for a runner rather
+  than fail, and one whose start found it goes back to the queue, its
+  sandbox stopped, as another runner may start it. The host asks a fresh
+  sandbox every minute meanwhile, going by the images and the fctl-agent
+  of the last session that started too, and restarts Apple's `container`
+  again once 30 minutes have passed. When no fresh sandbox can tell for
+  10 minutes (none of its images is here, say), the driver is ready
+  again, and sessions look for themselves as they start.
 - **Not other nameservers** (`container run --dns`, or `[container.dns]`
   in Apple's `config.toml`): they don't help where the network carries
   nothing, and nameservers chosen on one network (a public one, the

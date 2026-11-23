@@ -14,16 +14,20 @@
 //!
 //! So before fctl-agent starts in a sandbox, and every [`LOOK_EVERY`] while
 //! sessions' sandboxes run, the host asks fctl-agent in the sandbox whether
-//! it reaches [`reach::TARGET`] (`fctl-agent reach`). One that doesn't may
-//! keep itself off it (its `/etc/hosts`, say), so the host asks a fresh
-//! sandbox too, one that runs only the host's own fctl-agent, and this Mac
-//! itself. When the fresh sandbox doesn't reach it either and the Mac does,
-//! the host restarts Apple's `container`, at most once every
-//! [`RESTART_EVERY`], and starts again the containers that ran: what ran in
-//! them is gone, as after the Mac restarts, and their files stay. Sandboxes
-//! that a restart doesn't bring back make the driver not ready, saying why:
-//! sessions wait for a runner rather than fail, and the host looks again
-//! every [`LOOK_EVERY`], with a fresh sandbox.
+//! it reaches [`reach::TARGET`] (`fctl-agent reach`). When it doesn't, the
+//! host asks this Mac itself, whose own network a restart wouldn't bring
+//! back (it remembers a Mac off the network for [`OFFLINE_FOR`]), then a
+//! fresh sandbox, twice: a sandbox may keep itself off the network (its
+//! `/etc/hosts`, say), while a fresh one runs only the host's own
+//! fctl-agent, from a directory that holds nothing else. When fresh
+//! sandboxes don't reach it either, the host restarts Apple's `container`,
+//! at most once every [`RESTART_EVERY`], in a task that nothing calls off,
+//! and starts again the containers that ran: what ran in them is gone, as
+//! after the Mac restarts, and their files stay. Sandboxes that a restart
+//! doesn't bring back make the driver not ready, saying why: sessions wait
+//! for a runner rather than fail, and the host looks again every
+//! [`LOOK_EVERY`], with a fresh sandbox, or after [`DOWN_HOLDS`] lets
+//! sessions look for it when no fresh sandbox can tell.
 //!
 //! [apple/container#1881]: https://github.com/apple/container/issues/1881
 //! [#1986]: https://github.com/apple/container/issues/1986
@@ -32,6 +36,7 @@
 use fctl_domain::reach;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -52,6 +57,15 @@ pub const RESTART_EVERY: Duration = Duration::from_secs(30 * 60);
 /// reaches the network, when the first didn't: a network whose bridge has
 /// just come may not carry anything for a moment.
 pub const CONFIRM_AFTER: Duration = Duration::from_secs(5);
+
+/// How long the host remembers that this Mac itself doesn't reach the
+/// network, and doesn't look at its sandboxes' meanwhile.
+pub const OFFLINE_FOR: Duration = Duration::from_secs(5 * 60);
+
+/// How long sandboxes that didn't reach the network keep the driver not
+/// ready while no fresh sandbox can tell whether they do now (none of the
+/// images is here, say): then sessions may start, and look themselves.
+pub const DOWN_HOLDS: Duration = Duration::from_secs(10 * 60);
 
 /// How long `container system stop` may take: it stops every container,
 /// giving each 5 seconds, and waits 20 more for them.
@@ -100,9 +114,17 @@ struct State {
     restarted: Option<Instant>,
     /// When it last looked whether they reach it, by itself.
     looked: Option<Instant>,
-    /// Why they don't, which the host couldn't bring back: the driver isn't
-    /// ready meanwhile.
-    down: Option<String>,
+    /// Why they don't, which the host couldn't bring back, and since when
+    /// it knows: the driver isn't ready meanwhile.
+    down: Option<(String, Instant)>,
+    /// When this Mac last didn't reach the network itself.
+    offline: Option<Instant>,
+    /// The containers that ran before a restart of Apple's `container` and
+    /// that it hasn't started again yet.
+    left: Vec<String>,
+    /// The host's fctl-agent and the images the last session that started
+    /// went by, for the fresh sandboxes the host starts by itself.
+    fresh: Option<(PathBuf, Vec<String>)>,
     /// The sandboxes that didn't reach it while a fresh one did, and when:
     /// something in them keeps them from it, and the host doesn't ask them
     /// again for [`RESTART_EVERY`].
@@ -110,16 +132,83 @@ struct State {
 }
 
 impl Network {
+    /// What the host knows of sandboxes that should reach `target`, for
+    /// tests.
+    #[cfg(test)]
+    pub fn reaching(target: &str) -> Self {
+        Self {
+            target: target.to_owned(),
+            ..Self::default()
+        }
+    }
+
     /// Why sandboxes don't reach the network, which the host couldn't
     /// bring back; `None` while they do, as far as it knows.
     pub fn down(&self) -> Option<String> {
+        self.state().down.as_ref().map(|(why, _)| why.clone())
+    }
+
+    /// [`Self::down`], with when the host last found it so.
+    pub fn down_since(&self) -> Option<(String, Instant)> {
         self.state().down.clone()
     }
 
-    /// What the host found: why sandboxes don't reach the network, or that
-    /// they do.
+    /// What the host found, now: why sandboxes don't reach the network, or
+    /// that they do.
     pub fn set_down(&self, why: Option<String>) {
-        self.state().down = why;
+        self.state().down = why.map(|why| (why, Instant::now()));
+    }
+
+    /// Whether this Mac didn't reach the network itself, less than
+    /// [`OFFLINE_FOR`] before `at`.
+    pub fn offline(&self, at: Instant) -> bool {
+        self.state()
+            .offline
+            .is_some_and(|since| at.saturating_duration_since(since) < OFFLINE_FOR)
+    }
+
+    /// This Mac didn't reach the network itself, `at`.
+    pub fn note_offline(&self, at: Instant) {
+        self.state().offline = Some(at);
+    }
+
+    /// The containers that ran before a restart, `names`, which it starts
+    /// again ([`Self::left`]).
+    pub fn leave(&self, names: Vec<String>) {
+        self.state().left = names;
+    }
+
+    /// The containers a restart hasn't started again yet.
+    pub fn left(&self) -> Vec<String> {
+        self.state().left.clone()
+    }
+
+    /// The container `name` runs again, or is gone.
+    pub fn started(&self, name: &str) {
+        self.state().left.retain(|n| n != name);
+    }
+
+    /// A session starts with the host's fctl-agent `agent` and `images`: the
+    /// fresh sandboxes the host starts by itself go by them too.
+    pub fn remember(&self, agent: &Path, images: &[String]) {
+        self.state().fresh = Some((agent.to_owned(), images.to_vec()));
+    }
+
+    /// The fctl-agent and images a fresh sandbox goes by: `agent` and
+    /// `images`, then those the last session that started went by.
+    pub fn fresh(&self, agent: Option<&Path>, images: &[String]) -> (Option<PathBuf>, Vec<String>) {
+        let state = self.state();
+        let (last_agent, last_images) = match &state.fresh {
+            Some((a, i)) => (Some(a.clone()), i.as_slice()),
+            None => (None, &[][..]),
+        };
+        let mut all: Vec<String> = Vec::new();
+        for image in images.iter().chain(last_images) {
+            if !all.contains(image) {
+                all.push(image.clone());
+            }
+        }
+        (agent.map(Path::to_owned).or(last_agent), all)
     }
 
     /// When the host last restarted Apple's `container` for the network.
@@ -181,6 +270,26 @@ impl Network {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// The host's fctl-agent `agent`, copied alone into `dir`, which a fresh
+/// sandbox mounts: nothing else of the Mac's reaches the sandbox, whose
+/// image may be a project's. Copied again once it changed.
+pub(crate) fn agent_copy(agent: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    let copy = dir.join("fctl-agent");
+    let bytes = std::fs::read(agent)?;
+    if std::fs::read(&copy).ok().as_deref() != Some(bytes.as_slice()) {
+        std::fs::create_dir_all(dir)?;
+        let new = dir.join("fctl-agent.new");
+        std::fs::write(&new, &bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&new, &copy)?;
+    }
+    Ok(copy)
 }
 
 /// Whether this machine reaches `target` itself within `within`: why not,
@@ -317,6 +426,57 @@ mod tests {
         assert!(net.own_doing("fctl-ses-1", start + Duration::from_secs(29 * 60)));
         assert!(!net.own_doing("fctl-ses-1", start + RESTART_EVERY));
         assert!(!net.own_doing("fctl-ses-2", start));
+    }
+
+    #[test]
+    fn a_mac_off_the_network_is_remembered_for_five_minutes() {
+        let net = Network::default();
+        let start = Instant::now();
+        assert!(!net.offline(start));
+        net.note_offline(start);
+        assert!(net.offline(start + Duration::from_secs(4 * 60)));
+        assert!(!net.offline(start + OFFLINE_FOR));
+    }
+
+    #[test]
+    fn fresh_sandboxes_go_by_what_the_last_session_did() -> anyhow::Result<()> {
+        let net = Network::default();
+        let own = ["ghcr.io/hyperstructure/sandbox:1".to_owned()];
+        assert_eq!(net.fresh(None, &own), (None, own.to_vec()));
+        let project = "ghcr.io/acme/app:dev".to_owned();
+        net.remember(
+            Path::new("/opt/fctl/fctl-agent-1"),
+            &[project.clone(), own[0].clone()],
+        );
+        assert_eq!(
+            net.fresh(None, &own),
+            (
+                Some(PathBuf::from("/opt/fctl/fctl-agent-1")),
+                vec![own[0].clone(), project]
+            )
+        );
+        let (agent, _) = net.fresh(Some(Path::new("/opt/fctl/fctl-agent-2")), &own);
+        assert_eq!(agent, Some(PathBuf::from("/opt/fctl/fctl-agent-2")));
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_sandboxes_get_the_agent_alone() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let agent = tmp.path().join("fctl-agent-aarch64-linux");
+        std::fs::write(&agent, "v1")?;
+        std::fs::write(tmp.path().join("secret"), "s")?;
+        let dir = tmp.path().join("data/reach");
+        let copy = agent_copy(&agent, &dir)?;
+        assert_eq!(std::fs::read_to_string(&copy)?, "v1");
+        // An update is copied in its place.
+        std::fs::write(&agent, "v2")?;
+        assert_eq!(std::fs::read_to_string(agent_copy(&agent, &dir)?)?, "v2");
+        let names: Vec<_> = std::fs::read_dir(&dir)?
+            .map(|e| e.map(|e| e.file_name()))
+            .collect::<Result<_, _>>()?;
+        assert_eq!(names, ["fctl-agent"]);
+        Ok(())
     }
 
     #[test]

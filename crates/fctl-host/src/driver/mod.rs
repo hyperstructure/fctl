@@ -376,7 +376,9 @@ impl Driver {
                     agent_bin.clone(),
                 ))),
                 "apple" => Some(Driver::Container(
-                    container::ContainerDriver::apple().agent_as_root(cfg.agent_as_root),
+                    container::ContainerDriver::apple()
+                        .agent_as_root(cfg.agent_as_root)
+                        .reach_dir(data_dir.join("reach")),
                 )),
                 "docker" => Some(Driver::Container(
                     container::ContainerDriver::docker()

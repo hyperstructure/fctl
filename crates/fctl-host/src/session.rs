@@ -1331,6 +1331,14 @@ async fn run(
                     {
                         let reason = not_ready(&ctx, &why);
                         tracing::warn!("{session_id} goes back to the queue: {reason} ({msg})");
+                        // A sandbox it made or started stops: another runner
+                        // may start the session, and one that ran here would
+                        // keep its share of the machine. Should it come back
+                        // here, it starts again.
+                        let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
+                        if let Err(e) = ctx.driver.stop(&sb).await {
+                            tracing::debug!("stopping {}: {e:#}", sb.name);
+                        }
                         host_log(
                             &uplink,
                             LogLevel::Warn,
@@ -2611,6 +2619,8 @@ mod tests {
             1
         );
         assert!(!calls.iter().any(|c| c.contains(" serve ")), "{calls:?}");
+        // Its sandbox stops, for another runner may start the session.
+        assert!(!apple.runs(&sandbox_name("ses_01OFFLINE"))?);
         // The next heartbeat says so, until the network comes back.
         assert!(ctx.driver_problem().is_some());
         apple.mend_network()?;
