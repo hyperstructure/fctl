@@ -2,6 +2,7 @@
 // each, which one an address opens, and what the list of them on a phone says about each.
 
 import type * as G from "@/gen";
+import { daysLeft, yourClaude } from "./claude-oversight";
 import { FEW_RECOVERY_CODES } from "./two-factor";
 import { claudeName } from "./workspaces";
 
@@ -131,7 +132,7 @@ export function workspacesGist(list: readonly unknown[] | undefined): Gist | und
   return { text: list.length === 1 ? "1 workspace" : `${list.length} workspaces` };
 }
 
-export function claudeGist(claude: G.ClaudeCredentialInfo[]): Gist {
+export function claudeGist(claude: G.ClaudeCredentialInfo[], now = Date.now()): Gist {
   if (claude.length === 0) return { text: "Not connected yet", attention: true };
   const ended = claude.filter((c) => c.status === "invalid");
   if (ended.length === claude.length)
@@ -144,6 +145,16 @@ export function claudeGist(claude: G.ClaudeCredentialInfo[]): Gist {
           : `${ended.length} need reconnecting`,
       attention: true,
     };
+  // A token in its last week, before its sessions stop.
+  const { ending } = yourClaude(claude, now);
+  if (ending?.expires_at !== undefined) {
+    const days = daysLeft(ending.expires_at, now);
+    const when = days <= 1 ? "within a day" : `in ${days} days`;
+    return {
+      text: claude.length === 1 ? `Runs out ${when}` : `${claudeName(ending)} runs out ${when}`,
+      attention: true,
+    };
+  }
   const used = claude.find((c) => c.is_default) ?? claude[0];
   return {
     text: claude.length === 1 && used ? claudeName(used) : `${claude.length} connections`,

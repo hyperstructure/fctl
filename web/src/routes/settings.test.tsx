@@ -225,3 +225,54 @@ describe("Settings", () => {
     expect(dialog?.querySelector('input[autocomplete="new-password"]')).not.toBeNull();
   });
 });
+
+describe("your Claude connections, as they run out and end", () => {
+  const day = 86_400_000;
+  const token = (c: Partial<G.ClaudeCredentialInfo>): G.ClaudeCredentialInfo => ({
+    id: "crd_1",
+    kind: "setup_token",
+    label: "Personal",
+    remote_control: false,
+    status: "active",
+    is_default: true,
+    created_at: Date.now() - 340 * day,
+    ...c,
+  });
+  const claudePage = (claude: G.ClaudeCredentialInfo[]) => {
+    route.search = { tab: "claude" };
+    return settings(me({ claude })).container;
+  };
+
+  it("says when a long-lived token runs out, quietly while it's far", () => {
+    const page = claudePage([
+      token({
+        expires_at: Date.now() + 200 * day,
+        expiry_estimated: true,
+        answered_at: Date.now() - 2 * 3_600_000,
+      }),
+    ]);
+    expect(page.textContent).toMatch(
+      /Inference only · no Remote Control · Claude answered 2 hours ago · runs out around /,
+    );
+    expect(page.textContent).not.toContain("Connect a new token");
+  });
+
+  it("warns within a month, says why the date is around, and opens the way to a new one", () => {
+    const page = claudePage([token({ expires_at: Date.now() + 12 * day, expiry_estimated: true })]);
+    expect(page.textContent).toMatch(
+      /Runs out around .+\. That's a year after you connected it: fctl can't read the date from the token, so it may be sooner\. Make a new one with claude setup-token and paste it here before then, or your sessions stop\./,
+    );
+    const connect = [...page.querySelectorAll("button")].find((b) => b.textContent === "Connect a new token");
+    act(() => connect?.click());
+    // The paste steps open, with the question of when it was made.
+    expect(page.textContent).toContain("When did claude setup-token make it?");
+  });
+
+  it("says plainly when Claude refused a token, and what to do", () => {
+    const page = claudePage([token({ status: "invalid", ended_at: Date.now() - 3 * day })]);
+    expect(page.textContent).toMatch(
+      /Claude refused this token on .+, so sessions can't run on it: it was revoked, or its year ran out\. Make a new one with claude setup-token and connect it here\./,
+    );
+    expect(page.querySelector('[role="alert"]')).not.toBeNull();
+  });
+});

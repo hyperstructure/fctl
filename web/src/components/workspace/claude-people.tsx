@@ -229,8 +229,8 @@ function Introduction({
         </h2>
         <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-ink-3">
           {w.name}'s sessions run on each person's own Claude subscription: {connected} of its {total}{" "}
-          {total === 1 ? "person has" : "people have"} connected one. You see whether their sessions can run
-          and when their tokens run out, never the tokens.
+          {total === 1 ? "person" : "people"} {connected === 1 ? "has" : "have"} connected one. You see
+          whether their sessions can run and when their tokens run out, never the tokens.
         </p>
         <ul className="mt-6 flex flex-col gap-3 text-[13.5px] text-ink-2">
           <li className="flex gap-2.5">

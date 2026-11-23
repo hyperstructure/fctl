@@ -33,7 +33,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { CONNECT_ID, ConnectClaude, EndedLogin, type Way } from "@/components/claude/connect";
+import { CONNECT_ID, ConnectClaude, EndedLogin, EndedToken, type Way } from "@/components/claude/connect";
 import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { KeepTokenOut } from "@/components/claude/stand-in";
 import { PasskeySettings } from "@/components/passkeys/settings";
@@ -71,6 +71,7 @@ import { api, clickConfirmed, confirmFirst, emails, linearLinkUrl, workspaces as
 import { forgetLog } from "@/lib/app-log";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
+import { fullDay, runsOutWords, SOON_DAYS, within } from "@/lib/claude-oversight";
 import { cn } from "@/lib/cn";
 import { withAlpha } from "@/lib/color";
 import { exported, exportHint, nextExport } from "@/lib/data-export";
@@ -861,7 +862,10 @@ function Claude({ me }: { me: G.Me }) {
                           : "Inference only · no Remote Control"}
                       {planOf(c) && ` · ${planOf(c)}`}
                       {c.status === "invalid" && <span className="text-danger"> · needs reconnecting</span>}
-                      {c.last_used_at && ` · used ${ago(c.last_used_at)}`}
+                      {c.status !== "invalid" && c.answered_at
+                        ? ` · Claude answered ${ago(c.answered_at)}`
+                        : c.last_used_at && ` · used ${ago(c.last_used_at)}`}
+                      {runsOut(c) && !soon(c) && ` · ${runsOutWords(c.expires_at ?? 0, c.expiry_estimated)}`}
                     </div>
                   </div>
                   {!c.is_default && (
@@ -882,6 +886,10 @@ function Claude({ me }: { me: G.Me }) {
                   {c.status === "invalid" && c.kind === "oauth" && !c.on_runners && (
                     <EndedLogin onReconnect={reconnect} />
                   )}
+                  {c.status === "invalid" && c.kind === "setup_token" && (
+                    <EndedToken endedAt={c.ended_at} onRunners={c.on_runners} onReconnect={reconnect} />
+                  )}
+                  {soon(c) && <RunsOutSoon credential={c} onReconnect={() => reconnect("token")} />}
                   {c.on_runners && <OnRunnersDetails />}
                   {c.usage?.length ? (
                     <PlanUsageList usage={c.usage} />
@@ -899,6 +907,50 @@ function Claude({ me }: { me: G.Me }) {
         <ConnectClaude me={me} way={way} onWay={setWay} />
       </div>
     </Section>
+  );
+}
+
+/** A long-lived token fctl keeps, which runs out a year after it was made: it has a date. */
+const runsOut = (c: G.ClaudeCredentialInfo) =>
+  c.kind === "setup_token" && !c.on_runners && c.status === "active" && c.expires_at !== undefined;
+
+/** One that does within a month: the page says so in amber, with the way to a new one. */
+const soon = (c: G.ClaudeCredentialInfo) => runsOut(c) && within(c.expires_at, SOON_DAYS);
+
+/**
+ * Under a long-lived token within a month of running out: when, why fctl can only say "around", and
+ * the way to a new one before its sessions stop.
+ */
+function RunsOutSoon({
+  credential: c,
+  onReconnect,
+}: {
+  credential: G.ClaudeCredentialInfo;
+  onReconnect: () => void;
+}) {
+  const at = c.expires_at ?? 0;
+  const past = at <= Date.now();
+  return (
+    <div className="flex flex-col items-start gap-2.5 rounded-lg border border-amber/25 bg-amber-soft px-3.5 py-2.5 text-[13px] leading-relaxed text-ink-2">
+      <p>
+        <span className="text-amber">
+          {past
+            ? c.expiry_estimated
+              ? `It may have run out around ${fullDay(at)}.`
+              : `It ran out on ${fullDay(at)}.`
+            : `${runsOutWords(at, c.expiry_estimated).replace(/^r/, "R")}.`}
+        </span>{" "}
+        {c.expiry_estimated
+          ? "That's a year after you connected it: fctl can't read the date from the token, so it may be sooner. "
+          : ""}
+        {past
+          ? "Make a new one with claude setup-token and paste it here: sessions on this one may fail already."
+          : "Make a new one with claude setup-token and paste it here before then, or your sessions stop."}
+      </p>
+      <Button size="sm" icon={<KeyRound className="size-3.5" />} onClick={onReconnect}>
+        Connect a new token
+      </Button>
+    </div>
   );
 }
 

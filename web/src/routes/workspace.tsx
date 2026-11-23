@@ -77,7 +77,7 @@ import { ApiFailure, api, workspaces } from "@/lib/api";
 import type { AuditNames } from "@/lib/audit";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
-import { matches, type Narrow } from "@/lib/claude-oversight";
+import { ADMIN_EMAIL, matches, more, type Narrow, OVERSIGHT, whatAdminsSee } from "@/lib/claude-oversight";
 import { cn } from "@/lib/cn";
 import { approvedBy, minutesText } from "@/lib/enrollment";
 import { ago, agoShort, driverProblem } from "@/lib/format";
@@ -1925,6 +1925,7 @@ function WorkspaceSettings({ w }: { w: G.Workspace }) {
       <You w={w} />
       {admin && <General w={w} />}
       {admin && <Access w={w} />}
+      {admin && w.claude_oversight && <ClaudeOversightSection w={w} settings={w.claude_oversight} />}
       {admin && <Autopilots w={w} />}
       {w.role === "owner" && <Primary w={w} />}
     </>
@@ -2023,7 +2024,16 @@ function You({ w }: { w: G.Workspace }) {
         </div>
         <Field
           label="Claude connection"
-          hint="Your sessions in this workspace run on it: a company's seat here, your own plan elsewhere."
+          hint={
+            <>
+              Your sessions in this workspace run on it: a company's seat here, your own plan elsewhere.
+              {w.claude_oversight && (
+                <span className="mt-1 block">
+                  {whatAdminsSee(w.name, w.claude_oversight.oversight, w.claude_oversight.limit_pauses)}
+                </span>
+              )}
+            </>
+          }
         >
           {(id) => (
             <Select
@@ -2443,6 +2453,141 @@ function Access({ w }: { w: G.Workspace }) {
           </div>
         </div>
       </Dialog>
+    </Section>
+  );
+}
+
+/**
+ * What the workspace's admins see of its members' Claude connections, within what the instance lets
+ * them, whether limit pauses too, and how they hear of tokens that run out or stop working.
+ */
+function ClaudeOversightSection({ w, settings }: { w: G.Workspace; settings: G.ClaudeOversightSettings }) {
+  const { data: me } = useMe();
+  const email = useInstance().data?.features.email ?? false;
+  const instanceAdmin = me?.user.role === "owner" || me?.user.role === "admin";
+  const save = useMutation({
+    mutationFn: (b: G.UpdateWorkspaceRequest) => workspaces.update(w.id, b),
+    onSuccess: (x, b) => {
+      queryClient.setQueryData(keys.workspace(w.slug), x);
+      refresh();
+      void queryClient.invalidateQueries({ queryKey: keys.workspaceClaude(w.id) });
+      const s = x.claude_oversight;
+      toast(
+        b.claude_oversight !== undefined && s
+          ? s.oversight === "off"
+            ? `Saved: ${w.name}'s admins see nothing of members' Claude connections`
+            : s.oversight === "readiness"
+              ? "Saved: the People tab says only whether each member's sessions can run"
+              : "Saved: the People tab shows each member's Claude connection"
+          : b.claude_admin_email !== undefined && s
+            ? s.admin_email === "off"
+              ? "Saved: admins get no email about members' Claude connections"
+              : s.admin_email === "each"
+                ? "Saved: admins get an email each time a token runs out soon or stops"
+                : "Saved: admins get one email a week while a token runs out soon or stopped"
+            : "Saved",
+      );
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const capped = settings.most !== "details";
+  // Who decides what the instance lets workspace admins see.
+  const decides = instanceAdmin ? (
+    <>
+      : change that in{" "}
+      <Link to="/admin" search={{ tab: "settings" }} className="underline underline-offset-2">
+        Admin → Settings
+      </Link>
+      .
+    </>
+  ) : (
+    ", as its admins decided."
+  );
+  return (
+    <Section
+      title="Claude"
+      description="What its admins see of the Claude subscriptions members' sessions run on, never a token or its account, and how they hear of those that run out."
+    >
+      <div className="flex flex-col gap-7">
+        <Field
+          label="Admins see"
+          hint={
+            <>
+              {settings.oversight === "details"
+                ? "On the People tab: what kind of Claude connection each member's sessions run on, its plan, when Claude last answered it and when it runs out."
+                : settings.oversight === "readiness"
+                  ? "On the People tab: whether each member's sessions can run on Claude, and when their token runs out."
+                  : "Nothing of members' Claude connections."}{" "}
+              Members read this in their settings here.
+              {capped && (
+                <span className="mt-1 block">
+                  This instance lets workspace admins see{" "}
+                  {settings.most === "off" ? "nothing" : "whether sessions can run"} at most{decides}
+                </span>
+              )}
+            </>
+          }
+        >
+          {(id) => (
+            <Select
+              id={id}
+              value={settings.oversight}
+              disabled={save.isPending || settings.most === "off"}
+              onChange={(v) => save.mutate({ claude_oversight: v })}
+              options={OVERSIGHT.map((o) => ({
+                ...o,
+                disabled: more(o.value, settings.most),
+                description: more(o.value, settings.most)
+                  ? "More than this instance lets admins see"
+                  : o.description,
+              }))}
+            />
+          )}
+        </Field>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Limit pauses
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              {!settings.limit_pauses_allowed ? (
+                <>
+                  This instance doesn't show workspace admins their members' limit pauses{decides} Admins see
+                  whose sessions wait for a limit to reset now.
+                </>
+              ) : settings.oversight !== "details" ? (
+                "Only where admins see the details. They see whose sessions wait for a limit to reset now."
+              ) : (
+                "Admins see how often each member's sessions paused on usage limits this week and this month: whose plan runs short for the work. Either way they see whose sessions wait for a limit to reset now."
+              )}
+            </span>
+          </span>
+          <Switch
+            checked={settings.limit_pauses && settings.oversight === "details"}
+            disabled={save.isPending || !settings.limit_pauses_allowed || settings.oversight !== "details"}
+            onChange={(v) => save.mutate({ claude_limit_pauses: v })}
+            label="Limit pauses"
+          />
+        </div>
+        <Field
+          label="Email admins"
+          hint={
+            settings.oversight === "off"
+              ? "Nothing goes while admins see nothing of members' Claude connections."
+              : email
+                ? "When a member's long-lived token runs out within a month, and when Claude stops taking a member's connection. Each member hears of their own whatever this says."
+                : "This instance sends no email, so nothing goes whatever this says: the People tab shows it."
+          }
+        >
+          {(id) => (
+            <Select
+              id={id}
+              value={settings.admin_email}
+              disabled={save.isPending}
+              onChange={(v) => save.mutate({ claude_admin_email: v })}
+              options={ADMIN_EMAIL}
+            />
+          )}
+        </Field>
+      </div>
     </Section>
   );
 }
