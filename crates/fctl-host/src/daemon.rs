@@ -946,6 +946,13 @@ impl Daemon {
         }
     }
 
+    /// The control connection is up, after none: while it was down, no
+    /// heartbeat watched sessions start and end here, so a full idle while
+    /// counts from now.
+    fn connected(&mut self) {
+        self.idle.reset();
+    }
+
     /// Whether a stop signal ends the host now: not while a retirement's
     /// command has run and the runner hasn't left yet.
     fn may_stop(&self) -> bool {
@@ -1432,6 +1439,9 @@ impl Daemon {
             }
         }
         let h = session::spawn(self.ctx.clone(), Start::New(spec), self.events_tx.clone());
+        // Something runs: the idle while starts again, even should it end
+        // before the next heartbeat looks.
+        self.idle.reset();
         self.sessions.insert(id, h);
     }
 
@@ -1585,6 +1595,7 @@ impl Daemon {
         shutdown: &mut oneshot::Receiver<()>,
     ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
+        self.connected();
         let hello = self.greet();
         ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(hello))).await?;
         let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
@@ -2218,6 +2229,12 @@ mod tests {
         let minutes = |m: u64| tokio::time::advance(Duration::from_secs(m * 60));
         d.check_idle();
         minutes(19).await;
+        d.check_idle();
+        assert_eq!(d.retiring, None);
+        // Connected again after an outage, which no heartbeat watched: the
+        // while starts again.
+        d.connected();
+        minutes(2).await;
         d.check_idle();
         assert_eq!(d.retiring, None);
         // A session in between starts the while again.
