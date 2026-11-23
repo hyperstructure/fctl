@@ -2926,7 +2926,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    runs to tens of kilobytes that each wake would read again, and it has
    heard of the notes and answers of the parts it read. Its owner follows its own session, which
    notifies only of what it asks, and of its own sessions failing four
-   times in a row, after which fctl goes on trying
+   times in a row, and each day they go on failing, while fctl goes on
+   trying
    ([Notifications](#notifications)).
 3. **Waking** (`crate::autopilots`). ScheduleObject's alarm, which starts
    schedules' runs, wakes autopilots too: at the earliest of the two, each
@@ -2969,8 +2970,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    its sessions often mends by itself, a runner that lost its network
    say, and it carries on then
    ([ADR 0098](adr/0098-autopilots-keep-trying-after-their-sessions-fail.md)).
-   At the fourth failure in a row, those who follow its own session hear
-   of it once. When its owner can no longer manage its project (or, for
+   A retry takes the place of its check-in, so that it tries no more often
+   than that unless something else wakes it sooner. At the fourth failure
+   in a row those who follow its own session hear of it, and again every
+   24 failures while they go on. When its owner can no longer manage its project (or, for
    a workspace's, is no longer an admin), has no Claude connection or is
    gone, its project is archived, or its workspace turned autopilots off,
    fctl pauses it at its next wake and says why (`Autopilot.problem`
@@ -4226,8 +4229,9 @@ when it waits. An autopilot's sessions notify only when they ask: its own
 session, and those it started while it is on, finish turns, pause and fail
 for the autopilot, which hears of them and goes on by itself
 (`notify::Audience`). When its own sessions keep failing (four times in
-a row), fctl says so once to those who follow its own session, as a
-failure (`notify::Kind::AutopilotFailing`), and goes on trying every hour.
+a row), fctl says so to those who follow its own session, as a failure
+(`notify::Kind::AutopilotFailing`), and again each day they go on, while
+it goes on trying every hour.
 A review agent's finished turn is its review's.
 Starting
 or resuming a session follows it, unless the person turned that off in

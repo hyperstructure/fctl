@@ -81,9 +81,11 @@ pub const PEOPLE_GATHER_MS: i64 = 5_000;
 /// often mends by itself: a runner that lost its network, GitHub or
 /// Anthropic down for a while.
 pub const RETRY_MS: [i64; 3] = [5 * MINUTE_MS, 15 * MINUTE_MS, HOUR_MS];
-/// The failure in a row of its own sessions that people hear of, once
-/// ([`failing`]): fctl goes on trying.
+/// The failure in a row of its own sessions that people first hear of
+/// ([`failing`]), and how many more go before they hear again: once a day
+/// of tries every hour. fctl goes on trying.
 pub const FAILING_AFTER: u32 = 4;
+pub const FAILING_AGAIN_AFTER: u32 = 24;
 
 // ───────────────────────────── what people set ─────────────────────────────
 
@@ -579,6 +581,16 @@ pub fn retry_in(failures: u32) -> i64 {
         .or(RETRY_MS.last())
         .copied()
         .unwrap_or(HOUR_MS)
+}
+
+/// Whether people hear that its own sessions keep failing at its
+/// `failures`-th failure in a row: at [`FAILING_AFTER`], and every
+/// [`FAILING_AGAIN_AFTER`] after while they go on, so that one with no
+/// session to tell them through yet tells them once it has.
+pub fn tells(failures: u32) -> bool {
+    failures
+        .checked_sub(FAILING_AFTER)
+        .is_some_and(|past| past % FAILING_AGAIN_AFTER == 0)
 }
 
 /// What people hear once its own sessions failed [`FAILING_AFTER`] times
@@ -3350,6 +3362,12 @@ mod tests {
         assert_eq!(retry_in(500), HOUR_MS);
         assert_eq!(retry_in(u32::MAX), HOUR_MS);
         assert_eq!(retry_in(0), 5 * MINUTE_MS);
+    }
+
+    #[test]
+    fn people_hear_of_failures_at_the_fourth_then_every_day() {
+        let told: Vec<u32> = (0..60).filter(|f| tells(*f)).collect();
+        assert_eq!(told, [4, 28, 52]);
     }
 
     #[test]

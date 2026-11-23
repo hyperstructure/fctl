@@ -1254,9 +1254,11 @@ async fn wake_failed(
     let after = ap::retry_in(failures);
     q(
         db,
-        "UPDATE autopilots SET failures = ?4, wake_reasons = CASE WHEN wake_reasons = '' THEN ?1 \
-         WHEN ?1 = '' THEN wake_reasons ELSE wake_reasons || ',' || ?1 END, \
-         wake_at = MIN(COALESCE(wake_at, ?2), ?2) WHERE project_id = ?3 AND state = 'on'",
+        &format!(
+            "UPDATE autopilots SET failures = ?4, wake_reasons = CASE WHEN wake_reasons = '' THEN ?1 \
+             WHEN ?1 = '' THEN wake_reasons ELSE wake_reasons || ',' || ?1 END, \
+             wake_at = {RETRY_AT} WHERE project_id = ?3 AND state = 'on'"
+        ),
         &[
             s(&row.wake_reasons),
             n(now + after),
@@ -1279,7 +1281,9 @@ async fn wake_failed(
         now,
     )
     .await;
-    if failures == ap::FAILING_AFTER {
+    // A new autopilot has no session to tell people through yet: they hear
+    // a day later, if it goes on.
+    if ap::tells(failures) {
         notify_people(
             env,
             db,
@@ -1292,6 +1296,37 @@ async fn wake_failed(
     }
     ring(env).await;
     Ok(())
+}
+
+/// When an autopilot that is to try again at `?2` wakes: then, rather than
+/// at its check-in, which a wake set counting from then, so that one with a
+/// short check-in tries no more often than [`ap::retry_in`] says; but at the
+/// time it asked for, or for what else waits (people, its sessions), when
+/// that is sooner.
+const RETRY_AT: &str = "CASE WHEN wake_reasons = '' AND asked_wake_at IS NULL THEN ?2 \
+     WHEN wake_at IS NULL OR wake_at > ?2 THEN ?2 ELSE wake_at END";
+
+/// Wakes it at `at` to try again after its own session failed
+/// ([`RETRY_AT`]).
+async fn retry(env: &Env, db: &D1Database, project_id: &str, at: i64) -> AppResult<()> {
+    if retrying(db, project_id, at)?.run().await? > 0 {
+        ring(env).await;
+    }
+    Ok(())
+}
+
+/// What [`retry`] writes.
+fn retrying(db: &D1Database, project_id: &str, at: i64) -> AppResult<Query> {
+    q(
+        db,
+        &format!(
+            "UPDATE autopilots SET wake_at = {RETRY_AT}, \
+             wake_reasons = CASE WHEN instr(',' || wake_reasons || ',', ',' || ?3 || ',') > 0 THEN wake_reasons \
+               WHEN wake_reasons = '' THEN ?3 ELSE wake_reasons || ',' || ?3 END \
+             WHERE project_id = ?1 AND state = 'on'"
+        ),
+        &[s(project_id), n(at), s(AutopilotWakeReason::Retry.as_str())],
+    )
 }
 
 /// What [`woke_line`] says of [`AutopilotWakeReason::Fresh`], alone.
@@ -2152,7 +2187,8 @@ pub fn other_view<'a>(c: &'a CrewRow, question: Option<&'a str>) -> ap::OtherVie
 
 /// What a session that moved means to its autopilot (from SessionObject):
 /// its own session's turn ended (it checks in next at its time, or the
-/// time it asked for) or failed (fctl tries again, then pauses it); one of
+/// time it asked for) or failed (fctl tries again, sooner then every hour,
+/// and never pauses it for that: [`retry`]); one of
 /// those it started ended a turn, asks something, failed or stopped while
 /// it waited for its background work (fctl wakes it soon: SessionObject
 /// tells it of those alone, `ap::crew_wakes`).
@@ -2252,10 +2288,10 @@ pub async fn session_moved(
                         now,
                     )
                     .await;
-                    nudge(env, &db, autopilot, AutopilotWakeReason::Retry, now + after).await?;
+                    retry(env, &db, autopilot, now + after).await?;
                     // Its sessions' failures notify nobody, but people hear
-                    // once that they keep failing.
-                    if failures == ap::FAILING_AFTER {
+                    // that they keep failing, then again each day they do.
+                    if ap::tells(failures) {
                         notify_people(
                             env,
                             &db,
@@ -3772,8 +3808,9 @@ pub async fn notify_ask(env: &Env, db: &D1Database, row: &AutopilotRow, text: &s
 
 /// Tells the people who follow the autopilot's own session what of it
 /// waits for them, `kind` with `text`, in a notification that opens its tab:
-/// what it asks, or that fctl paused it. Its sessions keep the rest to
-/// themselves (`fctl_domain::notify::Audience`).
+/// what it asks, or that its own sessions keep failing. Its sessions keep
+/// the rest to themselves (`fctl_domain::notify::Audience`). Nobody hears
+/// of one that has had no session of its own yet.
 async fn notify_people(
     env: &Env,
     db: &D1Database,
@@ -3877,6 +3914,57 @@ mod tests {
         .first()
         .await?;
         Ok(c.map_or(0, |c| c.n))
+    }
+
+    /// A retry after its own session failed takes the place of its
+    /// check-in, however short, but not of what else waits to wake it
+    /// sooner, nor of a sooner time it asked for.
+    #[wasm_bindgen_test]
+    async fn a_retry_takes_the_place_of_its_check_in() -> AppResult<()> {
+        const MINUTE: i64 = 60_000;
+        let db = testing::database();
+        autopilot(&db).await?;
+        async fn retried(
+            db: &D1Database,
+            wake_at: i64,
+            reasons: &str,
+            asked: Option<i64>,
+        ) -> AppResult<(Option<i64>, String)> {
+            q(
+                db,
+                "UPDATE autopilots SET wake_at = ?1, wake_reasons = ?2, asked_wake_at = ?3 WHERE project_id = 'prj_web'",
+                &[n(wake_at), s(reasons), crate::db::on(asked)],
+            )?
+            .run()
+            .await?;
+            retrying(db, "prj_web", NOW + HOUR)?.run().await?;
+            let r = row(db, "prj_web")
+                .await?
+                .ok_or_else(|| internal("no autopilot"))?;
+            Ok((r.wake_at, r.wake_reasons))
+        }
+        // As a wake left it, with its 15-minute check-in next: the retry,
+        // in an hour, takes its place.
+        assert_eq!(
+            retried(&db, NOW + 15 * MINUTE, "", None).await?,
+            (Some(NOW + HOUR), "retry".to_owned())
+        );
+        // A note waits to wake it in a minute: it does.
+        assert_eq!(
+            retried(&db, NOW + MINUTE, "steered", None).await?,
+            (Some(NOW + MINUTE), "steered,retry".to_owned())
+        );
+        // It asked to wake in half an hour: it does, and in two hours: the
+        // retry comes first.
+        assert_eq!(
+            retried(&db, NOW + 30 * MINUTE, "", Some(NOW + 30 * MINUTE)).await?,
+            (Some(NOW + 30 * MINUTE), "retry".to_owned())
+        );
+        assert_eq!(
+            retried(&db, NOW + 2 * HOUR, "", Some(NOW + 2 * HOUR)).await?,
+            (Some(NOW + HOUR), "retry".to_owned())
+        );
+        Ok(())
     }
 
     /// A session of its own is an earlier one once it works in another,

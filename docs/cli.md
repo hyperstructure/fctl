@@ -1004,8 +1004,9 @@ usage limit or fails, in every browser where you turned notifications on
 (Settings → Notifications in the web app; on iPhone and iPad, fctl added to
 the Home Screen). You follow the sessions you start and resume. An
 autopilot's own session, and those it starts while it is on, notify you only
-when they ask you something, or once its own sessions failed four times in
-a row: it looks after the rest itself, and fctl goes on trying every hour.
+when they ask you something, or when its own sessions failed four times in
+a row, and each day they go on failing: it looks after the rest itself, and
+fctl goes on trying every hour.
 
 ```sh
 fctl notifications status                   # what notifies you, and the browsers that get it

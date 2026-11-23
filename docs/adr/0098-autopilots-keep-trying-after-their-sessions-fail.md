@@ -29,12 +29,19 @@ as most do, costs its owner's plan nothing.
   then every hour, until a session of its own ends a turn, which counts
   its failures from nothing again, or people pause it
   (`fctl_domain::autopilot::retry_in`). Its log says each failure, and
-  when fctl tries again.
-- **People hear of it once**: at the fourth failure in a row, where it
-  paused before, those who follow its own session get a notification
-  that its sessions keep failing, why the last did, and that it tries
-  again every hour (`notify::Kind::AutopilotFailing`). Between that and a
-  session that works, its failures notify nobody, as before.
+  when fctl tries again. This supersedes ADR 0080's "its own session
+  failing three times in a row pauses it".
+- **A retry takes the place of its check-in**, which a wake sets counting
+  from then: one with a 15-minute check-in tries again no more often than
+  the retries say, unless people or its sessions wake it sooner, or it
+  asked to wake sooner.
+- **People hear of it**: at the fourth failure in a row, where it paused
+  before, those who follow its own session get a notification that its
+  sessions keep failing, why the last did, and that it tries again every
+  hour (`notify::Kind::AutopilotFailing`), and again every 24 failures,
+  a day of hourly tries, while they go on. A new autopilot that has had
+  no session yet has no one to tell, until it has one. Its sessions'
+  other failures notify nobody, as before.
 - Autopilots that fctl paused this way before stay paused until people
   resume them.
 
@@ -46,4 +53,4 @@ as most do, costs its owner's plan nothing.
   until people pause it or fix what fails it: a sandbox on a runner, and
   for a failure after Claude started, some of its owner's plan, at most
   24 times a day. Its page says that its last session failed and when it
-  tries again.
+  tries again, and its people hear of it each day.
