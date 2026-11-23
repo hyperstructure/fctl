@@ -625,6 +625,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     for line in started_lines(&s) {
         println!("{line}");
     }
+    if let Some(snap) = &s.snapshot {
+        println!("snapshot: {}", snapshot_line(snap));
+    }
     if let Some(b) = &s.branch {
         println!(
             "branch:   {}{}",
@@ -688,6 +691,39 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     }
     println!("{}", style::dim(&format!("{}/s/{}", api.base(), s.id)));
     Ok(())
+}
+
+/// `fctl show`'s line for a session's last snapshot: `its conversation and
+/// uncommitted work, 12 MB, saved 2h ago on aws-7; kept until 2026-12-23`.
+fn snapshot_line(s: &fctl_proto::session::SessionSnapshot) -> String {
+    let what = match (s.conversation, s.changes) {
+        (true, true) => "its conversation and uncommitted work",
+        (true, false) => "its conversation",
+        (false, true) => "its uncommitted work",
+        (false, false) => "nothing",
+    };
+    let on = s
+        .saved_on
+        .as_deref()
+        .map(|r| format!(" on {}", style::plain(r)))
+        .unwrap_or_default();
+    let left = if s.left_out.is_empty() {
+        String::new()
+    } else {
+        format!(", without its {}", s.left_out.join(" or "))
+    };
+    let until = s
+        .expires_at
+        .map(|t| {
+            let iso = fctl_domain::account::iso8601(t);
+            format!("; kept until {}", iso.get(..10).unwrap_or(&iso))
+        })
+        .unwrap_or_default();
+    format!(
+        "{what}, {}{left}, saved {}{on}{until}",
+        fctl_domain::snapshots::size_words(s.size),
+        style::ago(s.saved_at)
+    )
 }
 
 /// `fctl show`'s lines for who started a session, and for whom: a review

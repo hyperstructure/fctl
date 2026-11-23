@@ -389,6 +389,14 @@ reaches only the public internet, and app.fctl.sh sets neither.
   sets another `download_base`
   ([Host updates](architecture.md#host-updates)); a version that isn't
   published there, such as a build of your own, leaves them where they are.
+- **Disk.** Sessions' snapshots take most of the data directory: each
+  session stopped in the last 30 days keeps its conversation and the work
+  its agent hadn't pushed, encrypted, a few MB, and at most
+  `max_snapshot_mb` (200 MiB unless `fctl admin set --max-snapshot-mb`
+  says otherwise). Workspaces keep them fewer days with `fctl workspaces
+  set --snapshot-days`, and none with `--snapshots off`; `fctl admin set
+  --snapshots off` turns them off for the whole instance
+  ([Session snapshots](architecture.md#session-snapshots)).
 - **Backups.** Everything is in the data directory. Stop the server and
   copy it, or snapshot its volume: `docker run --rm -v fctl-data:/data -v
   "$PWD":/backup busybox tar czf /backup/fctl-data.tgz /data`. Unless you
@@ -510,7 +518,11 @@ Other secrets go in with `--set`, the GitHub App's key with
   its host service's.
 - **Costs.** The control plane is request- and storage-priced on Cloudflare;
   the work happens on your hardware and your Claude subscriptions. fctl never
-  makes Anthropic API calls.
+  makes Anthropic API calls. Sessions' snapshots are most of what it
+  stores: a few MB for each session stopped in the last 30 days, in
+  Durable Object storage (`fctl workspaces set --snapshot-days`, `fctl
+  admin set --max-snapshot-mb` and `--snapshots off` bound them,
+  [Session snapshots](architecture.md#session-snapshots)).
 - **Removing it.** `fctl host uninstall` on each runner first, while the
   control plane can still stop their sessions (`--force` stops the ones
   that run), then `npx wrangler delete fctl` and

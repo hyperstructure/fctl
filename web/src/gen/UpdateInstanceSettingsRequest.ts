@@ -15,4 +15,8 @@ export_interval_hours?: number, service_account_consent?: boolean, members_creat
 /**
  * 0: any number.
  */
-max_workspaces?: number, };
+max_workspaces?: number, snapshots?: boolean, 
+/**
+ * 1 to [`MAX_SNAPSHOT_MB`].
+ */
+max_snapshot_mb?: number, };

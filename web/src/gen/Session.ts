@@ -12,6 +12,7 @@ import type { SessionReview } from "./SessionReview";
 import type { SessionRole } from "./SessionRole";
 import type { SessionSchedule } from "./SessionSchedule";
 import type { SessionServiceAccount } from "./SessionServiceAccount";
+import type { SessionSnapshot } from "./SessionSnapshot";
 import type { SessionStats } from "./SessionStats";
 import type { SessionStatus } from "./SessionStatus";
 import type { SessionTicket } from "./SessionTicket";
@@ -156,4 +157,11 @@ claude_connection?: CredentialId,
  * is theirs, on their subscription. Absent for other sessions, and
  * from control planes before service accounts.
  */
-service_account?: SessionServiceAccount, };
+service_account?: SessionServiceAccount, 
+/**
+ * Its last snapshot, which a resume on another runner restores
+ * (docs/architecture.md#session-snapshots). Only `GET
+ * /api/v1/sessions/{id}` says it; absent while it has none, in lists,
+ * and from older control planes.
+ */
+snapshot?: SessionSnapshot, };

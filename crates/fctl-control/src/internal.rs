@@ -286,6 +286,15 @@ pub struct HomeSessions {
     pub sessions: Vec<String>,
 }
 
+/// A snapshot in a SessionDO (`/snapshot/commit`, `/snapshot/delete`):
+/// its id, and for a commit how many parts it has and their bytes.
+#[derive(Serialize, Deserialize)]
+pub struct SnapshotParts {
+    pub id: String,
+    pub parts: u32,
+    pub size: u64,
+}
+
 /// Asks FleetDO what a workspace's pools need now (`POST /demand`): all of
 /// them, or those of the enrollment tokens `pools` names.
 #[derive(Serialize, Deserialize)]

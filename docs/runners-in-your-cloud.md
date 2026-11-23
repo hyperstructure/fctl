@@ -749,22 +749,29 @@ ended, and a message resumes it on another runner.
 ## What happens to sessions when a machine goes
 
 - **Drained.** No new session starts on the machine. Turns under way
-  finish, and sessions that wait for a message stop after a minute. A
-  message then resumes each on another runner, from its branch, in a
-  new sandbox: the agent starts without Claude's conversation of before,
-  but with its work and its transcript in fctl.
-- **Past the deadline.** What still runs stops, and the agents push what
-  they committed first, then it's as above. So a turn longer than the
-  deadline loses what it hadn't committed.
+  finish, and sessions that wait for a message stop after a minute, each
+  saving a snapshot of Claude's conversation and the work its agent
+  hadn't pushed. A message then resumes each on another runner, in a new
+  sandbox, as it was: the conversation goes on, and the work is back,
+  uncommitted where it was
+  ([Session snapshots](architecture.md#session-snapshots)).
+- **Past the deadline.** What still runs stops: the agents push what they
+  committed and save their snapshots, then it's as above, with the turn
+  cut off where it was. The host uploads the snapshots before it says
+  the sessions stopped, so leave a minute or two of the cloud's notice
+  for that.
 - **Gone without a word** (a Spot reclaim without notice, a crash).
   The sessions stop ten minutes after the runner went quiet, and a
-  message resumes them elsewhere, without what their agents hadn't
-  pushed. fctl removes the runner after 15 minutes.
+  message resumes them elsewhere, from their branch, without the
+  conversation of the run that was cut off or what their agents hadn't
+  pushed: nothing had time to save it. fctl removes the runner after 15
+  minutes.
 
-Machines that live longer keep more conversations: scale in slowly
-(AWS's default cooldown, Compute Engine's scale-in controls, Azure's
-autoscale rules), and keep long sessions on machines the group keeps
-(its minimum size).
+Snapshots are on unless a workspace's admins turn them off, and kept 30
+days (`fctl workspaces set --snapshot-days`). A resume on the machine that
+has the session's sandbox starts fastest: scale in slowly (AWS's default
+cooldown, Compute Engine's scale-in controls, Azure's autoscale rules),
+and keep long sessions on machines the group keeps (its minimum size).
 
 ### Spot machines
 

@@ -902,6 +902,25 @@ fn again_within(deadline: Instant, delay: Duration, now: Instant) -> bool {
 /// host tries again.
 const RESUME_AGAIN_AFTER: Duration = Duration::from_secs(10);
 
+/// The most bytes of snapshot this run's agent may hand over: its spec's,
+/// where it asks for one; and, for a run the host recovered after a
+/// restart, whose spec it no longer has, as much as any instance allows
+/// (the control plane refuses what the session's own doesn't keep).
+/// `None`: it saves none.
+fn snapshot_limit(spec: Option<&SessionSpec>) -> Option<u64> {
+    match spec {
+        Some(s) => s.snapshot.as_ref().filter(|s| s.save).map(|s| s.max_bytes),
+        None => Some(u64::from(fctl_proto::api::MAX_SNAPSHOT_MB) * 1024 * 1024),
+    }
+}
+
+/// Whether this run's spec asks its agent to save a snapshot as it stops:
+/// not known, so not said, for a run the host recovered after a restart.
+fn saves_by_spec(spec: Option<&SessionSpec>) -> bool {
+    spec.and_then(|s| s.snapshot.as_ref())
+        .is_some_and(|s| s.save)
+}
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -1239,6 +1258,18 @@ async fn run(
     let (jobs, mut ready) = files::start(api.clone(), session_id.clone());
     let (published_tx, mut published_rx) = mpsc::unbounded_channel::<Published>();
     let (answered_tx, mut answered_rx) = mpsc::unbounded_channel::<Answered>();
+    // A snapshot the agent hands over as it stops, and its upload, which
+    // ends before the run is said to have; and the parts of one fetched
+    // for an agent that restores it.
+    let mut spool: Option<crate::snapshots::Spool> = None;
+    // Whether any of a snapshot came, and whether the stop's deadline cut
+    // the run off before its agent said it had ended.
+    let mut snapshot_came = false;
+    let mut forced = false;
+    // When the stop began, which bounds how long parts may keep it waiting.
+    let mut stop_since: Option<Instant> = None;
+    let mut upload: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
+    let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<HostToAgent>();
     // Screenshots and calls under way (`MAX_IN_FLIGHT`).
     let mut in_flight: usize = 0;
     let set_report = |status: SessionStatus, seq: Option<u64>| {
@@ -1641,6 +1672,61 @@ async fn run(
                             call(api.clone(), session_id.clone(), request_id, c, answered_tx.clone());
                         }
                     }
+                    AgentToHost::SnapshotPart { id, n, data, saved } => {
+                        // Only a run that may save one sends a snapshot,
+                        // within the size it allows.
+                        let max_bytes = snapshot_limit(spec.as_deref());
+                        if n == 0 {
+                            if let Some(old) = spool.take() {
+                                old.discard();
+                            }
+                            match max_bytes {
+                                Some(max) => match crate::snapshots::Spool::start(&ctx.cfg.data_dir(), &session_id, &id, max) {
+                                    Ok(s) => spool = Some(s),
+                                    Err(e) => tracing::warn!("{session_id}: spooling its snapshot: {e}"),
+                                },
+                                None => tracing::warn!("{session_id}: its agent sent a snapshot its spec doesn't ask for; ignoring it"),
+                            }
+                        }
+                        if let Some(mut s) = spool.take_if(|s| s.id == id) {
+                            match s.add(n, &data) {
+                                Err(e) => {
+                                    tracing::warn!("{session_id}: its snapshot: {e}");
+                                    host_log(&uplink, LogLevel::Warn, format!("The session's snapshot wasn't saved: {e}."));
+                                    s.discard();
+                                }
+                                Ok(()) => {
+                                    snapshot_came = true;
+                                    // A stop waits while its parts come.
+                                    if let Some((destroy, deadline)) = stop {
+                                        let most = stop_since.unwrap_or_else(Instant::now) + crate::snapshots::STOP_MOST;
+                                        stop = Some((destroy, deadline.max(Instant::now() + crate::snapshots::STOP_PER_PART).min(most)));
+                                    }
+                                    match saved {
+                                        Some(saved) => {
+                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved));
+                                        }
+                                        None => spool = Some(s),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    AgentToHost::SnapshotWanted { id } => {
+                        let wanted = spec
+                            .as_ref()
+                            .and_then(|s| s.snapshot.as_ref())
+                            .and_then(|s| s.restore.as_ref())
+                            .filter(|r| r.id == id)
+                            .cloned();
+                        match wanted {
+                            Some(r) => crate::snapshots::fetch(api.clone(), session_id.clone(), r, snapshot_tx.clone()),
+                            None => l.send(HostToAgent::SnapshotMissing {
+                                id,
+                                why: "this runner's host doesn't know it: it restarted since the session started here".into(),
+                            }),
+                        }
+                    }
                     AgentToHost::Exited { status, reason } => {
                         set_report(status, None);
                         exited = Some((status, reason));
@@ -1753,6 +1839,10 @@ async fn run(
                     None => queued.push(HostToAgent::Deliver { delivery }),
                 },
             },
+            Some(frame) = snapshot_rx.recv() => match &link {
+                Some(l) => l.send(frame),
+                None => queued.push(frame),
+            },
             Some((request_id, result)) = published_rx.recv() => {
                 in_flight = in_flight.saturating_sub(1);
                 let (file, error) = match result {
@@ -1862,8 +1952,14 @@ async fn run(
                     }
                     if stop.is_none() {
                         // Without a link, the agent gets it once the host
-                        // attaches again, or its sandbox stops at the deadline.
-                        stop = Some((destroy, Instant::now() + Duration::from_secs(60)));
+                        // attaches again, or its sandbox stops at the
+                        // deadline: later for one that saves a snapshot.
+                        // A run recovered after a restart, whose spec the
+                        // host no longer has, may save one too. The wait
+                        // only holds an agent that doesn't end by itself.
+                        let wait = if snapshot_limit(spec.as_deref()).is_some() { crate::snapshots::STOP_SAVING } else { Duration::from_secs(60) };
+                        stop = Some((destroy, Instant::now() + wait));
+                        stop_since = Some(Instant::now());
                         let frame = HostToAgent::Stop { reason, grace_ms: 30_000 };
                         match &link {
                             Some(l) => l.send(frame),
@@ -1902,6 +1998,7 @@ async fn run(
             _ = tick.tick() => {
                 if let Some((_, deadline)) = stop
                     && Instant::now() > deadline {
+                        forced = exited.is_none();
                         break exited.clone().unwrap_or((SessionStatus::Stopped, Some("Stopped (forced)".into())));
                     }
                 // Its VM stopped answering, and the host stopped it, for
@@ -1959,6 +2056,50 @@ async fn run(
 
     // Give the uplink a moment to deliver the agent's last events.
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    // The snapshot the agent saved is the session's before its run ends,
+    // so that a resume elsewhere finds it.
+    if let Some(up) = upload.take() {
+        let failed = match tokio::time::timeout(crate::snapshots::UPLOAD_LIMIT, up).await {
+            Ok(Ok(Ok(()))) => None,
+            Ok(Ok(Err(e))) => Some(e),
+            Ok(Err(e)) => Some(e.to_string()),
+            Err(_) => {
+                tracing::warn!("{session_id}: its snapshot's upload ran out of time");
+                Some("its upload ran out of time".into())
+            }
+        };
+        if let Some(why) = failed {
+            uplink.send(UplinkUp::Notice {
+                notice: Notice::new(
+                    NoticeLevel::Warn,
+                    "snapshot_not_saved",
+                    format!("The session's snapshot wasn't saved: {why}. A resume on another runner starts from the task and the branch."),
+                ),
+            });
+        }
+    }
+    // Cut off by the stop's deadline before any of it came, from an agent
+    // that would have saved one.
+    if forced && !snapshot_came && saves_by_spec(spec.as_deref()) {
+        uplink.send(UplinkUp::Notice {
+            notice: Notice::new(
+                NoticeLevel::Warn,
+                "snapshot_not_saved",
+                "The session's snapshot wasn't saved: the run ended before its agent saved one. A resume on another runner starts from the task and the branch.",
+            ),
+        });
+    }
+    // Its agent hadn't sent all of it when the run ended.
+    if let Some(s) = spool.take() {
+        s.discard();
+        uplink.send(UplinkUp::Notice {
+            notice: Notice::new(
+                NoticeLevel::Warn,
+                "snapshot_not_saved",
+                "The session's snapshot wasn't saved: its agent hadn't sent all of it when the run ended. A resume on another runner starts from the task and the branch.",
+            ),
+        });
+    }
     let destroy = stop.map(|(d, _)| d).unwrap_or(false);
     let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
     if let Err(e) = stopped {
@@ -2183,6 +2324,39 @@ fn agent_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run's spec may let its agent save a snapshot of some size; one the
+    /// host recovered after a restart has no spec here, and may save as
+    /// much as any instance allows.
+    #[test]
+    fn a_run_saves_snapshots_as_its_spec_allows() -> anyhow::Result<()> {
+        let spec = |snapshot: serde_json::Value| -> anyhow::Result<SessionSpec> {
+            Ok(serde_json::from_value(serde_json::json!({
+                "session_id": "ses_test", "number": 1, "title": "Test",
+                "project": {"id": "prj_test", "slug": "w", "name": "W", "default_branch": "main", "settings": {}},
+                "branch": "fctl/1-test", "base_branch": "main",
+                "author": {"id": "usr_test", "name": "Ada"},
+                "claude_session_id": "00000000-0000-0000-0000-000000000000",
+                "resume": false, "secrets": {},
+                "credentials": {"claude": {"id": "crd_test", "kind": "setup_token", "access_token": "t", "scopes": []}},
+                "git_author": {"name": "fctl", "email": "fctl@example.com"}, "co_authors": [],
+                "web_url": "https://fctl.test/s/ses_test", "idle_timeout_secs": 600,
+                "snapshot": snapshot,
+            }))?)
+        };
+        let saves = spec(serde_json::json!({"key": "a2V5", "save": true, "max_bytes": 1000}))?;
+        assert_eq!(snapshot_limit(Some(&saves)), Some(1000));
+        let restores = spec(serde_json::json!({"key": "a2V5", "save": false, "max_bytes": 1000}))?;
+        assert_eq!(snapshot_limit(Some(&restores)), None);
+        assert_eq!(snapshot_limit(Some(&spec(serde_json::Value::Null)?)), None);
+        assert_eq!(snapshot_limit(None), Some(2048 * 1024 * 1024));
+        // Only a spec that asks for one says a run saves; a recovered run's
+        // isn't known.
+        assert!(saves_by_spec(Some(&saves)));
+        assert!(!saves_by_spec(Some(&restores)));
+        assert!(!saves_by_spec(None));
+        Ok(())
+    }
 
     #[test]
     fn tries_a_file_again_only_while_fctl_agent_waits() {

@@ -62,6 +62,7 @@ pub mod service_accounts;
 pub mod settings;
 pub mod size;
 pub mod slugs;
+pub mod snapshots;
 pub mod threads;
 pub mod throttle;
 pub mod tickets;

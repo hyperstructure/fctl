@@ -176,6 +176,20 @@ pub enum HostToAgent {
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<ApiError>,
     },
+    /// A part of the snapshot the agent asked for
+    /// ([`AgentToHost::SnapshotWanted`]): its bytes, base64, in order.
+    SnapshotPart {
+        id: String,
+        n: u32,
+        data: String,
+        last: bool,
+    },
+    /// The snapshot the agent asked for can't be had: why, which the
+    /// transcript says as the agent starts without it.
+    SnapshotMissing {
+        id: String,
+        why: String,
+    },
     /// The control plane's answer to [`AgentToHost::Call`], or why there is
     /// none.
     Answer {
@@ -287,6 +301,28 @@ pub enum AgentToHost {
     ClaudeConnection {
         id: String,
     },
+    /// A part of the snapshot the agent saved as the sandbox stops
+    /// ([`crate::runner::SessionSpec::snapshot`]), in order, before
+    /// `Exited`: the last one says what it holds. The host uploads it once
+    /// the last part is in, before it says the run ended. Agents send it
+    /// only when the spec asks them to save one, which reaches them only
+    /// through hosts that announce [`crate::runner::FEATURE_SNAPSHOTS`].
+    SnapshotPart {
+        id: String,
+        n: u32,
+        data: String,
+        /// On the last part: what it holds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        saved: Option<SnapshotSaved>,
+    },
+    /// The agent wants the snapshot the spec names, for a sandbox that
+    /// doesn't have the conversation: the host fetches it and sends its
+    /// parts ([`HostToAgent::SnapshotPart`]), or says why not
+    /// ([`HostToAgent::SnapshotMissing`]).
+    SnapshotWanted {
+        id: String,
+    },
     /// The supervisor is exiting.
     Exited {
         status: SessionStatus,
@@ -296,6 +332,31 @@ pub enum AgentToHost {
     },
     Pong,
 }
+
+/// What a snapshot an agent saved holds, as the control plane keeps it
+/// (`crate::runner::SnapshotRef`): never the conversation, which is
+/// encrypted.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SnapshotSaved {
+    /// Its encrypted bytes, and their SHA-256, hex.
+    pub size: u64,
+    pub sha256: String,
+    pub claude_version: Option<String>,
+    /// The last event the run journaled before it saved it.
+    pub agent_seq: u64,
+    pub conversation: bool,
+    pub changes: bool,
+    /// What it left out to stay within the limit: `images`, `changes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub left_out: Vec<String>,
+}
+
+/// What agents that save and restore session snapshots announce in their
+/// hello ([`AgentHello::features`]).
+pub const FEATURE_AGENT_SNAPSHOTS: &str = "snapshots";
 
 /// The environment variable that holds the session socket's path, set for
 /// Claude and everything it runs.

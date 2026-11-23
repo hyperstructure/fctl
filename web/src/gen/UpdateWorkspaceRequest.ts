@@ -30,4 +30,13 @@ skip_invites?: boolean,
  * Let its projects have autopilots (experimental). Turning it off
  * pauses those it has.
  */
-autopilots?: boolean, };
+autopilots?: boolean, 
+/**
+ * Its sessions save snapshots ([`Workspace::snapshots`]). Turning it
+ * off deletes those it kept within the hour.
+ */
+snapshots?: boolean, 
+/**
+ * See [`Workspace::snapshot_days`].
+ */
+snapshot_days?: number, };

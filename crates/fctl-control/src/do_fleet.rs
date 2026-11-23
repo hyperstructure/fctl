@@ -20,8 +20,8 @@ use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer, Placement};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
     ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_DRIVERS, FEATURE_REVIEWS,
-    FEATURE_TRIAGE, FleetToHost, HostHello, HostSessionReport, HostToFleet, RunnerClaudeToken,
-    SandboxLimits, StopReason,
+    FEATURE_SNAPSHOTS, FEATURE_TRIAGE, FleetToHost, HostHello, HostSessionReport, HostToFleet,
+    RunnerClaudeToken, SandboxLimits, StopReason,
 };
 use fctl_proto::session::{GithubAccess, RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -215,6 +215,34 @@ struct DiskState {
     told: fctl_domain::disk::Told,
 }
 
+/// The runner among `candidates` that takes a session that wants `want`,
+/// with its project's `labels`, going back to `home` (and waiting for it,
+/// while busy, when `wait`): its id and name, or why none can now.
+fn pick_from(
+    candidates: &[&Candidate],
+    want: &spec::SessionWants,
+    labels: &[String],
+    home: Option<&str>,
+    wait: bool,
+) -> std::result::Result<(String, String), Wait> {
+    let slots: Vec<Slot<'_>> = candidates.iter().map(|c| c.slot(want)).collect();
+    let home = home
+        .and_then(|id| candidates.iter().find(|c| c.id == id))
+        .map(|c| Home {
+            id: &c.id,
+            name: &c.name,
+            wait,
+        });
+    let chosen =
+        fctl_domain::schedule::pick(&slots, labels, want.size, &want.image, home, want.review)?;
+    let name = candidates
+        .iter()
+        .find(|c| c.id == chosen.id)
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    Ok((chosen.id.to_owned(), name))
+}
+
 /// A connected runner, as scheduling sees it.
 struct Candidate {
     id: String,
@@ -242,6 +270,8 @@ struct Candidate {
     serves: Serves,
     /// Its pool packs sessions onto the busiest runner with room.
     packed: bool,
+    /// Its host restores session snapshots ([`FEATURE_SNAPSHOTS`]).
+    snapshots: bool,
 }
 
 /// Whose sessions a runner runs, and the pool it is in, as D1 had it at
@@ -2374,7 +2404,7 @@ impl FleetObject {
         // a session that asks for a pool's labels says it waits for that
         // pool, which may be starting its first runner.
         let ids: Vec<&str> = queued.iter().map(|q| q.session_id.as_str()).collect();
-        let wants = match spec::session_wants(&db, &ids).await {
+        let wants = match spec::session_wants(&db, &ids, now).await {
             Ok(w) => {
                 self.load_runner_workspaces(&db).await;
                 w
@@ -2427,6 +2457,10 @@ impl FleetObject {
             let spec = match built {
                 Ok(mut s) => {
                     s.run_id = Some(fctl_domain::ids::new_id("run", now));
+                    // Hosts that don't restore snapshots get none, and save none.
+                    if !self.host_has(&runner_id, FEATURE_SNAPSHOTS) {
+                        s.snapshot = None;
+                    }
                     // Hosts from before triage can't read a spec that has it.
                     if let Some(g @ GithubAccess::Triage) = s.github_access {
                         s.github_access = Some(fctl_domain::limits::for_host(
@@ -2609,6 +2643,7 @@ impl FleetObject {
                     reviews: hello.features.iter().any(|f| f == FEATURE_REVIEWS),
                     unready,
                     claude_token: hello.claude_token,
+                    snapshots: hello.features.iter().any(|f| f == FEATURE_SNAPSHOTS),
                     serves,
                 })
             })
@@ -2697,7 +2732,7 @@ impl FleetObject {
             .env
             .d1("DB")
             .map_err(|e| ApiError::internal(e.to_string()))?;
-        let Some(want) = spec::session_wants(&db, &[session_id])
+        let Some(want) = spec::session_wants(&db, &[session_id], now_ms())
             .await
             .map_err(|e| e.0)?
             .remove(session_id)
@@ -2852,7 +2887,9 @@ impl FleetObject {
             std::collections::HashMap::new()
         } else {
             let ids: Vec<&str> = queue.iter().map(|q| q.session_id.as_str()).collect();
-            spec::session_wants(&db, &ids).await.map_err(|e| e.0)?
+            spec::session_wants(&db, &ids, now_ms())
+                .await
+                .map_err(|e| e.0)?
         };
         let waiting: Vec<(&QueueRow, &spec::SessionWants)> = queue
             .iter()
@@ -2921,7 +2958,9 @@ impl FleetObject {
             .collect();
         if !queued.is_empty() {
             let refs: Vec<&str> = queued.iter().map(String::as_str).collect();
-            let wants = spec::session_wants(&db, &refs).await.map_err(|e| e.0)?;
+            let wants = spec::session_wants(&db, &refs, now_ms())
+                .await
+                .map_err(|e| e.0)?;
             ids.extend(wants.into_values().map(|w| w.workspace_id));
         }
         let mut workspaces = Vec::new();
@@ -2996,22 +3035,22 @@ impl FleetObject {
         wait: bool,
     ) -> std::result::Result<(String, String), Wait> {
         let candidates = self.candidates();
-        let slots: Vec<Slot<'_>> = candidates.iter().map(|c| c.slot(want)).collect();
-        let home = home
-            .and_then(|id| candidates.iter().find(|c| c.id == id))
-            .map(|c| Home {
-                id: &c.id,
-                name: &c.name,
-                wait,
-            });
-        let chosen =
-            fctl_domain::schedule::pick(&slots, labels, want.size, &want.image, home, want.review)?;
-        let name = candidates
-            .iter()
-            .find(|c| c.id == chosen.id)
-            .map(|c| c.name.clone())
-            .unwrap_or_default();
-        Ok((chosen.id.to_owned(), name))
+        // With a snapshot to restore, a resume doesn't wait for a busy
+        // runner that has its sandbox: it starts as it was where a host
+        // restores snapshots and can take it now, the runner with its
+        // sandbox first, which has more (`crate::snapshots`). Where none
+        // can, it waits, or starts, as any other.
+        if want.snapshot {
+            let restoring: Vec<&Candidate> = candidates
+                .iter()
+                .filter(|c| c.snapshots || home == Some(c.id.as_str()))
+                .collect();
+            if let Ok(picked) = pick_from(&restoring, want, labels, home, false) {
+                return Ok(picked);
+            }
+        }
+        let all: Vec<&Candidate> = candidates.iter().collect();
+        pick_from(&all, want, labels, home, wait)
     }
 
     async fn stop(&self, b: Stop) -> std::result::Result<serde_json::Value, ApiError> {
