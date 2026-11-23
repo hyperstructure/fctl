@@ -300,10 +300,10 @@ impl Daemon {
         let (chores_tx, chores_rx) = mpsc::unbounded_channel();
         let mut update_check = tokio::time::interval(UPDATE_CHECK_EVERY);
         update_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        if let Some(after) = ctx.cfg.retire_after() {
+        if ctx.cfg.retire_after().is_some() {
             tracing::info!(
-                "retiring this machine once its runner has run nothing for {} minutes{} (retire_idle_minutes in host.toml)",
-                after.as_secs() / 60,
+                "retiring this machine once its runner has run nothing for {}{} (retire_idle_minutes in host.toml)",
+                fctl_domain::enrollment::minutes(ctx.cfg.retire_idle_minutes),
                 match &ctx.cfg.retire_command {
                     Some(c) => format!(", with `{c}`"),
                     None => String::new(),
@@ -920,8 +920,8 @@ impl Daemon {
             return;
         }
         tracing::info!(
-            "nothing has run here for {} minutes: draining the runner to retire this machine",
-            after.as_secs() / 60
+            "nothing has run here for {}: draining the runner to retire this machine",
+            fctl_domain::enrollment::minutes(self.ctx.cfg.retire_idle_minutes)
         );
         self.retiring = Some(Retiring::Draining);
         let api = self.runner_api();

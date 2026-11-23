@@ -2076,6 +2076,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn drains_wait_and_machines_retire_as_long_as_they_are_told() {
+        use std::time::Duration;
+        assert_eq!(timeout_arg("90s"), Ok(Duration::from_secs(90)));
+        assert_eq!(timeout_arg("10m"), Ok(Duration::from_secs(600)));
+        assert_eq!(timeout_arg(" 2H "), Ok(Duration::from_secs(7200)));
+        assert!(timeout_arg("90").is_err());
+        assert!(timeout_arg("0s").is_err());
+        assert_eq!(duration_words(Duration::from_secs(90)), "90 seconds");
+        assert_eq!(duration_words(Duration::from_secs(60)), "1 minute");
+        assert_eq!(duration_words(Duration::from_secs(600)), "10 minutes");
+        assert_eq!(duration_words(Duration::from_secs(7200)), "2 hours");
+        assert_eq!(retire_arg("20m"), Ok(RetireAfter(20)));
+        assert_eq!(retire_arg("1h"), Ok(RetireAfter(60)));
+        assert_eq!(retire_arg("never"), Ok(RetireAfter(0)));
+        let mut cfg = HostConfig::default();
+        assert_eq!(retire_sentence(&cfg), None);
+        cfg.retire_idle_minutes = 20;
+        cfg.retire_command = Some("systemctl poweroff".into());
+        assert_eq!(
+            retire_sentence(&cfg).as_deref(),
+            Some(
+                "Once its runner has run nothing for 20 minutes, this machine drains, runs `systemctl poweroff` and leaves (retire_idle_minutes)."
+            )
+        );
+    }
+
+    #[test]
     fn doctor_says_which_vm_holds_up_apples_container_and_how_to_stop_it() {
         assert_eq!(
             not_answering("fctl-ses-01m7rm7hkxza3q8xpzzbx1prda", &[72625]),
