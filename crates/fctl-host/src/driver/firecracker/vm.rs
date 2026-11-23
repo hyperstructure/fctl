@@ -551,18 +551,33 @@ impl Vm {
     /// for it refuses one from Firecracker (`accept` fails, EACCES). A link
     /// made before goes: its passt took a connection that a restored
     /// snapshot, say, has lost.
-    pub async fn link_network(&self, passt: &Path) -> Result<()> {
+    ///
+    /// With `filter`, the host's fctl-agent, the connection goes through
+    /// `fctl-agent net-filter` first ([`Self::start_filter`]), which drops
+    /// the VM's frames to cloud metadata services: the VM's root, which can
+    /// change any route in the VM, can't change that, on the host.
+    pub async fn link_network(&self, passt: &Path, filter: Option<&Path>) -> Result<()> {
+        self.kill_one("filter").await;
         self.kill_one("passt").await;
         let conn = self.connect_port(NET_PORT, LINK_TIMEOUT).await?;
+        let link = match filter {
+            Some(agent) => self.start_filter(agent, conn)?,
+            None => std::os::fd::OwnedFd::from(conn),
+        };
         let ready = self.new_passt_pid()?;
         let log = std::fs::File::create(self.dir.join("passt.log"))?;
         let mut cmd = std::process::Command::new(passt);
         cmd.args(passt_args(&ready))
-            .stdin(Stdio::from(std::os::fd::OwnedFd::from(conn)))
+            .stdin(Stdio::from(link))
             .stdout(log.try_clone()?)
             .stderr(log);
-        let spawned = spawn_detached(&mut cmd, &self.pid_file("passt"))
-            .with_context(|| format!("starting {}", passt.display()))?;
+        let spawned = match spawn_detached(&mut cmd, &self.pid_file("passt")) {
+            Ok(spawned) => spawned,
+            Err(e) => {
+                self.kill_one("filter").await;
+                return Err(e).with_context(|| format!("starting {}", passt.display()));
+            }
+        };
         // passt makes its pid's file as it reads its options, writes its
         // pid there once it has set itself up and is about to take frames,
         // and exits when it can't.
@@ -574,11 +589,36 @@ impl Vm {
             if Instant::now() > until || self.pid("passt").is_none() {
                 let said = std::fs::read_to_string(self.dir.join("passt.log")).unwrap_or_default();
                 self.kill_one("passt").await;
+                self.kill_one("filter").await;
                 bail!("passt did not start: {}", said.trim());
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok(())
+    }
+
+    /// Starts `agent net-filter` between `conn`, the VM's link, and one end
+    /// of a socket pair, and gives back the other end, for passt. It runs
+    /// detached, as passt does, so that the VM's network outlives this
+    /// host's restarts, and exits once either end closes: passt exits with
+    /// it, and the next look links the VM again.
+    fn start_filter(
+        &self,
+        agent: &Path,
+        conn: std::os::unix::net::UnixStream,
+    ) -> Result<std::os::fd::OwnedFd> {
+        let (ours, passts) =
+            std::os::unix::net::UnixStream::pair().context("a socket pair for the VM's network")?;
+        let log = std::fs::File::create(self.dir.join("filter.log"))?;
+        let mut cmd = std::process::Command::new(agent);
+        // The VM's key in its command line tells it from other VMs'.
+        cmd.args(["net-filter", "--vm", &self.key])
+            .stdin(Stdio::from(std::os::fd::OwnedFd::from(conn)))
+            .stdout(Stdio::from(std::os::fd::OwnedFd::from(ours)))
+            .stderr(log);
+        spawn_detached(&mut cmd, &self.pid_file("filter"))
+            .with_context(|| format!("starting {} net-filter", agent.display()))?;
+        Ok(std::os::fd::OwnedFd::from(passts))
     }
 
     /// Whether `fctl-agent share` serves the VM a directory.
@@ -965,7 +1005,7 @@ impl Vm {
 
     /// Kills the VM's processes.
     pub async fn kill(&self) {
-        for what in ["firecracker", "passt", "share"] {
+        for what in ["firecracker", "passt", "filter", "share"] {
             self.kill_one(what).await;
         }
         // A link to its jail, as an earlier fctl made, or its own directory.
@@ -980,7 +1020,7 @@ impl Vm {
     /// can't wait (a drop).
     pub fn kill_now(&self) {
         use nix::sys::signal::{Signal, kill};
-        for what in ["firecracker", "passt"] {
+        for what in ["firecracker", "passt", "filter"] {
             if let Some(pid) = self.pid(what).and_then(|p| i32::try_from(p).ok()) {
                 let _ = kill(nix::unistd::Pid::from_raw(pid), Signal::SIGKILL);
             }
@@ -2501,6 +2541,71 @@ mod tests {
         Ok((close, got))
     }
 
+    /// With the host's fctl-agent as its filter, a VM's link goes through
+    /// `fctl-agent net-filter` on its way to passt and back, a link made
+    /// again takes the first filter's place, and the filter goes with the
+    /// VM, passt too. Stand-ins: a Firecracker that waits, a passt that
+    /// echoes its input, and a filter that carries frames both ways.
+    #[tokio::test]
+    async fn links_the_vms_network_through_its_filter() -> Result<()> {
+        use crate::driver::fake::write_script;
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir()?;
+        let passt = dir.path().join("passt");
+        write_script(
+            &passt,
+            "#!/bin/sh\nfor a; do [ \"$prev\" = --pid ] && pid=$a; prev=$a; done\necho $$ > \"$pid\"\ncat >&0\n",
+        )?;
+        // As fctl-agent net-filter: the VM's frames on to passt, and
+        // passt's back. Without `exec`, so that its command line keeps the
+        // VM's key.
+        let agent = dir.path().join("fctl-agent");
+        write_script(
+            &agent,
+            "#!/bin/sh\n[ \"$1 $2\" = \"net-filter --vm\" ] || exit 2\nexec 3>&0\ncat <&1 >&3 &\nback=$!\ncat\nkill $back\n",
+        )?;
+        let firecracker = dir.path().join("firecracker");
+        write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
+        let vm = Vm::new(dir.path().join("fctl-ses-f"))?;
+        let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-f", Path::new("/r"));
+        vm.start(&spec, &firecracker, None).await?;
+        let (close, got) = vsock_stand_in(&vm.vsock())?;
+        vm.link_network(&passt, Some(&agent)).await?;
+        let first = vm.pid("filter");
+        assert!(vm.linked() && first.is_some());
+        // The VM's first frame went through the filter to passt, and back.
+        let until = Instant::now() + Duration::from_secs(5);
+        while got.lock().map(|g| g.clone()).unwrap_or_default() != b"\0\0\0\x02hi" {
+            assert!(Instant::now() < until, "the VM's frame didn't come back");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Linked again: the first filter goes.
+        vm.link_network(&passt, Some(&agent)).await?;
+        let alive = |pid: u32| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+                !s.rsplit_once(')')
+                    .is_some_and(|(_, r)| r.trim_start().starts_with('Z'))
+            })
+        };
+        assert!(
+            first.is_some_and(|p| !alive(p)),
+            "the first filter still runs"
+        );
+        assert!(vm.pid("filter").is_some() && vm.pid("filter") != first);
+        // The VM goes, and its filter and passt with it.
+        close.store(true, Ordering::Relaxed);
+        let until = Instant::now() + Duration::from_secs(5);
+        while vm.linked() || vm.pid("filter").is_some() {
+            assert!(
+                Instant::now() < until,
+                "the filter or passt outlived the link"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        vm.kill().await;
+        Ok(())
+    }
+
     /// The host links a VM's network once it is up: passt gets the
     /// connection, with nothing of it read, a link made again takes the
     /// first one's place, passt exits as the VM goes, and a start that
@@ -2564,7 +2669,11 @@ mod tests {
                 std::process::id().to_string(),
             )?;
         }
-        let e = vm.link_network(&failing).await.err().map(|e| e.to_string());
+        let e = vm
+            .link_network(&failing, None)
+            .await
+            .err()
+            .map(|e| e.to_string());
         assert_eq!(
             e.as_deref(),
             Some("passt did not start: No routable interface")
@@ -2572,7 +2681,7 @@ mod tests {
         let made = PathBuf::from(std::fs::read_to_string(&told)?.trim());
         assert!(made.is_absolute(), "{made:?}");
         assert!(!vm.linked() && !made.exists() && vm.passt_pid().is_none());
-        vm.link_network(&passt).await?;
+        vm.link_network(&passt, None).await?;
         let first = vm.pid("passt");
         assert!(vm.linked());
         // passt got the VM's first frame, which came with Firecracker's
@@ -2583,7 +2692,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         // Linked again: the first passt goes.
-        vm.link_network(&passt).await?;
+        vm.link_network(&passt, None).await?;
         let alive = |pid: u32| {
             std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
                 !s.rsplit_once(')')

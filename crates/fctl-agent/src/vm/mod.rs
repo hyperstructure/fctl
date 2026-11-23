@@ -24,7 +24,6 @@
 mod boot;
 mod mount;
 mod net;
-mod netlink;
 mod serve;
 mod unpack;
 

@@ -10,6 +10,11 @@
 //! - `fctl-agent share`, on a Firecracker host, serves a project's package
 //!   caches to a VM over its vsock (src/share), and `vm-mount` in the VM
 //!   mounts them.
+//! - `fctl-agent net-filter`, on a Firecracker host, carries a VM's network
+//!   to passt but for its frames to cloud metadata services
+//!   (src/net_filter.rs), and `keep-off-metadata`, in a helper container
+//!   beside a Docker sandbox, makes them unreachable from the sandbox's
+//!   network (src/metadata.rs).
 //!
 //! See docs/architecture.md and crates/fctl-proto/src/agent.rs.
 
@@ -21,6 +26,12 @@ mod id_tokens;
 mod journal;
 mod link;
 mod local;
+#[cfg(target_os = "linux")]
+mod metadata;
+#[cfg(target_os = "linux")]
+mod net_filter;
+#[cfg(target_os = "linux")]
+mod netlink;
 mod oom;
 mod orphan;
 mod prompt;
@@ -98,6 +109,21 @@ enum Command {
         dir: PathBuf,
         #[arg(long)]
         socket: PathBuf,
+    },
+    /// Make the cloud metadata services unreachable from this network
+    /// namespace (in a helper container that shares a Docker sandbox's).
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    KeepOffMetadata,
+    /// Carry a Firecracker VM's frames between its link (stdin) and passt
+    /// (stdout), but those to cloud metadata services (on the host).
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    NetFilter {
+        /// The VM's key, which tells the host this process from other
+        /// VMs' ones.
+        #[arg(long)]
+        vm: String,
     },
     /// Mount what the host shares on a vsock port at a directory, as a user's
     /// files (in a Firecracker VM, as root).
@@ -189,6 +215,13 @@ fn main() -> anyhow::Result<()> {
         Command::Share { dir, socket } => {
             init_logging(None)?;
             share::serve(&dir, &socket)
+        }
+        #[cfg(target_os = "linux")]
+        Command::KeepOffMetadata => metadata::keep_off(),
+        #[cfg(target_os = "linux")]
+        Command::NetFilter { vm: _ } => {
+            init_logging(None)?;
+            net_filter::run()
         }
         #[cfg(target_os = "linux")]
         Command::VmMount { port, dir, user } => vm::mount(port, &dir, user.as_deref()),

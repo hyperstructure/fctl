@@ -378,7 +378,9 @@ impl Driver {
                     container::ContainerDriver::apple().agent_as_root(cfg.agent_as_root),
                 )),
                 "docker" => Some(Driver::Container(
-                    container::ContainerDriver::docker().agent_as_root(cfg.agent_as_root),
+                    container::ContainerDriver::docker()
+                        .agent_as_root(cfg.agent_as_root)
+                        .allow_cloud_metadata(cfg.allow_cloud_metadata),
                 )),
                 "firecracker" => Some(Driver::Firecracker(firecracker::FirecrackerDriver::new(
                     cfg,
@@ -718,6 +720,18 @@ impl Driver {
             Self::Container(d) => d.install_agent(sb, binary).await,
             Self::Firecracker(d) => d.install_agent(sb, binary).await,
             Self::Lima(d) => d.install_agent(sb, binary).await,
+        }
+    }
+
+    /// Keeps a running sandbox off cloud metadata services
+    /// ([`fctl_domain::metadata`]), with `agent`, the host's fctl-agent for
+    /// sandboxes: Docker's ([`container::ContainerDriver::keep_off_metadata`]).
+    /// Firecracker's VMs are kept off them as their network is linked
+    /// ([`firecracker`]); the others aren't.
+    pub async fn keep_off_metadata(&self, sb: &Sandbox, agent: &Path) -> Result<()> {
+        match self {
+            Self::Container(d) => d.keep_off_metadata(sb, agent).await,
+            Self::Process(_) | Self::Firecracker(_) | Self::Lima(_) => Ok(()),
         }
     }
 

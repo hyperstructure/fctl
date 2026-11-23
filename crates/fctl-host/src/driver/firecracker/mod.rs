@@ -1104,7 +1104,8 @@ impl FirecrackerDriver {
                     let passt = self
                         .passt()
                         .context("passt is not installed: it gives the VMs their network")?;
-                    vm.link_network(&passt).await?;
+                    let filter = self.net_filter().await?;
+                    vm.link_network(&passt, filter.as_deref()).await?;
                 }
                 self.serve_caches_again(&vm, spec, log).await;
                 return Ok(sb);
@@ -1172,6 +1173,7 @@ impl FirecrackerDriver {
             .passt()
             .context("passt is not installed: it gives the VMs their network")?;
         let share = self.share_of(spec).await?;
+        let filter = self.net_filter().await?;
         let boot = Spec {
             kernel,
             initrd,
@@ -1202,7 +1204,7 @@ impl FirecrackerDriver {
         let jail = self.jail_for(&vm, &firecracker)?;
         vm.start(&boot, &firecracker, jail.as_ref()).await?;
         vm.wait_ready().await?;
-        if let Err(e) = vm.link_network(&passt).await {
+        if let Err(e) = vm.link_network(&passt, filter.as_deref()).await {
             vm.kill().await;
             return Err(e);
         }
@@ -1216,6 +1218,20 @@ impl FirecrackerDriver {
 
     /// What `spec`'s VM is served of the host's: its project's package
     /// caches, which `fctl-agent share` serves.
+    /// The fctl-agent that keeps the VMs off cloud metadata services
+    /// between each VM and its passt (`fctl-agent net-filter`,
+    /// [`Vm::link_network`]): the host's own, as `share`'s is. `None` where
+    /// the host lets sandboxes reach them (`allow_cloud_metadata`).
+    async fn net_filter(&self) -> Result<Option<PathBuf>> {
+        if self.host.allow_cloud_metadata {
+            return Ok(None);
+        }
+        crate::agentbin::linux_agent(&self.host)
+            .await
+            .context("getting fctl-agent to keep the VMs off cloud metadata services")
+            .map(Some)
+    }
+
     async fn share_of(&self, spec: &SandboxSpec) -> Result<Option<vm::Share>> {
         let Some(Spot::Dir(dir)) = &spec.cache else {
             return Ok(None);
@@ -1675,7 +1691,8 @@ impl FirecrackerDriver {
         let passt = self
             .passt()
             .context("passt is not installed: it gives the VMs their network")?;
-        if let Err(e) = vm.link_network(&passt).await {
+        let filter = self.net_filter().await?;
+        if let Err(e) = vm.link_network(&passt, filter.as_deref()).await {
             vm.kill().await;
             return Err(e);
         }
@@ -2470,6 +2487,16 @@ mod tests {
                 )
                 .await?;
             assert!(fetched.starts_with("HTTP/1."), "{fetched}");
+            // Not cloud metadata services: the host's filter answers the
+            // VM's connection there at once, as its gateway, whether or not
+            // this machine has one ([`FirecrackerDriver::net_filter`]).
+            let metadata = d
+                .exec(
+                    &sb,
+                    r#"exec bash -c 'timeout 5 bash -c "exec 3<>/dev/tcp/169.254.169.254/80" 2>&1; echo "exit $?"'"#,
+                )
+                .await?;
+            assert!(metadata.contains("No route to host"), "{metadata}");
             // A failing command says why; a program's input and output.
             let failed = d.exec(&sb, "echo oops >&2; exit 3").await;
             assert_eq!(failed.err().map(|e| e.to_string()).as_deref(), Some("oops"));

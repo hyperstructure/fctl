@@ -124,7 +124,21 @@ case "$1 $2" in
     [ ! -e "$d/no_networks" ] || { echo "Error response from daemon: not supported" >&2; exit 1; }
     case " $* " in *" com.docker.network.bridge.enable_icc=false "*) echo false ;; *) echo true ;; esac > "$d/network"
     echo "f00d" ;;
+  "inspect --format")
+    case "$3" in
+      "{{.Image}}")
+        [ -e "$d/containers/$4" ] || { echo "Error: No such object: $4" >&2; exit 1; }
+        cat "$d/containers/$4" ;;
+      *) exit 1 ;;
+    esac ;;
   "inspect "*) exit 1 ;;
+  "create --name")
+    [ ! -e "$d/fail_guard" ] || { echo "Error response from daemon: cannot join network namespace of a non running container" >&2; exit 1; }
+    echo "guard" ;;
+  "start -a")
+    [ ! -e "$d/fail_guard" ] || exit 1
+    echo "Cloud metadata services are unreachable from this network: 169.254.169.254" ;;
+  "rm -f") ;;
   "run "*)
     [ ! -e "$d/fail_run" ] || { echo "no room for it" >&2; exit 1; }
     [ ! -e "$d/full_disk" ] || { echo "docker: Error response from daemon: mkdir /var/lib/docker/overlay2/4f1c/merged: no space left on device." >&2; exit 125; }
@@ -269,6 +283,13 @@ impl FakeCli {
     /// Makes the sandbox one where fctl-agent ran as root.
     pub fn ran_agent_as_root(&self) -> Result<()> {
         std::fs::write(self.dir.path().join("agent_dir"), "")?;
+        Ok(())
+    }
+
+    /// Makes the helper that keeps a sandbox off cloud metadata services
+    /// fail to start.
+    pub fn fail_guards(&self) -> Result<()> {
+        std::fs::write(self.dir.path().join("fail_guard"), "")?;
         Ok(())
     }
 

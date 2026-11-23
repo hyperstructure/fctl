@@ -4675,6 +4675,23 @@ and `fctl ticket` reads and writes the project's tickets
 ([Ticket trackers](#ticket-trackers)), with no fctl credentials in the
 sandbox.
 
+Docker sandboxes don't reach cloud metadata services
+(`fctl_domain::metadata`), which hand out the machine's own credentials,
+unless the host lets them (`allow_cloud_metadata`, [ADR
+0093](adr/0093-hosts-keep-sandboxes-off-cloud-metadata-services.md)). They
+run without `NET_RAW`, and before fctl-agent starts in one, the host runs
+a helper container in its network namespace alone, with `NET_ADMIN` alone,
+from the sandbox's image by its ID, which runs a copy of the host's own
+fctl-agent (`fctl-agent keep-off-metadata`) to add routes that make those
+addresses unreachable there, and goes
+(`ContainerDriver::keep_off_metadata`). Nothing of the sandbox's runs with
+`NET_ADMIN`, so not even its root takes the routes out, and without raw
+sockets nothing sends around them. The host does it again as it starts
+fctl-agent in a sandbox that runs already, so that sandboxes from before
+it are kept off them too, and should it fail, the session goes on and its
+log says so. Firecracker's VMs are kept off them by their network's filter
+([Firecracker](#firecracker)).
+
 A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
 records when each one stopped (`stopped.json` in its data directory) and
@@ -4875,17 +4892,26 @@ need them too.
   applies (`accept` fails). The host has no bridge, TAP device or firewall
   rule for it. A VM reaches the internet and the host's network as a
   Docker container does, but neither other VMs nor the host's loopback,
-  and nothing reaches it from outside. It asks the host's nameservers, as
-  a Docker container does: those in `/etc/resolv.conf` but for any on the
-  loopback, and where only those are left (systemd-resolved's
-  `127.0.0.53`), the servers systemd-resolved asks; with none, passt's
-  forwarder to the host's resolver.
-- **Processes.** Firecracker and `passt` run in process groups of their
-  own, as the process driver's agents do, so restarting or updating the
-  host leaves them running; the host finds a VM's processes by the ids it
-  keeps and the sockets in their command lines, in a private directory of
-  the user's in `/tmp` (sockets' paths are limited to about 100 bytes).
-  A VM's console goes to `console.log` in its directory.
+  and nothing reaches it from outside. Nor cloud metadata services
+  (`fctl_domain::metadata`), unless the host lets sandboxes reach them
+  (`allow_cloud_metadata`): the connection goes to passt through
+  `fctl-agent net-filter`, the host's own fctl-agent, which the host
+  starts between them (`Vm::link_network`) and which drops the VM's frames
+  to those addresses, answering IPv4 ones with an ICMP "administratively
+  prohibited" as from the gateway, so that a connection there fails at
+  once ("No route to host"). The filter runs detached, as passt does, and
+  exits once either side closes, passt with it. The VM asks the host's
+  nameservers, as a Docker container does: those in `/etc/resolv.conf` but
+  for any on the loopback, and where only those are left
+  (systemd-resolved's `127.0.0.53`), the servers systemd-resolved asks;
+  with none, passt's forwarder to the host's resolver.
+- **Processes.** Firecracker, `passt` and the network's filter run in
+  process groups of their own, as the process driver's agents do, so
+  restarting or updating the host leaves them running; the host finds a
+  VM's processes by the ids it keeps and the sockets in their command
+  lines, in a private directory of the user's in `/tmp` (sockets' paths
+  are limited to about 100 bytes). A VM's console goes to `console.log` in
+  its directory.
 
 The VMs share no filesystem with the host: they mount a project's
 [package caches](#package-caches) from a file server beside each VM.

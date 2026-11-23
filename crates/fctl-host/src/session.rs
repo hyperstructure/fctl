@@ -1081,9 +1081,30 @@ async fn prepare(
             .await
             .context("getting fctl-agent for the sandbox")?;
         ctx.driver.install_agent(&sb, &bin).await?;
+        keep_off_metadata(ctx, &sb, &bin, &log_uplink).await;
     }
     ctx.driver.start_agent(&sb).await?;
     Ok((sb, for_agent))
+}
+
+/// Keeps the sandbox off cloud metadata services, before the agent starts
+/// in it ([`crate::driver::Driver::keep_off_metadata`]). Should that fail,
+/// the session goes on, and its log and the host's say so.
+async fn keep_off_metadata(
+    ctx: &HostCtx,
+    sb: &Sandbox,
+    agent: &std::path::Path,
+    log: &(dyn Fn(String) + Send + Sync),
+) {
+    if let Err(e) = ctx.driver.keep_off_metadata(sb, agent).await {
+        tracing::warn!(
+            "{} may reach cloud metadata services: keeping it off them failed: {e:#}",
+            sb.name
+        );
+        log(format!(
+            "This sandbox may reach the cloud's metadata service, which hands out the runner's own credentials when the runner is a cloud machine: keeping it off it failed: {e:#}"
+        ));
+    }
 }
 
 /// Why this host takes no session now: `studio's docker driver isn't ready:
@@ -1110,14 +1131,19 @@ fn stop_asked(cmds: &mut mpsc::UnboundedReceiver<SessionCmd>) -> bool {
 /// One that runs keeps running.
 async fn start_again(ctx: &HostCtx, sb: &Sandbox) -> Result<()> {
     if ctx.driver.needs_linux_agent() {
-        let installed = async {
-            let bin = crate::agentbin::linux_agent(&ctx.cfg)
-                .await
-                .context("getting fctl-agent for the sandbox")?;
-            ctx.driver.install_agent(sb, &bin).await
-        };
-        if let Err(e) = installed.await {
-            tracing::warn!("putting this host's fctl-agent in {}: {e:#}", sb.name);
+        match crate::agentbin::linux_agent(&ctx.cfg).await {
+            Ok(bin) => {
+                if let Err(e) = ctx.driver.install_agent(sb, &bin).await {
+                    tracing::warn!("putting this host's fctl-agent in {}: {e:#}", sb.name);
+                }
+                // A sandbox from before hosts kept sandboxes off cloud
+                // metadata services is kept off them from now on.
+                keep_off_metadata(ctx, sb, &bin, &|_| {}).await;
+            }
+            Err(e) => tracing::warn!(
+                "putting this host's fctl-agent in {}: getting fctl-agent for the sandbox: {e:#}",
+                sb.name
+            ),
         }
     }
     ctx.driver.start_agent(sb).await
