@@ -1305,9 +1305,9 @@ token. Docker sandboxes get routes that make those addresses unreachable,
 which a helper container with nothing but `NET_ADMIN` adds in their
 network, and run without `NET_RAW`, so that not even their root takes the
 routes out or sends around them; `ping` still works. Firecracker VMs'
-frames to them are dropped on the host before `passt` carries them, but
+frames to them are dropped on the host before `passt` carries them, but for
 DNS, which Google Cloud's metadata server answers as the machine's
-nameserver, and a connection there fails at once with "No route to host".
+nameserver; a connection there fails at once with "No route to host".
 Apple container and Lima VMs, whose root could change anything the host
 set inside them, and the process driver aren't kept off them. A runner
 whose sessions should use the machine's own cloud role sets

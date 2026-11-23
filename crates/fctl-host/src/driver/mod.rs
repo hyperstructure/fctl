@@ -723,6 +723,18 @@ impl Driver {
         }
     }
 
+    /// Removes the sandbox `name` where it could send around what keeps it
+    /// off cloud metadata services, so that the run starting makes a new
+    /// one: Docker's made with raw sockets
+    /// ([`container::ContainerDriver::retire_raw_sandbox`]). True when it
+    /// did.
+    pub async fn retire_raw_sandbox(&self, name: &str) -> Result<bool> {
+        match self {
+            Self::Container(d) => d.retire_raw_sandbox(name).await,
+            Self::Process(_) | Self::Firecracker(_) | Self::Lima(_) => Ok(false),
+        }
+    }
+
     /// Keeps a running sandbox off cloud metadata services
     /// ([`fctl_domain::metadata`]), with `agent`, the host's fctl-agent for
     /// sandboxes: Docker's ([`container::ContainerDriver::keep_off_metadata`]).

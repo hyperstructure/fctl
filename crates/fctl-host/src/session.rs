@@ -1005,6 +1005,14 @@ async fn prepare(
 ) -> Result<(Sandbox, Option<SandboxCache>)> {
     let name = sandbox_name(spec.session_id.as_str());
     let log_uplink = |line: String| host_log(uplink, LogLevel::Info, line);
+    // A sandbox that could send around what keeps it off cloud metadata
+    // services goes before anything goes by its being here, as the image
+    // below does: the run makes a new one, its project's build too.
+    if ctx.driver.retire_raw_sandbox(&name).await? {
+        log_uplink(format!(
+            "Starting in a new sandbox: {name} was made with raw sockets, with which it could reach the cloud's metadata service, so Claude starts a new conversation on the session's branch"
+        ));
+    }
     let want = ImageWant::of(&spec.project.settings, spec.project.repo.as_ref());
     let (image, fallback_image) = match want {
         // A sandbox that is here already keeps the image it was made from.

@@ -4688,12 +4688,14 @@ addresses unreachable there, and goes
 `NET_ADMIN`, so not even its root takes the routes out, and without raw
 sockets nothing sends around them. A run whose sandbox can't be kept off
 them doesn't start, and says why. A sandbox made with raw sockets (before
-this, or while the host let sandboxes reach them) is removed as its
-session next starts (`ContainerDriver::ensure`), and the session goes on
-in a new one; one that runs as the host restarts gets the routes as the
-host starts fctl-agent in it again, and its session hears that its root
-could still go around them until its next run. Firecracker's VMs are kept
-off them by their network's filter ([Firecracker](#firecracker)).
+this, or while the host let sandboxes reach them) is removed as a run of
+its session starts, before the host chooses the run's image
+(`ContainerDriver::retire_raw_sandbox`), and the run goes on in a new one,
+from its project's build where it has one; one that runs as the host
+restarts gets the routes as the host starts fctl-agent in it again, and
+its session hears that its root could still go around them until its next
+run. Firecracker's VMs are kept off them by their network's filter
+([Firecracker](#firecracker)).
 
 A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host

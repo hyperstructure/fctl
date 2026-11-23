@@ -799,26 +799,7 @@ impl ContainerDriver {
             name: spec.name.clone(),
             root: None,
         };
-        let mut state = self.state(&spec.name).await?;
-        // One made with raw sockets (before hosts kept sandboxes off cloud
-        // metadata services, or while this one let them reach them) could
-        // send around the routes that keep it off them: no run of the
-        // session is under way, so the session starts in a new one.
-        if state.is_some()
-            && self.flavor == Flavor::Docker
-            && !self.cloud_metadata
-            && self.keeps_raw_sockets(&spec.name).await?
-        {
-            log(format!(
-                "Starting in a new sandbox: {} was made with raw sockets, with which it could reach the cloud's metadata service, so Claude starts a new conversation on the session's branch",
-                spec.name
-            ));
-            self.run(&["rm", "-f", &spec.name])
-                .await
-                .with_context(|| format!("removing {}", spec.name))?;
-            state = None;
-        }
-        match state.as_deref() {
+        match self.state(&spec.name).await?.as_deref() {
             Some("running") => {
                 // Apple's `container` lists a sandbox it failed to stop as
                 // running, and refuses commands in it (see `halt`). A
@@ -1056,9 +1037,9 @@ impl ContainerDriver {
     /// for being here: the sandbox, which has neither it nor `NET_RAW`
     /// ([`Self::start_new`]), can neither take the routes out nor send
     /// around them. Run again on a sandbox kept off them, it changes
-    /// nothing. A sandbox made with raw sockets, which [`Self::ensure`]
-    /// replaces as its session next starts, gets the routes all the same,
-    /// and an error that says it can send around them. Apple's VMs, and
+    /// nothing. A sandbox made with raw sockets, which its session's next
+    /// run replaces ([`Self::retire_raw_sandbox`]), gets the routes all the
+    /// same, and an error that says it can send around them. Apple's VMs, and
     /// hosts that let sandboxes reach them, are left as they are.
     pub async fn keep_off_metadata(&self, sb: &Sandbox, agent: &Path) -> Result<()> {
         if self.flavor != Flavor::Docker || self.cloud_metadata {
@@ -1114,6 +1095,27 @@ impl ContainerDriver {
             );
         }
         Ok(())
+    }
+
+    /// Removes the Docker sandbox `name` where it has raw sockets, which
+    /// send frames around the routes that keep it off cloud metadata
+    /// services: one made before hosts kept sandboxes off them, or while
+    /// this one let them reach them. Docker can't take a capability from a
+    /// container, so the session's run makes a new one, from the image it
+    /// would make any from (its project's build, say). True when it did.
+    /// Only as a run starts, when nothing of the session's runs in it.
+    pub async fn retire_raw_sandbox(&self, name: &str) -> Result<bool> {
+        if self.flavor != Flavor::Docker || self.cloud_metadata {
+            return Ok(false);
+        }
+        if self.state(name).await?.is_none() || !self.keeps_raw_sockets(name).await? {
+            return Ok(false);
+        }
+        self.run(&["rm", "-f", name])
+            .await
+            .with_context(|| format!("removing {name}"))?;
+        self.stuck.forget(name);
+        Ok(true)
     }
 
     /// Whether the Docker sandbox `name` has raw sockets: it was made
@@ -2920,33 +2922,54 @@ mod tests {
     async fn docker_sandboxes_with_raw_sockets_go_as_their_session_starts() -> Result<()> {
         let default = spec(VERSION_IMAGE, None);
         let image = cli_image(VERSION_IMAGE);
-        // One made before, with raw sockets, which stopped: the session
-        // starts in a new one, and says why.
+        // One made before, with raw sockets, which stopped: it goes as a run
+        // starts, before anything goes by its being here, so that the run
+        // makes a new one as it would any (its project's build, say).
         let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
         cli.uses(&default.name, &image(&cli)?)?;
         cli.stopped(&default.name)?;
-        let (_, said) = cli.ensure(Flavor::Docker, &default).await?;
-        let calls = cli.calls();
-        let removed = calls.iter().position(|c| *c == "rm -f fctl-ses-1");
-        let made = calls
-            .iter()
-            .position(|c| c.starts_with("run -d ") && c.contains(" --cap-drop NET_RAW "));
-        assert!(removed.is_some() && made > removed, "{calls:?}");
-        assert!(said.iter().any(|l| l.contains("raw sockets")), "{said:?}");
-        // One made since, which stopped: started again, as it was.
+        let driver = cli.driver(Flavor::Docker);
+        assert!(driver.retire_raw_sandbox(&default.name).await?);
+        assert!(cli.calls().contains(&"rm -f fctl-ses-1".to_owned()));
+        assert!(!driver.exists(&default.name).await?);
+        cli.ensure(Flavor::Docker, &default).await?;
+        let made = cli.calls().into_iter().find(|c| c.starts_with("run -d "));
+        assert!(
+            made.as_deref()
+                .is_some_and(|r| r.contains(" --cap-drop NET_RAW ")),
+            "{made:?}"
+        );
+        // One made since, which stopped, stays, and starts again as it was.
         let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
         cli.ensure(Flavor::Docker, &default).await?;
         cli.stopped(&default.name)?;
+        assert!(
+            !cli.driver(Flavor::Docker)
+                .retire_raw_sandbox(&default.name)
+                .await?
+        );
         cli.ensure(Flavor::Docker, &default).await?;
         let calls = cli.calls();
         assert!(calls.contains(&"start fctl-ses-1".to_owned()), "{calls:?}");
         assert!(!calls.contains(&"rm -f fctl-ses-1".to_owned()), "{calls:?}");
-        // A host that lets sandboxes reach metadata keeps them.
+        // No sandbox, nothing to remove; and a host that lets sandboxes
+        // reach metadata keeps those with raw sockets.
         let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        assert!(
+            !cli.driver(Flavor::Docker)
+                .retire_raw_sandbox(&default.name)
+                .await?
+        );
         cli.uses(&default.name, &image(&cli)?)?;
         cli.stopped(&default.name)?;
         let driver = cli.driver(Flavor::Docker).allow_cloud_metadata(true);
-        driver.ensure(&default, &|_| {}).await?;
+        assert!(!driver.retire_raw_sandbox(&default.name).await?);
+        assert!(!cli.calls().contains(&"rm -f fctl-ses-1".to_owned()));
+        // Nor does ensure remove anything, whatever the image it is given.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.uses(&default.name, &image(&cli)?)?;
+        cli.stopped(&default.name)?;
+        cli.ensure(Flavor::Docker, &default).await?;
         assert!(!cli.calls().contains(&"rm -f fctl-ses-1".to_owned()));
 
         // One that runs with raw sockets gets the routes all the same, and
