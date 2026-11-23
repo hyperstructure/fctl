@@ -222,7 +222,10 @@ wait_turn "$id" "$n" && reply "$id"
   and counters of turns, tool calls and changed files (`.stats`).
 - A session that waits for a message stops after its project's idle timeout
   (ten minutes unless the project says otherwise); a message resumes it, in
-  the same sandbox and conversation while its runner still has them.
+  the same sandbox and conversation while its runner still has them, and
+  elsewhere from the snapshot its agent saved as it stopped: its
+  conversation and what it hadn't pushed, uncommitted again (`fctl show`
+  says what the session's holds).
 
 ## Reading a transcript
 
@@ -734,7 +737,7 @@ A fresh session takes its place after 12 hours, or once its context holds
 as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
 at the first wake between its turns, as it does when the runner that
 keeps its sandbox drains, or is gone while another runner would resume
-it without its conversation: it starts from the plan and log, so
+it: it starts from the plan and log, so
 the session keeps them current, and as its context nears that size each
 wake message says so. The session's details show how much is left, under
 its context. The fresh session checks what the last one promised

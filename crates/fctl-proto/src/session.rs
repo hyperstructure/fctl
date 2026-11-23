@@ -1528,6 +1528,34 @@ pub struct Session {
     /// is theirs, on their subscription. Absent for other sessions, and
     /// from control planes before service accounts.
     pub service_account: Option<SessionServiceAccount>,
+    /// Its last snapshot, which a resume on another runner restores
+    /// (docs/architecture.md#session-snapshots). Only `GET
+    /// /api/v1/sessions/{id}` says it; absent while it has none, in lists,
+    /// and from older control planes.
+    pub snapshot: Option<SessionSnapshot>,
+}
+
+/// A session's last snapshot: its conversation and uncommitted work, saved
+/// as its sandbox stopped, encrypted with a key of its own.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionSnapshot {
+    pub saved_at: crate::Millis,
+    /// The runner it was saved on.
+    pub saved_on: Option<String>,
+    /// Its bytes, compressed and encrypted.
+    pub size: u64,
+    pub conversation: bool,
+    /// Uncommitted work, or commits not pushed.
+    pub changes: bool,
+    /// What it left out to stay within the instance's limit: `images`,
+    /// `changes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub left_out: Vec<String>,
+    /// When it goes, as its workspace keeps them.
+    pub expires_at: Option<crate::Millis>,
 }
 
 /// A question a session's agent asks people, when it needs their input to

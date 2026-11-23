@@ -514,7 +514,10 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
 
 pub async fn get(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
-    http::ok(&a.row.to_session(Some(a.role)))
+    let mut session = a.row.to_session(Some(a.role));
+    // Where its last snapshot is, for those who look (its details).
+    session.snapshot = crate::snapshots::info(&ctx.db, id, ctx.now).await?;
+    http::ok(&session)
 }
 
 pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {

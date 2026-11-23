@@ -1639,7 +1639,23 @@ pub struct InstanceSettings {
     /// says. Lowering it takes nobody out of a workspace: those in more
     /// join and create no more until they are in fewer.
     pub max_workspaces: u32,
+    /// Sessions' snapshots (their conversation and uncommitted work,
+    /// encrypted) are kept in the control plane, for the workspaces that
+    /// keep them ([`Workspace::snapshots`]), so that a session resumes on
+    /// any runner as it was. On by default; off, no workspace saves any,
+    /// and those kept go within the hour.
+    pub snapshots: bool,
+    /// The most MiB one snapshot may take: past it, an agent leaves its
+    /// conversation's images out, then its uncommitted work, then saves
+    /// none. [`DEFAULT_MAX_SNAPSHOT_MB`] by default.
+    pub max_snapshot_mb: u32,
 }
+
+/// How many MiB one session snapshot may take until an instance's admins
+/// choose another limit ([`InstanceSettings::max_snapshot_mb`]).
+pub const DEFAULT_MAX_SNAPSHOT_MB: u32 = 200;
+/// The most they may choose.
+pub const MAX_SNAPSHOT_MB: u32 = 2048;
 
 /// How many workspaces one person can be a member of until an instance's
 /// admins choose another number ([`InstanceSettings::max_workspaces`]).
@@ -1657,6 +1673,8 @@ impl Default for InstanceSettings {
             service_account_consent: true,
             members_create_workspaces: true,
             max_workspaces: DEFAULT_MAX_WORKSPACES,
+            snapshots: true,
+            max_snapshot_mb: DEFAULT_MAX_SNAPSHOT_MB,
         }
     }
 }
@@ -1678,6 +1696,9 @@ pub struct UpdateInstanceSettingsRequest {
     pub members_create_workspaces: Option<bool>,
     /// 0: any number.
     pub max_workspaces: Option<u32>,
+    pub snapshots: Option<bool>,
+    /// 1 to [`MAX_SNAPSHOT_MB`].
+    pub max_snapshot_mb: Option<u32>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -1789,6 +1810,18 @@ pub struct Workspace {
     /// control planes before autopilots.
     #[serde(default)]
     pub autopilots: bool,
+    /// Its sessions save snapshots as their sandboxes stop (their
+    /// conversation and uncommitted work, encrypted), so that a session
+    /// resumes on any runner as it was: on by default, where the instance
+    /// keeps them ([`InstanceSettings::snapshots`]). False from control
+    /// planes before snapshots.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub snapshots: bool,
+    /// Days a session's snapshot stays after it was saved, 1 to 365: then
+    /// it goes, and the session resumes elsewhere from its task and branch.
+    /// Absent from control planes before snapshots.
+    pub snapshot_days: Option<u32>,
     /// Its own autopilot, which works in all its projects: the project it
     /// works from, and how it stands. Absent while it has none.
     pub autopilot: Option<WorkspaceAutopilot>,
@@ -1900,6 +1933,11 @@ pub struct UpdateWorkspaceRequest {
     /// Let its projects have autopilots (experimental). Turning it off
     /// pauses those it has.
     pub autopilots: Option<bool>,
+    /// Its sessions save snapshots ([`Workspace::snapshots`]). Turning it
+    /// off deletes those it kept within the hour.
+    pub snapshots: Option<bool>,
+    /// See [`Workspace::snapshot_days`].
+    pub snapshot_days: Option<u32>,
 }
 
 /// Someone in a workspace.
@@ -2719,6 +2757,17 @@ pub struct UpdateEnrollmentTokenRequest {
 pub struct CreatedEnrollmentToken {
     pub token: EnrollmentToken,
     pub secret: String,
+}
+
+/// `POST /api/v1/runner/sessions/{id}/snapshots/{snapshot}`, with the
+/// runner token, once every part is uploaded (`PUT
+/// …/snapshots/{snapshot}/parts/{n}`): the snapshot becomes the session's,
+/// in place of the one before.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SnapshotCommit {
+    pub saved: crate::agent::SnapshotSaved,
+    pub parts: u32,
 }
 
 /// A runner that drains.

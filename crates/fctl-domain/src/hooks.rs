@@ -2160,6 +2160,7 @@ fn sample_session(kind: Kind, project: &HookPlace, repo: &str, now: i64) -> Sess
         claude: None,
         claude_connection: None,
         service_account: None,
+        snapshot: None,
     })
 }
 

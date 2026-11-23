@@ -22,6 +22,7 @@ pub mod refresh;
 pub mod retire;
 pub mod service;
 pub mod session;
+pub mod snapshots;
 pub mod sysinfo;
 pub mod update;
 pub mod uplink;

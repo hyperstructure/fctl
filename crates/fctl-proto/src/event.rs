@@ -558,7 +558,9 @@ pub struct Notice {
     /// `ticket_created`, `ticket_commented`, `ticket_updated`,
     /// `ticket_replied`, `ticket_moved`, `ticket_failed`, `question_asked`,
     /// `question_withdrawn`, `autopilot_action`, `memory_nearly_out`,
-    /// `memory_killed`.
+    /// `memory_killed`, `snapshot_restored`, `snapshot_unusable`,
+    /// `snapshot_not_saved`, `snapshot_work_aside`, `snapshot_work_left_out`,
+    /// `snapshot_work_lost`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).

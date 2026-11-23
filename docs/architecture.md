@@ -1262,7 +1262,8 @@ credential, the links of published screenshots, projects' memories and
 sessions' retrospectives, projects' schedules and their runs, projects'
 autopilots with the notes people steer them with, what they ask and their
 logs, workspaces' and projects' webhooks (with their sealed secrets), the Linear
-workspaces fctl's app is installed in (with their sealed tokens), the
+workspaces fctl's app is installed in (with their sealed tokens), which
+snapshot is each session's (with its sealed key), the
 fctl workspaces connected to each, people's Linear accounts, Linear's
 agent sessions and the fctl sessions they reach, what agents wrote in
 their trackers in the last hour, the instance's settings, reserved slugs
@@ -1278,7 +1279,8 @@ fails is tried again by its alarm, as long after as writes have failed
 a newer one is followed by another. Resuming and stopping a session go by
 SessionDO's status, which D1's row may lag, and SessionDO refuses a
 message to a session that failed, whatever D1 says. It also keeps the images its agent read for a week (see
-[Images agents read](#images-agents-read)).
+[Images agents read](#images-agents-read)), and the session's snapshot, sealed
+(see [Session snapshots](#session-snapshots)).
 
 **FleetDO** (one per instance) holds runner control connections, assigns
 sessions to runners, and fans out session summaries to dashboard viewers.
@@ -1320,8 +1322,10 @@ passkey challenges, device codes and invites, early access requests whose
 address has an account or that are a year old, the links of expired
 published screenshots, abandoned Claude logins, what autopilots asked 90
 days after they heard the answer or took it back, memory notes stale as
-long as their project keeps them ([Project memory](#project-memory)), and
-audit log entries older than a year. It removes the runners that waited a week
+long as their project keeps them ([Project memory](#project-memory)),
+sessions' snapshots past their workspace's days
+([Session snapshots](#session-snapshots)), and audit log entries older
+than a year. It removes the runners that waited a week
 for approval or stayed offline longer than their enrollment token lets
 them, and revoked or expired enrollment tokens 90 days on, once no runner
 they enrolled is left ([Enrollment tokens](#enrollment-tokens)). It also looks up pull requests that GitHub
@@ -1574,8 +1578,10 @@ stops short (the drain's answer lost, a failed command, a restart) has
 the runner undrained, asked at every heartbeat until the control plane
 hears it, unless someone else had drained it.
 
-Sessions whose sandboxes the machine kept resume elsewhere, without their
-conversation, as after any machine that goes. A host in a Kubernetes pod
+Sessions whose sandboxes the machine kept resume elsewhere as after any
+machine that goes: from the snapshots they saved as they stopped, with
+their conversation and the work their agents hadn't pushed
+([Session snapshots](#session-snapshots)). A host in a Kubernetes pod
 keeps its pod's `controller.kubernetes.io/pod-deletion-cost` at the
 number of sessions it runs (`crates/fctl-host/src/kube.rs`, `[kubernetes]
 pod_deletion_cost` in `host.toml`, on by default), patching its own pod
@@ -1591,7 +1597,10 @@ sandboxes, journaling what they do, and the session page says since when
 the runner hasn't been heard from ([Viewers](#viewers)). Once its control
 connection has been closed for ten minutes, FleetDO marks its sessions
 stopped, so that a message resumes them on another runner, and remembers
-which ones it stopped this way (`stopped_away`, in its storage).
+which ones it stopped this way (`stopped_away`, in its storage). Their
+sandboxes saved no snapshot as the runner went, so a resume on another
+runner restores none of the run that was cut off: one saved before it is
+older than the run, and isn't used ([Session snapshots](#session-snapshots)).
 
 When the runner comes back and its hello reports one of them still
 running, and no other run of it has started since, the session carries
@@ -1606,12 +1615,119 @@ reason that says which (`fctl_domain::reconcile`).
 An autopilot whose own session such a runner had starts a fresh session
 at its next wake once that session is stopped (ten minutes after the
 runner went away, or at once when it was uninstalled or removed), if
-another runner would otherwise resume it in a new sandbox, without its
-conversation ([Autopilots](#autopilots)). The earlier session doesn't
+another runner would otherwise resume it in a new sandbox
+([Autopilots](#autopilots)). The earlier session doesn't
 carry on should its runner come back with it (`Known.superseded`): the
 fresh one has taken over. Where no other runner would run it (the
 workspace has only that one, say), the wake resumes it as a message
 would, and the resume waits for its runner.
+
+### Session snapshots
+
+A session that resumes on another runner, or after its sandbox was
+removed, carries on as it was: with Claude's conversation and the work
+its agent hadn't pushed, from a snapshot its agent saved as the sandbox
+stopped (`crates/fctl-agent/src/snapshot.rs`,
+`crates/fctl-control/src/snapshots.rs`,
+[ADR 0096](adr/0096-sessions-keep-their-conversation-in-encrypted-snapshots.md)).
+A workspace's sessions keep them unless its admins turn them off
+(`Workspace.snapshots`, `fctl workspaces set --snapshots off`), each for
+30 days after it was saved (`snapshot_days`, 1 to 365), and an instance
+keeps them unless its admins turn them off for every workspace
+(`InstanceSettings.snapshots`), at most 200 MiB each (`max_snapshot_mb`,
+up to 2,048). Review agents' sessions save none.
+
+1. **What it holds.** As the sandbox stops, for whatever reason (the idle
+   timeout, a person, a drain, an uninstall, a host that shuts down),
+   fctl-agent, after the run's last event, saves Claude Code's
+   conversation (`~/.claude/projects/<working directory>/<session>.jsonl`,
+   with what Claude Code keeps beside it: subagents' conversations, long
+   tool results, the session's todos) and, for each repository of the
+   session, its work that isn't on GitHub: a commit of its working tree
+   (untracked files with it, what `.gitignore` leaves out not) on top of
+   its commits not pushed, as a git bundle (`refs/fctl/wip/<session>`).
+   Git keeps what a tarball wouldn't: deletions, modes, which files were
+   untracked. Nothing else of the sandbox comes along: installed
+   packages, build output, files outside the repositories, running
+   processes.
+2. **Sealed in the sandbox.** It packs them into a gzipped tar and seals
+   it with the session's key, in 1 MiB segments of AES-256-GCM, each
+   bound to the session and its place (`fctl_domain::snapshots`), in a
+   directory the session's user writes (`~/.fctl/state` where fctl-agent
+   protects itself from that user). The key
+   is one random 256-bit key per session, made with its first spec that
+   may save one and kept in D1 sealed with the master key for
+   `snapshot:<session>` (`session_snapshots.key_enc`); each spec carries
+   it (`SessionSpec.snapshot`) to hosts that announce snapshots
+   (`FEATURE_SNAPSHOTS`, and their agents `FEATURE_AGENT_SNAPSHOTS`), and
+   no other: an older host's spec has none, and saves none. Past the
+   instance's limit, it leaves the conversation's images out (each
+   becomes a line that says so), then the work; past it still, it saves
+   none, and the transcript says why (`snapshot_not_saved`), as it names
+   a repository whose work it couldn't take (`snapshot_work_left_out`).
+3. **Kept in SessionDO.** The agent hands the sealed file to its host in
+   parts of 4 MiB (`AgentToHost::SnapshotPart`), which the host spools to
+   its data directory and uploads with its runner token, for the session
+   it runs: `PUT /api/v1/runner/sessions/{id}/snapshots/{snp}/parts/{n}`,
+   then `POST /api/v1/runner/sessions/{id}/snapshots/{snp}` with what it
+   holds. Only then does the host say the run ended (for ten minutes at
+   most), so that a message right after a stop finds it; a stop waits
+   three minutes, rather than one, for an agent that saves a snapshot,
+   and a minute more after each part it takes. The host takes only the
+   parts a spec asks for, up to its size (for a run it recovered after a
+   restart, whose spec it no longer has, up to the largest any instance
+   allows), and the transcript says when one is lost on the way. SessionDO keeps the parts in its storage, in rows of 1 MiB;
+   the commit marks the snapshot whole, D1's `session_snapshots` then
+   names it the session's, and only then does SessionDO let go of the one
+   before, so that D1 never names one whose parts are gone. D1 says its
+   size and SHA-256, the Claude Code that wrote it, the agent's last
+   event, and the runner it was saved on. The control plane refuses one,
+   and deletes its parts, for a session whose specs carry no key, where
+   the instance or the workspace keeps none, or past the instance's
+   limit. It never opens one.
+4. **Restored where the conversation isn't.** A spec names the session's
+   snapshot (`restore`) while it is kept. An agent whose sandbox lacks
+   the conversation (another runner's, or a new one where the old was
+   removed) asks its host for it as it prepares the workspace
+   (`AgentToHost::SnapshotWanted`); the host downloads its parts for the
+   session it runs (`GET …/snapshots/{snp}/parts/{n}`), and the agent
+   checks the SHA-256, opens it with the key, and puts the conversation
+   back under the new working directory's name and each repository's
+   work back where its branch is where the snapshot left it or behind
+   (a fresh clone's is): the work checked out, then reset to the commit
+   before it, so that what was uncommitted is again, and the commits not
+   pushed are on the branch. Where the branch moved on elsewhere since,
+   the work waits at `refs/fctl/wip/<session>`, and Claude hears where
+   (`snapshot_work_aside`); the snapshots saved after that carry it on,
+   as their work commit's second parent, until the branch has what it
+   changed or Claude deletes the ref, as it is told to once done. Work it
+   couldn't put back at all (history a force-push took away) the
+   transcript and Claude hear of too (`snapshot_work_lost`). Then Claude
+   Code resumes the conversation
+   (`--resume`), and the transcript says so: "Resumed with its
+   conversation and uncommitted work (12 MB), saved on studio"
+   (`snapshot_restored`).
+5. **Or not at all.** A snapshot saved before the session's last run, which
+   carried on elsewhere without saving one (its `agent_seq` behind the
+   control plane's `first_agent_seq`), one a newer or another major
+   version of Claude Code wrote than the sandbox has, and one that
+   doesn't open, aren't used: the transcript says why
+   (`snapshot_unusable`), and the session starts a new conversation from
+   its task and branch, as before snapshots.
+
+FleetDO still sends a resume to the runner that has the session's
+sandbox, which has everything, but doesn't wait for it: where that runner
+is busy or away, a session with a snapshot to restore starts on another
+at once, rather than after ten minutes (`SessionWants.snapshot`), on a
+runner whose host restores snapshots; where none can take it, it waits,
+or starts, as any other session does. The hourly job deletes the snapshots past their workspace's
+days, and those of workspaces, or an instance, that stopped keeping them,
+the oldest first and one whose deletion failed after the others, and the
+parts of an upload that never committed a day after it started;
+deleting a session
+or its project deletes its snapshot with its event log. `fctl show` and
+`GET /api/v1/sessions/{id}` say what the session's snapshot holds, where
+and when it was saved, and until when it is kept (`Session.snapshot`).
 
 ### Host updates
 
@@ -4933,10 +5049,12 @@ when it was.
 Older hosts send no floor and remove sandboxes by age only.
 
 Resuming a session whose sandbox is gone, or resuming on another host,
-creates a new sandbox on the session's branch: the agent finds no
-conversation to resume, so Claude starts a new one with the session's
-original task, and the agent numbers its events after the ones the control
-plane already has (`first_agent_seq`).
+creates a new sandbox on the session's branch, and the agent numbers its
+events after the ones the control plane already has (`first_agent_seq`).
+It restores the session's snapshot there, its conversation and the work
+it hadn't pushed ([Session snapshots](#session-snapshots)); without one,
+it finds no conversation to resume, so Claude starts a new one with the
+session's original task.
 
 ### Firecracker
 

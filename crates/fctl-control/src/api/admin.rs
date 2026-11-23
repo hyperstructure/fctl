@@ -1044,6 +1044,22 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         // and create no more until they are in fewer.
         settings.max_workspaces = max;
     }
+    // Off, the hourly job deletes the snapshots kept.
+    if let Some(on) = body.snapshots {
+        settings.snapshots = on;
+    }
+    if let Some(mb) = body.max_snapshot_mb {
+        if !(1..=fctl_proto::api::MAX_SNAPSHOT_MB).contains(&mb) {
+            return Err(validation(
+                "max_snapshot_mb",
+                &format!(
+                    "A snapshot may take 1 to {} MiB",
+                    fctl_proto::api::MAX_SNAPSHOT_MB
+                ),
+            ));
+        }
+        settings.max_snapshot_mb = mb;
+    }
     crate::instance::save(&ctx.db, &settings).await?;
     if gravatar_off {
         // The copies go, and turned on again, it looks for everyone anew.

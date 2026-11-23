@@ -1015,6 +1015,25 @@ pub fn fresh_resume(branch: &str, task: Option<&str>, other_repos: bool) -> Stri
     s
 }
 
+/// What Claude hears in the first message after a snapshot put its
+/// conversation back in a new sandbox, but not the uncommitted work of
+/// `repos`, whose branch moved on since: it is at `at`.
+pub fn snapshot_work_aside(repos: &[String], at: &str) -> String {
+    format!(
+        "(fctl: this session resumed in a new sandbox from its snapshot. The branch of {} moved on since it was saved, so the uncommitted work you had there wasn't put back: it is at {at}. `git diff {at}^1 {at}` shows it (where `{at}^2` exists, it is work that waited before it, which `git diff {at}^2^1 {at}^2` shows), and `git checkout {at} -- <path>` takes a file back. Once you have what you need from it, delete it with `git update-ref -d {at}`: until then, each snapshot keeps it too.)",
+        repos.join(", ")
+    )
+}
+
+/// What Claude hears of the repositories whose uncommitted work a
+/// restored snapshot couldn't put back.
+pub fn snapshot_work_lost(repos: &[String]) -> String {
+    format!(
+        "(fctl: this session resumed in a new sandbox from its snapshot, but the uncommitted work you had in {} couldn't be put back: the working tree there is the branch as pushed. Check what you need to do again before you carry on.)",
+        repos.join(", ")
+    )
+}
+
 /// What comes before the first message after the session stopped while
 /// background tasks ran: they didn't finish. Claude Code reports the tasks
 /// it lost when it resumes the conversation too, in its own words.
@@ -1281,6 +1300,7 @@ mod tests {
             autopilot: None,
             crew_of: None,
             id_tokens: None,
+            snapshot: None,
         }
     }
 

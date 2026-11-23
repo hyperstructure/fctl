@@ -261,6 +261,11 @@ pub struct SessionWants {
     pub on_runners: bool,
     /// It is a review agent's session: only runners that run them take it.
     pub review: bool,
+    /// It has a snapshot the instance and its workspace keep, within its
+    /// workspace's days, with its conversation or work: a resume restores
+    /// it on any runner, so it doesn't wait for the busy runner that has
+    /// its sandbox.
+    pub snapshot: bool,
     /// The labels its project asks of a runner (`runner_labels`): only
     /// runners with them all take it, until it has waited
     /// `fallback_minutes`, when there are some.
@@ -285,6 +290,7 @@ impl SessionWants {
 pub async fn session_wants(
     db: &D1Database,
     ids: &[&str],
+    now: i64,
 ) -> AppResult<HashMap<String, SessionWants>> {
     #[derive(serde::Deserialize)]
     struct Row {
@@ -301,18 +307,31 @@ pub async fn session_wants(
         on_runners: bool,
         #[serde(deserialize_with = "crate::db::int_bool", default)]
         review: bool,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        snapshot: bool,
     }
     let rows: Vec<Row> = q(
         db,
         "SELECT s.id AS id, p.settings AS settings, p.repo_owner AS repo_owner, p.repo_name AS repo_name, \
          p.workspace_id AS workspace_id, c.user_id AS person, u.name AS person_name, \
-         om.own_runners AS own_runners, c.on_runners AS on_runners, rv.session_id IS NOT NULL AS review \
+         om.own_runners AS own_runners, c.on_runners AS on_runners, rv.session_id IS NOT NULL AS review, \
+         (ss.snapshot_id IS NOT NULL AND (ss.conversation = 1 OR ss.changes = 1) \
+          AND COALESCE(w.snapshots, 0) = 1 \
+          AND ss.saved_at > ?2 - COALESCE(w.snapshot_days, ?3) * 86400000 \
+          AND COALESCE((SELECT json_extract(value, '$.snapshots') FROM settings WHERE key = 'instance_settings'), 1) = 1) \
+         AS snapshot \
          FROM sessions s JOIN projects p ON p.id = s.project_id \
+         LEFT JOIN workspaces w ON w.id = p.workspace_id \
+         LEFT JOIN session_snapshots ss ON ss.session_id = s.id \
          LEFT JOIN claude_credentials c ON c.id = s.credential_id LEFT JOIN users u ON u.id = c.user_id \
          LEFT JOIN workspace_members om ON om.workspace_id = p.workspace_id AND om.user_id = c.user_id \
          LEFT JOIN reviews rv ON rv.session_id = s.id \
-         WHERE s.id IN (SELECT value FROM json_each(?))",
-        &[s(&serde_json::to_string(ids)?)],
+         WHERE s.id IN (SELECT value FROM json_each(?1))",
+        &[
+            s(&serde_json::to_string(ids)?),
+            crate::db::n(now),
+            crate::db::n(i64::from(fctl_domain::snapshots::DEFAULT_DAYS)),
+        ],
     )?
     .all()
     .await?;
@@ -333,6 +352,7 @@ pub async fn session_wants(
                 own_runners: r.own_runners,
                 on_runners: r.on_runners,
                 review: r.review,
+                snapshot: r.snapshot,
                 labels: settings.runner_labels.clone(),
                 fallback_minutes: settings.runner_fallback_minutes,
             };
@@ -445,6 +465,11 @@ pub async fn build(
     });
     let tickets =
         crate::tickets::spec(db, &row, &project, &settings, &grants, github_access).await?;
+    // Its agent saves a snapshot as the sandbox stops, and restores the
+    // last in a sandbox without the conversation, where the instance and
+    // the workspace keep them. FleetDO leaves it out for hosts that don't
+    // announce snapshots.
+    let snapshot = crate::snapshots::spec(db, keys, &instance, &row.id, false, now).await?;
     Ok(SessionSpec {
         session_id: row.session_id(),
         number: row.number.max(0) as u32,
@@ -523,6 +548,7 @@ pub async fn build(
                 project_slug: a.project_slug,
             }),
         id_tokens,
+        snapshot,
     })
 }
 
@@ -727,6 +753,7 @@ async fn review_spec(
         crew_of: None,
         // What it reviews could steer what runs in its sandbox.
         id_tokens: None,
+        snapshot: None,
     })
 }
 

@@ -125,7 +125,9 @@ among them), which the session page folds into a line that opens
 into its steps (`explore <n>` looks around that many times in one line,
 more than the newest events the session page gets first, which then loads
 earlier ones until it has a screenful to show), `write <name>` creates and
-commits a file, `push` pushes the branch (dev projects have no repository,
+commits a file, a line that starts with `draft <name>` creates one and
+leaves it uncommitted (and changes `README.md`, where there is one), as
+an agent part-way through its work does, `push` pushes the branch (dev projects have no repository,
 so a bare one in the sandbox's `~/.fake-github` stands in for GitHub),
 `watch <seconds>` watches the pull request's checks in one tool call that
 long, as agents wait for CI before they end their turn (meanwhile the
@@ -142,7 +144,12 @@ keeps and its page shows under the calls,
 `fctl memory add`, a line that starts with `ask <question>` asks the
 people who follow the session the rest of the line with `fctl ask`, offering the answers after each ` / `
 to click (`ask Ship it today? / Yes / Not yet`), as agents do when they
-need someone's input, `recall` lists the memory with `fctl memory`, a line
+need someone's input, `recall` lists the memory with `fctl memory`,
+`recap` says what its conversation held before the message (how many
+messages, and what the first asked), from the file it keeps as Claude Code
+does (`~/.claude/projects/<working directory>/<session>.jsonl`), so that a
+session that resumed on another runner shows whether its conversation came
+along ([Session snapshots](architecture.md#session-snapshots)), a line
 that starts with `fctl ticket` runs as it is (`fctl ticket view ENG-1`), as
 agents reach their project's tracker, and so does one that starts with
 `fctl id-token`, as agents prove who they are (`fctl id-token -a

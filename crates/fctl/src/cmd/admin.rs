@@ -210,7 +210,7 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces"])),
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces", "snapshots", "max_snapshot_mb"])),
         after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces"
     )]
     Set {
@@ -275,6 +275,17 @@ pub enum AdminCmd {
         /// are in fewer.
         #[arg(long, value_name = "N|ANY", value_parser = fctl_domain::workspace::parse_max_workspaces)]
         max_workspaces: Option<u32>,
+        /// Whether sessions' snapshots (their conversation and uncommitted
+        /// work, encrypted) are kept, so that a session resumes on any
+        /// runner as it was: on by default. Off, no workspace keeps any,
+        /// and those kept go within the hour.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        snapshots: Option<bool>,
+        /// The most MiB one snapshot may take (200 by default, at most
+        /// 2048): past it, an agent leaves its conversation's images out,
+        /// then its uncommitted work, then saves none.
+        #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u32).range(1..=2048))]
+        max_snapshot_mb: Option<u32>,
     },
 }
 
@@ -561,7 +572,31 @@ fn print_reserved(list: &ReservedSlugList) {
     }
 }
 
+/// Whether the instance keeps sessions' snapshots, and how large.
+fn print_snapshots(s: &InstanceSettings) {
+    println!(
+        "Session snapshots      {}",
+        if s.snapshots {
+            style::accent("kept")
+        } else {
+            style::dim("off")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(&if s.snapshots {
+            format!(
+                "Workspaces that keep them save each session's conversation and uncommitted work as it stops, at most {} MiB, encrypted, so that it resumes on any runner as it was.",
+                s.max_snapshot_mb
+            )
+        } else {
+            "No session saves a snapshot: one that resumes on another runner starts from its task and branch.".to_owned()
+        })
+    );
+}
+
 fn print_settings(s: &InstanceSettings) {
+    print_snapshots(s);
     println!(
         "Published screenshots  {}",
         if s.publish_screenshots {
@@ -1232,6 +1267,8 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             service_account_consent,
             members_create_workspaces,
             max_workspaces,
+            snapshots,
+            max_snapshot_mb,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
@@ -1244,6 +1281,8 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     service_account_consent,
                     members_create_workspaces,
                     max_workspaces,
+                    snapshots,
+                    max_snapshot_mb,
                 })
                 .await?;
             if json {

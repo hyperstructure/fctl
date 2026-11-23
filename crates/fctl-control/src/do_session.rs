@@ -381,6 +381,11 @@ fn create_schema(sql: &SqlStorage) {
         // patch (`meta`), and the patch. `trimmed`: kept without its patch,
         // past what a session keeps.
         "CREATE TABLE IF NOT EXISTS diff_files (repo TEXT NOT NULL, path TEXT NOT NULL, digest TEXT NOT NULL, meta TEXT NOT NULL, patch TEXT, trimmed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, path))",
+        // Its snapshots (`crate::snapshots`): sealed by its agent, uploaded
+        // by its runner in parts, kept in chunks; D1 says which one is the
+        // session's. One that was never committed goes a day on.
+        "CREATE TABLE IF NOT EXISTS snapshots (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, committed INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS snapshot_chunks (snapshot_id TEXT NOT NULL, part INTEGER NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (snapshot_id, part, n))",
     ] {
         if let Err(e) = sql.exec(stmt, None) {
             worker::console_error!("session schema: {e}");
@@ -474,6 +479,27 @@ impl DurableObject for SessionObject {
             },
             (worker::Method::Get, "/events") => return self.events_page(&req),
             (worker::Method::Get, "/image") => return self.kept_image(&req),
+            (worker::Method::Get, "/snapshot/part") => return self.snapshot_part_out(&req),
+            (worker::Method::Post, "/snapshot/part") => self.snapshot_part_in(&mut req).await,
+            (worker::Method::Post, "/snapshot/commit") => {
+                match req.json::<internal::SnapshotParts>().await {
+                    Ok(b) => self.snapshot_commit(&b),
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
+            (worker::Method::Post, "/snapshot/delete") => {
+                match req.json::<internal::SnapshotParts>().await {
+                    Ok(b) => Ok(self.snapshot_delete(&b.id)),
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
+            (worker::Method::Post, "/snapshot/abandoned") => Ok(self.snapshot_abandoned()),
+            (worker::Method::Post, "/snapshot/prune") => {
+                match req.json::<internal::SnapshotParts>().await {
+                    Ok(b) => Ok(self.snapshot_prune(&b.id)),
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
             (worker::Method::Get, "/diff") => self.diff(&req),
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
@@ -4330,6 +4356,177 @@ impl SessionObject {
         for o in over {
             self.delete_image(&o.id);
         }
+    }
+
+    /// Part `n` of snapshot `id`, as the session's runner uploads it (at
+    /// most `SNAPSHOT_PART_BYTES`), in chunks a row holds. An upload that
+    /// never finished goes a day on.
+    async fn snapshot_part_in(
+        &self,
+        req: &mut Request,
+    ) -> std::result::Result<serde_json::Value, ApiError> {
+        let id = crate::http::query(req, "id").unwrap_or_default();
+        let part: i64 = crate::http::query(req, "n")
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| api_err(ErrorCode::BadRequest, "No part number"))?;
+        let most = fctl_proto::runner::SNAPSHOT_PART_BYTES;
+        let bytes = crate::http::read_upto(req, most + 1)
+            .await
+            .map_err(|e| api_err(ErrorCode::BadRequest, &format!("Reading the part: {e}")))?;
+        if bytes.len() > most {
+            return Err(api_err(
+                ErrorCode::BadRequest,
+                "A snapshot's part is too large",
+            ));
+        }
+        let now = now_ms();
+        let failed = |e: worker::Error| {
+            worker::console_error!("storing a snapshot's part: {e}");
+            api_err(
+                ErrorCode::Unavailable,
+                "The part could not be stored. Try again.",
+            )
+        };
+        // No await from here: the rows are written together.
+        for stmt in [
+            "DELETE FROM snapshot_chunks WHERE snapshot_id IN (SELECT id FROM snapshots WHERE committed = 0 AND created_at < ?)",
+            "DELETE FROM snapshots WHERE committed = 0 AND created_at < ?",
+        ] {
+            self.sql
+                .exec(stmt, Some(vec![iv(now - 86_400_000)]))
+                .map_err(failed)?;
+        }
+        self.sql
+            .exec(
+                "INSERT OR IGNORE INTO snapshots (id, created_at) VALUES (?, ?)",
+                Some(vec![sv(&id), iv(now)]),
+            )
+            .map_err(failed)?;
+        self.sql
+            .exec(
+                "DELETE FROM snapshot_chunks WHERE snapshot_id = ? AND part = ?",
+                Some(vec![sv(&id), iv(part)]),
+            )
+            .map_err(failed)?;
+        for (n, chunk) in bytes.chunks(fctl_domain::files::CHUNK_BYTES).enumerate() {
+            self.sql
+                .exec(
+                    "INSERT INTO snapshot_chunks (snapshot_id, part, n, data) VALUES (?, ?, ?, ?)",
+                    Some(vec![
+                        sv(&id),
+                        iv(part),
+                        iv(n as i64),
+                        SqlStorageValue::Blob(chunk.to_vec()),
+                    ]),
+                )
+                .map_err(failed)?;
+        }
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// Marks snapshot `b.id` whole once every one of its parts is here and
+    /// they add up to its size. The one before stays until D1 names this
+    /// one the session's, and `/snapshot/prune` lets it go.
+    fn snapshot_commit(
+        &self,
+        b: &internal::SnapshotParts,
+    ) -> std::result::Result<serde_json::Value, ApiError> {
+        #[derive(Deserialize)]
+        struct P {
+            part: f64,
+            bytes: f64,
+        }
+        let parts: Vec<P> = self
+            .sql
+            .exec(
+                "SELECT part, SUM(LENGTH(data)) AS bytes FROM snapshot_chunks WHERE snapshot_id = ? GROUP BY part ORDER BY part",
+                Some(vec![sv(&b.id)]),
+            )
+            .and_then(|c| c.to_array::<P>())
+            .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
+        let whole = parts.len() == b.parts as usize
+            && parts.iter().enumerate().all(|(i, p)| p.part as usize == i)
+            && parts.iter().map(|p| p.bytes as u64).sum::<u64>() == b.size;
+        if !whole {
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "The snapshot's parts aren't all here: upload them again",
+            ));
+        }
+        self.sql
+            .exec(
+                "UPDATE snapshots SET committed = 1 WHERE id = ?",
+                Some(vec![sv(&b.id)]),
+            )
+            .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// Lets go of every upload that never became a whole snapshot.
+    fn snapshot_abandoned(&self) -> serde_json::Value {
+        for stmt in [
+            "DELETE FROM snapshot_chunks WHERE snapshot_id IN (SELECT id FROM snapshots WHERE committed = 0)",
+            "DELETE FROM snapshots WHERE committed = 0",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, None) {
+                worker::console_error!("letting go of an unfinished snapshot: {e}");
+            }
+        }
+        serde_json::json!({ "ok": true })
+    }
+
+    /// Lets go of every whole snapshot but `id`, which D1 names the
+    /// session's now.
+    fn snapshot_prune(&self, id: &str) -> serde_json::Value {
+        for stmt in [
+            "DELETE FROM snapshot_chunks WHERE snapshot_id != ? AND snapshot_id IN (SELECT id FROM snapshots WHERE committed = 1)",
+            "DELETE FROM snapshots WHERE id != ? AND committed = 1",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, Some(vec![sv(id)])) {
+                worker::console_error!("letting go of older snapshots: {e}");
+            }
+        }
+        serde_json::json!({ "ok": true })
+    }
+
+    /// Part `n` of snapshot `id`, which is the session's.
+    fn snapshot_part_out(&self, req: &Request) -> Result<Response> {
+        let id = crate::http::query(req, "id").unwrap_or_default();
+        let part: i64 = crate::http::query(req, "n")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1);
+        let mut bytes = Vec::new();
+        let cursor = self.sql.exec(
+            "SELECT c.data FROM snapshot_chunks c JOIN snapshots s ON s.id = c.snapshot_id              WHERE c.snapshot_id = ? AND c.part = ? AND s.committed = 1 ORDER BY c.n",
+            Some(vec![sv(&id), iv(part)]),
+        )?;
+        let mut found = false;
+        for r in cursor.raw() {
+            if let Some(SqlStorageValue::Blob(chunk)) = r?.into_iter().next() {
+                bytes.extend_from_slice(&chunk);
+                found = true;
+            }
+        }
+        if !found {
+            return internal::do_error(&ApiError::not_found("Snapshot part"));
+        }
+        let h = Headers::new();
+        h.set("Content-Type", "application/octet-stream")?;
+        h.set("Cache-Control", "no-store")?;
+        Ok(Response::from_bytes(bytes)?.with_headers(h))
+    }
+
+    /// Deletes snapshot `id`, committed or not.
+    fn snapshot_delete(&self, id: &str) -> serde_json::Value {
+        for stmt in [
+            "DELETE FROM snapshot_chunks WHERE snapshot_id = ?",
+            "DELETE FROM snapshots WHERE id = ?",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, Some(vec![sv(id)])) {
+                worker::console_error!("deleting a snapshot: {e}");
+            }
+        }
+        serde_json::json!({ "ok": true })
     }
 
     /// An image the agent read (`?id=`), until it expires. The Worker

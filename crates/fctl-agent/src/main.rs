@@ -41,6 +41,7 @@ mod refresh;
 mod relay;
 #[cfg(target_os = "linux")]
 mod share;
+mod snapshot;
 mod supervisor;
 mod tasks;
 mod user;
