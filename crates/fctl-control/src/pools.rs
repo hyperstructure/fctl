@@ -270,7 +270,7 @@ pub async fn runners_of(db: &D1Database, token_id: &str) -> AppResult<Vec<String
     Ok(rows.into_iter().map(|r| r.id).collect())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use crate::testing;

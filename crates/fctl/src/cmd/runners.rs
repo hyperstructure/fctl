@@ -139,7 +139,8 @@ namespace fctl with the pool's name as the Pool dimension: once, or every
         /// The CloudWatch namespace.
         #[arg(long, default_value = "fctl", requires = "cloudwatch")]
         namespace: String,
-        /// Read the pool of this enrollment token rather than signing in.
+        /// Read the pool of this enrollment token rather than signing in,
+        /// unless --workspace or --pool says which.
         #[arg(long, env = "FCTL_ENROLL_TOKEN", hide_env_values = true, hide = true)]
         enroll_token: Option<String>,
     },
@@ -305,22 +306,18 @@ fn seconds_arg(s: &str) -> std::result::Result<u64, String> {
 
 pub async fn run(server: Option<&str>, cmd: RunnersCmd, json: bool) -> Result<()> {
     // A pool's demand reads with its enrollment token, where nobody signs
-    // in: an autoscaler's exporter.
+    // in: an autoscaler's exporter. Naming a workspace or a pool reads as
+    // the person signed in, whatever the environment holds.
     if let RunnersCmd::Demand {
         enroll_token: Some(secret),
-        workspace,
-        pool,
+        workspace: None,
+        pool: None,
         watch,
         every,
         cloudwatch,
         namespace,
     } = cmd
     {
-        if workspace.is_some() || pool.is_some() {
-            bail!(
-                "With an enrollment token, `fctl runners demand` reads that token's pool: leave out --workspace and --pool."
-            );
-        }
         let api = Api::new(&config::server(server)?, Some(secret.trim().to_owned()));
         let show = Show {
             watch,
