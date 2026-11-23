@@ -1020,7 +1020,7 @@ pub fn fresh_resume(branch: &str, task: Option<&str>, other_repos: bool) -> Stri
 /// `repos`, whose branch moved on since: it is at `at`.
 pub fn snapshot_work_aside(repos: &[String], at: &str) -> String {
     format!(
-        "(fctl: this session resumed in a new sandbox from its snapshot. The branch of {} moved on since it was saved, so the uncommitted work you had there wasn't put back: it is at {at}. `git diff HEAD {at}` shows it, and `git checkout {at} -- <path>` takes a file back. Once you have what you need from it, delete it with `git update-ref -d {at}`: until then, each snapshot keeps it too.)",
+        "(fctl: this session resumed in a new sandbox from its snapshot. The branch of {} moved on since it was saved, so the uncommitted work you had there wasn't put back: it is at {at}. `git diff {at}^1 {at}` shows it (where `{at}^2` exists, it is work that waited before it, which `git diff {at}^2^1 {at}^2` shows), and `git checkout {at} -- <path>` takes a file back. Once you have what you need from it, delete it with `git update-ref -d {at}`: until then, each snapshot keeps it too.)",
         repos.join(", ")
     )
 }

@@ -169,9 +169,10 @@ async fn git_text(home: &Path, dir: &Path, args: &[&str]) -> Result<String> {
         .to_owned())
 }
 
-/// Whether the branch has taken work `p` back, which waited at
-/// [`wip_ref`]: merged it, or has what it changed as it was (its files
-/// checked out and committed, a squash), whichever way it came.
+/// Whether the branch has taken back work `p`, which waited at
+/// [`wip_ref`], and the work that waited before it (its second parents):
+/// merged it, or has what each changed as it was (its files checked out
+/// and committed, a squash), whichever way it came.
 async fn taken_back(home: &Path, repo: &Path, p: &str) -> bool {
     if git(home, repo, &["merge-base", "--is-ancestor", p, "HEAD"], &[])
         .await
@@ -179,25 +180,67 @@ async fn taken_back(home: &Path, repo: &Path, p: &str) -> bool {
     {
         return true;
     }
-    // What it changed on the commit it was made on; all its files, made
-    // before the branch's first.
+    let mut at = p.to_owned();
+    // A chain as long as the stops the work waited through; past this
+    // many, it waits on.
+    for _ in 0..32 {
+        if !own_work_in_head(home, repo, &at).await {
+            return false;
+        }
+        match git_text(
+            home,
+            repo,
+            &["rev-parse", "--verify", "-q", &format!("{at}^2")],
+        )
+        .await
+        {
+            Ok(before) if !before.is_empty() => at = before,
+            _ => return true,
+        }
+    }
+    false
+}
+
+/// What waiting work `p` changed itself, on the commit it was made on (all
+/// its files, made before the branch's first): `None` when that can't be
+/// read, or a name isn't UTF-8, which a pathspec couldn't name.
+async fn own_changes(home: &Path, repo: &Path, p: &str) -> Option<Vec<String>> {
     let base = format!("{p}^1");
-    let changed = match git_text(home, repo, &["rev-parse", "--verify", "-q", &base]).await {
+    let listed = match git_text(home, repo, &["rev-parse", "--verify", "-q", &base]).await {
         Ok(_) => {
-            git_text(
+            git(
                 home,
                 repo,
-                &["diff", "--name-only", "--no-renames", &base, p],
+                &["diff", "-z", "--name-only", "--no-renames", &base, p],
+                &[],
             )
             .await
         }
-        Err(_) => git_text(home, repo, &["ls-tree", "-r", "--name-only", p]).await,
-    };
-    let Ok(changed) = changed else {
+        Err(_) => git(home, repo, &["ls-tree", "-r", "-z", "--name-only", p], &[]).await,
+    }
+    .ok()?;
+    listed
+        .split(|b| *b == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| String::from_utf8(name.to_vec()).ok())
+        .collect()
+}
+
+/// Whether HEAD has what waiting work `p` changed itself, as it was there.
+async fn own_work_in_head(home: &Path, repo: &Path, p: &str) -> bool {
+    let Some(paths) = own_changes(home, repo, p).await else {
         return false;
     };
-    let mut args = vec!["diff", "--quiet", "HEAD", p, "--"];
-    args.extend(changed.lines().filter(|l| !l.is_empty()));
+    // Nothing of its own: nothing to take back.
+    if paths.is_empty() {
+        return true;
+    }
+    // More names than a command line holds: it waits on.
+    if paths.len() > 2_000 {
+        return false;
+    }
+    let mut args = vec!["--literal-pathspecs", "diff", "--quiet", "HEAD", p, "--"];
+    args.extend(paths.iter().map(String::as_str));
     git(home, repo, &args, &[]).await.is_ok()
 }
 
@@ -811,8 +854,24 @@ async fn put_back(
             .await
             .is_ok());
     if !behind {
-        // It waits, with what waited before it as its second parent.
-        git(home, repo, &["update-ref", &parked, &meta.wip], &[]).await?;
+        // It waits, with what waited before it as its second parent; or,
+        // with no work of its own, what waited before it does.
+        let own = own_changes(home, repo, &meta.wip)
+            .await
+            .is_none_or(|paths| !paths.is_empty());
+        let before = git_text(
+            home,
+            repo,
+            &["rev-parse", "--verify", "-q", &format!("{}^2", meta.wip)],
+        )
+        .await
+        .ok()
+        .filter(|b| !b.is_empty());
+        let waits = match before {
+            Some(b) if !own => b,
+            _ => meta.wip.clone(),
+        };
+        git(home, repo, &["update-ref", &parked, &waits], &[]).await?;
         let _ = git(home, repo, &["update-ref", "-d", &r], &[]).await;
         return Ok(false);
     }
@@ -1089,6 +1148,35 @@ mod tests {
         Ok(())
     }
 
+    /// Waiting work whose names git quotes (a quote, a backslash) waits
+    /// until the branch has all of it, not only the plainly named part.
+    #[tokio::test]
+    async fn work_with_odd_names_waits_until_the_branch_has_all_of_it() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let repo = root.path().join("r");
+        std::fs::create_dir_all(&repo)?;
+        sh(
+            &repo,
+            "git init -q -b main && echo one > common.txt && git add . && git commit -qm first",
+        )
+        .await?;
+        sh(
+            &repo,
+            "printf x > 'a\"b\\c.txt' && echo two > common.txt && git add -A && git commit -qm work && git branch waiting && git reset -q --hard HEAD~1",
+        )
+        .await?;
+        let p = sh(&repo, "git rev-parse waiting").await?;
+        sh(&repo, "echo two > common.txt && git commit -qam 'take one'").await?;
+        assert!(!taken_back(root.path(), &repo, &p).await);
+        sh(
+            &repo,
+            "git checkout waiting -- . && git commit -qm 'take all'",
+        )
+        .await?;
+        assert!(taken_back(root.path(), &repo, &p).await);
+        Ok(())
+    }
+
     /// Work whose branch moved on elsewhere stays at its ref, and a
     /// snapshot over the limit leaves the work out, then gives up.
     #[tokio::test]
@@ -1208,6 +1296,27 @@ mod tests {
             .await?,
             ""
         );
+        // Saved again with nothing of its own, and the branch moved on once
+        // more: what waits is the work itself, not a commit of none.
+        let g = sandbox(root.path(), "g", &origin).await?;
+        let restored = restore(
+            &g,
+            &s,
+            &again.file,
+            &key,
+            &again.saved.sha256,
+            None,
+            &root.path().join("scratch7"),
+        )
+        .await
+        .map_err(|e| anyhow!(e))?;
+        assert_eq!((restored.changes.len(), restored.moved.len()), (0, 1));
+        let kept = sh(
+            &g.workdir,
+            &format!("git show {}:a.txt", wip_ref(s.session_id.as_str())),
+        )
+        .await?;
+        assert_eq!(kept, "mine");
         // A branch force-pushed without the history the work sits on: the
         // work can't be put back, and the restore says so.
         let e = sandbox(root.path(), "e", &origin).await?;
