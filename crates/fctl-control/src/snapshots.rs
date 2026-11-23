@@ -363,6 +363,15 @@ mod tests {
         Ok(())
     }
 
+    /// Whether a resume of `ses_1` at `now` skips the wait for its busy
+    /// runner, as FleetDO reads it.
+    async fn skips_home_wait(db: &D1Database, now: i64) -> AppResult<bool> {
+        Ok(crate::spec::session_wants(db, &["ses_1"], now)
+            .await?
+            .get("ses_1")
+            .is_some_and(|w| w.snapshot))
+    }
+
     fn commit(size: u64, parts: u32) -> SnapshotCommit {
         SnapshotCommit {
             saved: SnapshotSaved {
@@ -420,6 +429,7 @@ mod tests {
                 .is_some()
         );
         assert_eq!(refusal(&db, &settings, "ses_1", 10).await?, None);
+        assert!(!skips_home_wait(&db, NOW).await?);
         // Kept, saved on studio.
         keep(
             &db,
@@ -430,6 +440,12 @@ mod tests {
             NOW,
         )
         .await?;
+        // A resume doesn't wait for its busy runner: it restores the
+        // snapshot elsewhere, unless the instance keeps none.
+        assert!(skips_home_wait(&db, NOW + DAY).await?);
+        crate::instance::save(&db, &off).await?;
+        assert!(!skips_home_wait(&db, NOW + DAY).await?);
+        crate::instance::save(&db, &settings).await?;
         let with = spec(&db, &keys, &settings, "ses_1", false, NOW + DAY)
             .await?
             .ok_or_else(|| internal("no spec"))?;
@@ -465,6 +481,9 @@ mod tests {
         .run()
         .await?;
         assert_eq!(due(&db, true, NOW + 3 * DAY).await?.len(), 1);
+        // Nor past its workspace's days, when it would restore nothing.
+        assert!(skips_home_wait(&db, NOW + 2 * DAY).await?);
+        assert!(!skips_home_wait(&db, NOW + 3 * DAY).await?);
         // Past its days, a spec restores nothing even before the job runs.
         let late = spec(&db, &keys, &settings, "ses_1", false, NOW + 3 * DAY)
             .await?

@@ -149,21 +149,31 @@ async fn git_text(home: &Path, dir: &Path, args: &[&str]) -> Result<String> {
 
 /// A repository's work that isn't on GitHub, as a bundle: a commit of its
 /// working tree, untracked files with it but what it ignores, on top of
-/// its commits not pushed. `None` when it has neither.
+/// its commits not pushed. `None` when it has neither. On a branch with no
+/// commit yet (a project without a repository, before its first), the
+/// work is a commit of its own, and `head` is empty.
 async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(RepoMeta, Vec<u8>)>> {
-    let head = git_text(home, repo, &["rev-parse", "--verify", "HEAD"]).await?;
+    let head = git_text(home, repo, &["rev-parse", "--verify", "-q", "HEAD"])
+        .await
+        .ok()
+        .filter(|h| !h.is_empty());
     let changed = !git(home, repo, &["status", "--porcelain"], &[])
         .await?
         .is_empty();
-    let unpushed = git_text(
-        home,
-        repo,
-        &["rev-list", "--count", "HEAD", "--not", "--remotes"],
-    )
-    .await?
-    .parse::<u64>()
-    .unwrap_or(1)
-        > 0;
+    let unpushed = match head {
+        Some(_) => {
+            git_text(
+                home,
+                repo,
+                &["rev-list", "--count", "HEAD", "--not", "--remotes"],
+            )
+            .await?
+            .parse::<u64>()
+            .unwrap_or(1)
+                > 0
+        }
+        None => false,
+    };
     if !changed && !unpushed {
         return Ok(None);
     }
@@ -172,23 +182,22 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
     let _ = std::fs::remove_file(&index);
     let env = [("GIT_INDEX_FILE", index.as_path())];
     let made = async {
-        git(home, repo, &["read-tree", "HEAD"], &env).await?;
+        if head.is_some() {
+            git(home, repo, &["read-tree", "HEAD"], &env).await?;
+        }
         git(home, repo, &["add", "--all"], &env).await?;
         let tree = String::from_utf8_lossy(&git(home, repo, &["write-tree"], &env).await?)
             .trim()
             .to_owned();
         let message = format!("fctl: work in progress of session {session}");
-        let wip = String::from_utf8_lossy(
-            &git(
-                home,
-                repo,
-                &["commit-tree", &tree, "-p", &head, "-m", &message],
-                &env,
-            )
-            .await?,
-        )
-        .trim()
-        .to_owned();
+        let mut args = vec!["commit-tree", tree.as_str()];
+        if let Some(h) = &head {
+            args.extend(["-p", h.as_str()]);
+        }
+        args.extend(["-m", message.as_str()]);
+        let wip = String::from_utf8_lossy(&git(home, repo, &args, &env).await?)
+            .trim()
+            .to_owned();
         anyhow::Ok(wip)
     }
     .await;
@@ -206,7 +215,7 @@ async fn work_of(home: &Path, repo: &Path, session: &str) -> Result<Option<(Repo
     Ok(Some((
         RepoMeta {
             dir: String::new(),
-            head,
+            head: head.unwrap_or_default(),
             wip,
             bundle: String::new(),
         },
@@ -689,20 +698,34 @@ async fn put_back(
     .await;
     let _ = std::fs::remove_file(&here);
     fetched?;
-    // The branch as cloned must be where the snapshot left it, or behind.
-    let behind = git(
-        home,
-        repo,
-        &["merge-base", "--is-ancestor", "HEAD", &meta.head],
-        &[],
-    )
-    .await
-    .is_ok();
+    // The branch as cloned must be where the snapshot left it, or behind:
+    // one with no commit yet (a project without a repository) is behind
+    // any.
+    let unborn = git(home, repo, &["rev-parse", "--verify", "-q", "HEAD"], &[])
+        .await
+        .is_err();
+    let behind = unborn
+        || (!meta.head.is_empty()
+            && git(
+                home,
+                repo,
+                &["merge-base", "--is-ancestor", "HEAD", &meta.head],
+                &[],
+            )
+            .await
+            .is_ok());
     if !behind {
         return Ok(false);
     }
     git(home, repo, &["reset", "--hard", &meta.wip], &[]).await?;
-    git(home, repo, &["reset", "--mixed", &meta.head], &[]).await?;
+    if meta.head.is_empty() {
+        // Saved before the branch's first commit: it has none again, and
+        // the work is untracked.
+        git(home, repo, &["update-ref", "-d", "HEAD"], &[]).await?;
+        git(home, repo, &["read-tree", "--empty"], &[]).await?;
+    } else {
+        git(home, repo, &["reset", "--mixed", &meta.head], &[]).await?;
+    }
     Ok(true)
 }
 
@@ -878,6 +901,76 @@ mod tests {
         )
         .await;
         assert!(older.is_err_and(|e| e.contains("2.1.140")));
+        Ok(())
+    }
+
+    /// A project without a repository works on a branch that starts with
+    /// no commit, in every sandbox: its work comes back before its first
+    /// commit and after it.
+    #[tokio::test]
+    async fn work_without_a_repository_comes_back_before_and_after_its_first_commit() -> Result<()>
+    {
+        let root = tempfile::tempdir()?;
+        let id = "4f8e2a8c-0000-4000-8000-000000000003";
+        let s = spec(id)?;
+        let empty = |name: &str| -> Result<Paths> {
+            let home = root.path().join(name);
+            std::fs::create_dir_all(home.join("workspace"))?;
+            Ok(Paths::new(
+                &home.join("workspace"),
+                &home,
+                &home.join(".state"),
+            ))
+        };
+        let key = [7u8; 32];
+        for (n, committed) in [(0, false), (1, true)] {
+            let a = empty(&format!("a{n}"))?;
+            sh(
+                &a.workdir,
+                "git init -q -b fctl/1-x && echo draft > draft.md",
+            )
+            .await?;
+            if committed {
+                sh(
+                    &a.workdir,
+                    "echo notes > notes.md && git add notes.md && git commit -qm notes",
+                )
+                .await?;
+            }
+            let saved = save(
+                &a,
+                &s,
+                &key,
+                10_000_000,
+                None,
+                1,
+                &root.path().join(format!("out{n}")),
+            )
+            .await?
+            .ok_or_else(|| anyhow!("nothing saved"))?;
+            assert!(saved.saved.changes && !saved.saved.conversation);
+            let b = empty(&format!("b{n}"))?;
+            sh(&b.workdir, "git init -q -b fctl/1-x").await?;
+            let restored = restore(
+                &b,
+                &s,
+                &saved.file,
+                &key,
+                &saved.saved.sha256,
+                None,
+                &root.path().join(format!("scratch{n}")),
+            )
+            .await
+            .map_err(|e| anyhow!(e))?;
+            assert_eq!(restored.changes.len(), 1);
+            assert!(restored.moved.is_empty());
+            assert_eq!(
+                sh(&b.workdir, "git ls-files --others --exclude-standard").await?,
+                "draft.md"
+            );
+            let log = sh(&b.workdir, "git log --format=%s 2>/dev/null || true").await?;
+            assert_eq!(log, if committed { "notes" } else { "" });
+        }
         Ok(())
     }
 

@@ -2290,7 +2290,7 @@ impl FleetObject {
             None
         } else {
             let ids: Vec<&str> = queued.iter().map(|q| q.session_id.as_str()).collect();
-            match spec::session_wants(&db, &ids).await {
+            match spec::session_wants(&db, &ids, now).await {
                 Ok(w) => {
                     self.load_runner_workspaces(&db).await;
                     Some(w)
@@ -2617,7 +2617,7 @@ impl FleetObject {
             .env
             .d1("DB")
             .map_err(|e| ApiError::internal(e.to_string()))?;
-        let Some(want) = spec::session_wants(&db, &[session_id])
+        let Some(want) = spec::session_wants(&db, &[session_id], now_ms())
             .await
             .map_err(|e| e.0)?
             .remove(session_id)
