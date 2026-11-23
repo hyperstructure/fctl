@@ -323,7 +323,9 @@ impl Pool {
 /// runners run and every one that counts towards it, at the capacity its
 /// runners announce, and at least the runners that run a session now, so
 /// that scaling it down to that never takes a busy one; within its
-/// `max_runners`, and for a closed pool the runners it has. A pool whose runners never said what they give wants one
+/// `max_runners`, and for a closed pool the runners it has, but never
+/// below those busy runners, should its limit have been lowered under
+/// them. A pool whose runners never said what they give wants one
 /// runner while sessions count towards it.
 pub fn demand(
     pools: Vec<Pool>,
@@ -392,10 +394,8 @@ fn add(w: &mut PoolWaiting, q: &Queued<'_>) {
 /// it.
 fn wanted(pool: &Pool, running: u32, busy: u32, waiting: u32) -> u32 {
     let want = match &pool.shape {
-        Some(shape) => (running + waiting)
-            .div_ceil(shape.capacity.max(1))
-            .max(busy),
-        None => u32::from(waiting > 0).max(busy),
+        Some(shape) => (running + waiting).div_ceil(shape.capacity.max(1)),
+        None => u32::from(waiting > 0),
     };
     // A closed pool enrolls no more: no more than it has.
     let most = if pool.info.closed {
@@ -403,7 +403,9 @@ fn wanted(pool: &Pool, running: u32, busy: u32, waiting: u32) -> u32 {
     } else {
         pool.info.max_runners
     };
-    most.map_or(want, |max| want.min(max))
+    // Its busy runners stay, even above a limit lowered since they
+    // enrolled: scaling to it never takes one.
+    most.map_or(want, |max| want.min(max)).max(busy)
 }
 
 // ───────────────────────────── Prometheus ─────────────────────────────
@@ -807,6 +809,16 @@ mod tests {
             out.first().map(|p| (p.waiting.sessions, p.wanted)),
             Some((5, 2))
         );
+        // A limit lowered under its busy runners takes none of them.
+        let lowered = pool(
+            "p",
+            &[],
+            Some(1),
+            Some(shape(4, 65_536)),
+            vec![up(1), up(2), up(0)],
+        );
+        let (out, _, _) = demand(vec![lowered], &queue, 0);
+        assert_eq!(out.first().map(|p| p.wanted), Some(2));
     }
 
     #[test]
