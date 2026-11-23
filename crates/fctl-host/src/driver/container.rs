@@ -7,6 +7,7 @@
 //! started with a detached `exec`; the host talks to it through `exec -i
 //! fctl-agent attach`.
 
+use super::network::{self, Network, REACH_DIR, REACH_PREFIX};
 use super::pulls::{self, PullProgress};
 use super::stuck::{self, Stuck};
 use super::{
@@ -18,6 +19,7 @@ use super::{
 use crate::caches::{self, Spot};
 use crate::docker_access::Unreachable;
 use anyhow::{Context, Result};
+use fctl_domain::reach::Reach;
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -50,6 +52,9 @@ pub struct ContainerDriver {
     /// The sandboxes whose VMs stopped answering, with Apple's `container`
     /// ([`stuck`]).
     stuck: Stuck,
+    /// Whether its sandboxes reach the network, with Apple's `container`
+    /// ([`network`]).
+    network: Network,
 }
 
 /// A pull under way, or one that was.
@@ -139,6 +144,12 @@ struct Pace {
     stuck_after: Duration,
     slow_start: Duration,
     fresh_for: Duration,
+    /// [`network::LOOK_EVERY`] and [`network::RESTART_EVERY`], and how
+    /// long the host waits before it asks a second fresh sandbox whether
+    /// it reaches the network, [`network::CONFIRM_AFTER`].
+    look_every: Duration,
+    restart_every: Duration,
+    confirm_after: Duration,
 }
 
 impl Default for Pace {
@@ -151,6 +162,9 @@ impl Default for Pace {
             stuck_after: stuck::STUCK_AFTER,
             slow_start: stuck::SLOW_START,
             fresh_for: stuck::FRESH_FOR,
+            look_every: network::LOOK_EVERY,
+            restart_every: network::RESTART_EVERY,
+            confirm_after: network::CONFIRM_AFTER,
         }
     }
 }
@@ -219,6 +233,7 @@ impl ContainerDriver {
             pulls: Mutex::default(),
             pace: Pace::default(),
             stuck: Stuck::default(),
+            network: Network::default(),
         }
     }
 
@@ -231,6 +246,7 @@ impl ContainerDriver {
             pulls: Mutex::default(),
             pace: Pace::default(),
             stuck: Stuck::default(),
+            network: Network::default(),
         }
     }
 
@@ -263,6 +279,7 @@ impl ContainerDriver {
             pulls: Mutex::default(),
             pace: Pace::default(),
             stuck: Stuck::default(),
+            network: Network::default(),
         }
     }
 
@@ -297,6 +314,24 @@ impl ContainerDriver {
             },
             ..self
         }
+    }
+
+    /// The driver, whose sandboxes should reach `target` ([`network`]),
+    /// which looks at their network every `look_every` and restarts Apple's
+    /// `container` at most every `restart_every`, asking a second fresh
+    /// sandbox at once, for tests.
+    #[cfg(test)]
+    pub(crate) fn networked(
+        mut self,
+        target: &str,
+        look_every: Duration,
+        restart_every: Duration,
+    ) -> Self {
+        self.network.target = target.to_owned();
+        self.pace.look_every = look_every;
+        self.pace.restart_every = restart_every;
+        self.pace.confirm_after = Duration::ZERO;
+        self
     }
 
     pub fn flavor_name(&self) -> &'static str {
@@ -406,7 +441,9 @@ impl ContainerDriver {
     /// long. Commands that run out of time meanwhile wait for what it
     /// finds, which stands for [`stuck::FRESH_FOR`].
     async fn unstick(&self) {
-        if self.flavor != Flavor::Apple {
+        // While the host restarts Apple's `container` ([`network`]),
+        // commands wait on that, not on a VM.
+        if self.flavor != Flavor::Apple || self.network.restarting.try_read().is_err() {
             return;
         }
         let mut looked = self.stuck.looked.lock().await;
@@ -564,6 +601,355 @@ impl ContainerDriver {
         })
     }
 
+    /// Waits while the host restarts Apple's `container` ([`network`]): what
+    /// starts a sandbox, or fctl-agent in one, goes once it is back.
+    async fn after_restart(&self) {
+        drop(self.network.restarting.read().await);
+    }
+
+    /// Readies the network of the sandbox `sb`, before fctl-agent starts in
+    /// it: with Apple's `container`, whether it reaches
+    /// [`fctl_domain::reach::TARGET`] ([`network`]). When it doesn't, and a
+    /// fresh sandbox doesn't either while this Mac does, the network that
+    /// Apple's `container` gives every sandbox stopped working: the host
+    /// restarts Apple's `container`, which starts `sb` again too, unless it
+    /// did lately. It says so in the session's log (`log`). An error while
+    /// sandboxes don't reach the network: the driver isn't ready meanwhile
+    /// ([`Self::network_down`]), and the session waits for a runner rather
+    /// than fail. `agent` is the host's fctl-agent for sandboxes, and
+    /// `images` those a fresh sandbox may start from.
+    pub async fn ready_network(
+        &self,
+        sb: &Sandbox,
+        agent: &Path,
+        images: &[String],
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<()> {
+        if self.flavor != Flavor::Apple {
+            return Ok(());
+        }
+        let asked = Instant::now();
+        let why = match self.reach_in(&sb.name).await {
+            Some(Reach::Unreachable(why)) => why,
+            Some(Reach::Reached) => {
+                self.network.set_down(None);
+                return Ok(());
+            }
+            None => return Ok(()),
+        };
+        let _looking = self.network.looking.lock().await;
+        // Another look restarted Apple's `container` meanwhile, and this
+        // sandbox with it.
+        if self.network.restarted().is_some_and(|at| at >= asked)
+            && !matches!(self.reach_in(&sb.name).await, Some(Reach::Unreachable(_)))
+        {
+            return Ok(());
+        }
+        let target = self.network.target.clone();
+        match self.reach_fresh(Some(agent), images).await {
+            Some(Reach::Unreachable(fresh)) => {
+                self.bring_back(&fresh, true, Some(agent), images, log)
+                    .await
+            }
+            Some(Reach::Reached) => {
+                self.network.note_own_doing(&sb.name, Instant::now());
+                let line = network::own_doing_line(&target, &why);
+                tracing::warn!("{}: {line}", sb.name);
+                log(format!("{line}."));
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Why sandboxes of Apple's `container` don't reach the network, which
+    /// the host couldn't bring back ([`network`]): the driver isn't ready
+    /// meanwhile. Every [`network::LOOK_EVERY`] it looks again: while
+    /// sessions' sandboxes run, whether one still reaches it, and while
+    /// they don't, whether a fresh one does. When neither a sandbox nor a
+    /// fresh one does while this Mac does, it restarts Apple's `container`,
+    /// unless it did lately. `agent` is the host's fctl-agent for
+    /// sandboxes, without which no fresh sandbox can tell, and `images`
+    /// those a fresh sandbox may start from.
+    pub async fn network_down(&self, agent: Option<&Path>, images: &[String]) -> Option<String> {
+        if self.flavor != Flavor::Apple {
+            return None;
+        }
+        if self.network.restarting.try_read().is_err() {
+            return Some(network::restarting_now(&self.network.target));
+        }
+        // One look at a time: what another finds stands meanwhile.
+        let Ok(_looking) = self.network.looking.try_lock() else {
+            return self.network.down();
+        };
+        if !self.network.look_now(Instant::now(), self.pace.look_every) {
+            return self.network.down();
+        }
+        let quiet = |_: String| {};
+        if let Some(down) = self.network.down() {
+            return match self.reach_fresh(agent, images).await {
+                Some(Reach::Reached) => {
+                    self.network.set_down(None);
+                    tracing::info!(
+                        "sandboxes reach {} again",
+                        fctl_domain::reach::host_of(&self.network.target)
+                    );
+                    None
+                }
+                // Known to be down: no need to ask twice.
+                Some(Reach::Unreachable(why)) => {
+                    let _ = self.bring_back(&why, false, agent, images, &quiet).await;
+                    self.network.down()
+                }
+                None => Some(down),
+            };
+        }
+        // Nothing to do while they reach it, or no session's sandbox runs
+        // to ask.
+        let (name, _) = self.unreachable_in_running().await?;
+        match self.reach_fresh(agent, images).await {
+            Some(Reach::Unreachable(why)) => {
+                let _ = self.bring_back(&why, true, agent, images, &quiet).await;
+                self.network.down()
+            }
+            Some(Reach::Reached) => {
+                tracing::warn!(
+                    "{name} doesn't reach the network, though a fresh sandbox does: something in it keeps it from the network"
+                );
+                self.network.note_own_doing(&name, Instant::now());
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// The first of the sessions' sandboxes that run to say whether it
+    /// reaches the network, with why not, when it doesn't; `None` when it
+    /// does, or none says (none runs, or theirs is an fctl-agent from
+    /// before `reach`). Those that keep themselves off it aren't asked.
+    async fn unreachable_in_running(&self) -> Option<(String, String)> {
+        let now = Instant::now();
+        let running: Vec<String> = self
+            .list()
+            .await
+            .ok()?
+            .into_iter()
+            .filter(|sb| sb.running && super::session_of(&sb.name).is_some())
+            .map(|sb| sb.name)
+            .filter(|name| !self.network.own_doing(name, now))
+            .collect();
+        for name in running.into_iter().take(3) {
+            match self.reach_in(&name).await {
+                Some(Reach::Reached) => return None,
+                Some(Reach::Unreachable(why)) => {
+                    tracing::warn!("{name} doesn't reach the network: {why}");
+                    return Some((name, why));
+                }
+                None => {}
+            }
+        }
+        None
+    }
+
+    /// Whether a fresh sandbox of Apple's `container` reaches the network
+    /// ([`Self::reach_fresh`]), for `fctl host doctor`; `None` with Docker.
+    pub async fn fresh_reaches(&self, agent: Option<&Path>, images: &[String]) -> Option<Reach> {
+        if self.flavor != Flavor::Apple {
+            return None;
+        }
+        self.reach_fresh(agent, images).await
+    }
+
+    /// Whether the sandbox `name` reaches the network, as fctl-agent in it
+    /// says (`fctl-agent reach`); `None` when it says nothing, as one from
+    /// before `reach` doesn't.
+    async fn reach_in(&self, name: &str) -> Option<Reach> {
+        let within = network::REACH_WITHIN.as_secs().to_string();
+        let args = [
+            "exec",
+            name,
+            AGENT_PATH,
+            "reach",
+            &self.network.target,
+            "--within",
+            &within,
+        ];
+        match self.run(&args).await {
+            Ok(out) => Reach::parse(&out),
+            Err(e) => {
+                tracing::debug!("asking {name} whether it reaches the network: {e:#}");
+                None
+            }
+        }
+    }
+
+    /// Whether a fresh sandbox reaches the network: a short-lived one from
+    /// the first of `images` that is here, on the network every sandbox
+    /// joins, that runs nothing but the host's own fctl-agent (`agent`,
+    /// mounted read-only). Nothing of a session's has run in it, so it
+    /// says what Apple's `container` gives every sandbox. `None` when it
+    /// can't tell.
+    async fn reach_fresh(&self, agent: Option<&Path>, images: &[String]) -> Option<Reach> {
+        let agent = agent?;
+        let dir = agent.parent()?.display().to_string();
+        let file = agent.file_name()?.to_str()?;
+        let mount = format!("type=bind,source={dir},target={REACH_DIR},readonly");
+        let entrypoint = format!("{REACH_DIR}/{file}");
+        let name = format!(
+            "{REACH_PREFIX}{}",
+            hex::encode(fctl_domain::random_bytes::<4>())
+        );
+        let within = network::REACH_WITHIN.as_secs().to_string();
+        for image in images {
+            if !self.has_image(image).await {
+                continue;
+            }
+            let args = [
+                "run",
+                "--rm",
+                "--name",
+                &name,
+                "--cpus",
+                "1",
+                "--memory",
+                "512M",
+                "--mount",
+                &mount,
+                "--entrypoint",
+                &entrypoint,
+                image,
+                "reach",
+                &self.network.target,
+                "--within",
+                &within,
+            ];
+            let limit = self.pace.command + network::REACH_WITHIN;
+            return match run_cmd_within(&self.bin, &args, limit).await {
+                Ok(out) => Reach::parse(&out),
+                Err(e) => {
+                    tracing::warn!("asking a fresh sandbox whether it reaches the network: {e:#}");
+                    None
+                }
+            };
+        }
+        None
+    }
+
+    /// Brings back the network of Apple's `container`, whose fresh
+    /// sandbox didn't reach [`fctl_domain::reach::TARGET`] (`first`),
+    /// holding [`Network::looking`]: when a second one doesn't either
+    /// (asked when it should `confirm`) and this Mac does, the host
+    /// restarts Apple's `container`, unless it did lately, saying so in
+    /// `log`, and asks a fresh sandbox again. An error, and the driver not
+    /// ready ([`Network::down`]), while sandboxes don't reach it.
+    async fn bring_back(
+        &self,
+        first: &str,
+        confirm: bool,
+        agent: Option<&Path>,
+        images: &[String],
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<()> {
+        let target = self.network.target.clone();
+        // A network whose bridge has just come may carry nothing for a
+        // moment: a second fresh sandbox, a little later, tells.
+        let why = if confirm {
+            tokio::time::sleep(self.pace.confirm_after).await;
+            let Some(Reach::Unreachable(why)) = self.reach_fresh(agent, images).await else {
+                tracing::info!(
+                    "a fresh sandbox didn't reach {} ({first}), and the next did",
+                    fctl_domain::reach::host_of(&target)
+                );
+                return Ok(());
+            };
+            why
+        } else {
+            first.to_owned()
+        };
+        // Restarting Apple's `container` doesn't bring back the Mac's own
+        // network.
+        if let Err(here) = network::reach_from_here(&target, network::REACH_WITHIN).await {
+            let line = network::offline_line(&target, &here);
+            tracing::warn!("{line}");
+            log(format!("{line}."));
+            return Ok(());
+        }
+        let now = Instant::now();
+        self.network.note_look(now);
+        if !self.network.may_restart(now, self.pace.restart_every) {
+            let ago = self
+                .network
+                .restarted()
+                .map(|at| now.saturating_duration_since(at));
+            let down = network::down_line(&target, &why, ago, None);
+            self.network.set_down(Some(down.clone()));
+            anyhow::bail!("{down}");
+        }
+        let line = network::restarting_line(&target, &why);
+        tracing::warn!("{line}");
+        log(format!("{line}."));
+        if let Err(e) = self.restart().await {
+            let down = network::down_line(&target, &why, None, Some(&format!("{e:#}")));
+            tracing::warn!("Apple's `container`: {down}");
+            self.network.set_down(Some(down.clone()));
+            anyhow::bail!("{down}");
+        }
+        self.network.note_look(Instant::now());
+        if let Some(Reach::Unreachable(after)) = self.reach_fresh(agent, images).await {
+            let down = network::down_line(&target, &after, Some(Duration::ZERO), None);
+            tracing::warn!("Apple's `container`: {down}");
+            self.network.set_down(Some(down.clone()));
+            anyhow::bail!("{down}");
+        }
+        self.network.set_down(None);
+        let line = network::restarted_line(&target);
+        tracing::info!("{line}");
+        log(format!("{line}."));
+        Ok(())
+    }
+
+    /// Restarts Apple's `container`, which makes its networks again
+    /// ([`network`]): `container system stop`, which stops every
+    /// container, and `container system start`; then it starts again the
+    /// containers that ran, fctl's sandboxes and any other, without what
+    /// ran in them. What starts a sandbox, or fctl-agent in one, waits for
+    /// it ([`Self::after_restart`]).
+    async fn restart(&self) -> Result<()> {
+        let _restarting = self.network.restarting.write().await;
+        let listed = run_cmd_within(&self.bin, &["list", "--format", "json"], self.pace.command)
+            .await
+            .context("listing the containers that run")?;
+        let running: Vec<String> = stuck::running_in(&listed)
+            .into_iter()
+            .filter(|name| !name.starts_with(REACH_PREFIX))
+            .collect();
+        // One that fails counts too: the next waits as long.
+        self.network.note_restart(Instant::now());
+        run_cmd_within(&self.bin, &["system", "stop"], network::STOP_TIMEOUT).await?;
+        run_cmd_within(
+            &self.bin,
+            &["system", "start", "--disable-kernel-install"],
+            SERVICE_START_TIMEOUT,
+        )
+        .await?;
+        for name in &running {
+            if let Err(e) = run_cmd_within(&self.bin, &["start", name], self.pace.command).await {
+                tracing::warn!(
+                    "starting {name} again, after restarting Apple's `container`: {e:#}"
+                );
+            }
+        }
+        tracing::info!(
+            "restarted Apple's `container`, and started again what ran: {}",
+            if running.is_empty() {
+                "nothing".to_owned()
+            } else {
+                running.join(", ")
+            }
+        );
+        Ok(())
+    }
+
     pub async fn probe(&self) -> DriverInfo {
         let isolation = match self.flavor {
             Flavor::Apple => "vm",
@@ -670,6 +1056,8 @@ impl ContainerDriver {
         {
             return Ok(false);
         }
+        // A restart for the network starts it again itself.
+        self.after_restart().await;
         let status = self.run(&["system", "status"]).await;
         // A service that doesn't answer is there, stuck: starting it again
         // won't help.
@@ -795,6 +1183,7 @@ impl ContainerDriver {
         spec: &SandboxSpec,
         log: &(dyn Fn(String) + Send + Sync),
     ) -> Result<Sandbox> {
+        self.after_restart().await;
         let sb = Sandbox {
             name: spec.name.clone(),
             root: None,
@@ -1770,6 +2159,7 @@ impl ContainerDriver {
     /// place, so that one that runs keeps running: the host puts its own in
     /// whenever it starts fctl-agent.
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
+        self.after_restart().await;
         if !self.agent_root(sb).await? {
             // As the user, into its home: no root.
             let bytes = tokio::fs::read(binary)
@@ -1832,6 +2222,7 @@ impl ContainerDriver {
     /// image's user, who can't stop it then; as the image's user too where
     /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
+        self.after_restart().await;
         if !self.agent_root(sb).await? {
             tracing::info!(
                 "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
@@ -1865,6 +2256,7 @@ impl ContainerDriver {
     }
 
     pub async fn attach(&self, sb: &Sandbox, socket: Socket) -> Result<AgentIo> {
+        self.after_restart().await;
         if !self.agent_root(sb).await? {
             let mut child = self.spawn(sb, &attach_as_user_script(socket)).await?;
             let stdout = child.stdout.take().context("exec stdout")?;
@@ -4202,6 +4594,261 @@ esac
         let probed = driver.probe().await;
         assert!(probed.available, "{:?}", probed.detail);
         assert_eq!(probed.detail.as_deref(), Some("ready"));
+        Ok(())
+    }
+
+    /// Where the host's fctl-agent for sandboxes is, as fresh sandboxes
+    /// mount it; and the images they may start from.
+    const AGENT: &str = "/usr/local/libexec/fctl-agent-aarch64-linux";
+    const IMAGES: [&str; 1] = [VERSION_IMAGE];
+
+    /// Something that answers on this machine, as GitHub would: where the
+    /// host asks sandboxes to reach, in these tests.
+    fn github() -> Result<(std::net::TcpListener, String)> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let at = listener.local_addr()?.to_string();
+        Ok((listener, at))
+    }
+
+    /// Readies the network of the sandbox `name` with `driver`, as its
+    /// session starts: what it said in the session's log.
+    async fn readied(driver: &ContainerDriver, name: &str) -> Result<Vec<String>> {
+        let lines = Mutex::new(Vec::new());
+        let log = |line: String| {
+            lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        let images = IMAGES.map(str::to_owned);
+        driver
+            .ready_network(&sandbox(name), Path::new(AGENT), &images, &log)
+            .await?;
+        Ok(lines.into_inner().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    async fn network_down(driver: &ContainerDriver) -> Option<String> {
+        driver
+            .network_down(Some(Path::new(AGENT)), &IMAGES.map(str::to_owned))
+            .await
+    }
+
+    fn count(calls: &[String], start: &str) -> usize {
+        calls.iter().filter(|c| c.starts_with(start)).count()
+    }
+
+    #[tokio::test]
+    async fn sandboxes_that_reach_the_network_start_as_ever() -> Result<()> {
+        let (_github, at) = github()?;
+        let ours = "fctl-ses-net-a1";
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        assert!(readied(&driver, ours).await?.is_empty());
+        // fctl-agent in the sandbox says so, and nothing else runs.
+        let calls = apple.calls()?;
+        assert_eq!(
+            calls.last().map(String::as_str),
+            Some(format!("exec {ours} {AGENT_PATH} reach {at} --within 10").as_str())
+        );
+        assert_eq!(count(&calls, "run "), 0);
+
+        // One whose fctl-agent knows no `reach` says nothing: it starts as
+        // it did before hosts asked.
+        apple.old_agents()?;
+        apple.lose_network()?;
+        assert!(readied(&driver, ours).await?.is_empty());
+        let calls = apple.calls()?;
+        assert_eq!(count(&calls, "run "), 0);
+        assert_eq!(count(&calls, "system stop"), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_host_restarts_apples_container_when_its_sandboxes_lose_the_network() -> Result<()>
+    {
+        let (_github, at) = github()?;
+        let (ours, other, theirs) = ("fctl-ses-net-b1", "fctl-ses-net-b2", "net-b3-dev");
+        let apple = StuckApple::new(&[ours, other, theirs], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.lose_network()?;
+        apple.mends_on_restart()?;
+        assert_eq!(
+            readied(&driver, ours).await?,
+            [
+                format!(
+                    "{}.",
+                    network::restarting_line(&at, "github.com didn't resolve: Try again")
+                ),
+                format!("{}.", network::restarted_line(&at)),
+            ]
+        );
+        // Two fresh sandboxes didn't reach it either, while this Mac did:
+        // the host restarted Apple's `container`, and started again what
+        // ran, its own sandboxes and any other.
+        let calls = apple.calls()?;
+        let at_restart = calls
+            .iter()
+            .position(|c| c == "system stop")
+            .context("no restart")?;
+        assert_eq!(
+            count(&calls[..at_restart], "run --rm --name fctl-reach-"),
+            2
+        );
+        let mut started: Vec<&str> = calls[at_restart..]
+            .iter()
+            .filter_map(|c| c.strip_prefix("start "))
+            .collect();
+        started.sort_unstable();
+        assert_eq!(started, [ours, other, theirs]);
+        assert_eq!(
+            calls[at_restart + 1],
+            "system start --disable-kernel-install"
+        );
+        for name in [ours, other, theirs] {
+            assert!(apple.runs(name)?, "{name} doesn't run");
+        }
+        // A fresh sandbox said it reaches the network again: the driver is
+        // ready.
+        assert_eq!(
+            count(&calls[at_restart..], "run --rm --name fctl-reach-"),
+            1
+        );
+        assert_eq!(network_down(&driver).await, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sandboxes_that_a_restart_doesnt_bring_back_wait_for_their_network() -> Result<()> {
+        let (_github, at) = github()?;
+        let ours = "fctl-ses-net-c1";
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.lose_network()?;
+        let said = error_of(readied(&driver, ours).await);
+        assert!(
+            said.starts_with("its sandboxes don't reach 127.0.0.1, though this Mac does (github.com didn't resolve: Try again), and restarting Apple's `container` just now didn't bring their network back."),
+            "{said}"
+        );
+        // The driver isn't ready meanwhile, saying why.
+        let down = network_down(&driver).await.unwrap_or_default();
+        assert!(down.contains("didn't bring their network back"), "{down}");
+        // A session that starts meanwhile waits too, and doesn't restart
+        // Apple's `container` again so soon.
+        assert!(readied(&driver, ours).await.is_err());
+        assert_eq!(count(&apple.calls()?, "system stop"), 1);
+
+        // The network comes back: the host's next look finds it.
+        apple.mend_network()?;
+        assert_eq!(network_down(&driver).await, None);
+        assert!(readied(&driver, ours).await?.is_empty());
+
+        // A restart that fails says so.
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.lose_network()?;
+        apple.fail_stops()?;
+        let said = error_of(readied(&driver, ours).await);
+        assert!(
+            said.contains("and restarting Apple's `container` failed ("),
+            "{said}"
+        );
+        // The next session doesn't try again so soon either.
+        let said = error_of(readied(&driver, ours).await);
+        assert!(said.contains("didn't bring their network back"), "{said}");
+        assert_eq!(count(&apple.calls()?, "system stop"), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_that_keeps_itself_off_the_network_is_left_as_it_is() -> Result<()> {
+        let (_github, at) = github()?;
+        let ours = "fctl-ses-net-d1";
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.keep_off(ours)?;
+        assert_eq!(
+            readied(&driver, ours).await?,
+            [format!(
+                "{}.",
+                network::own_doing_line(&at, "github.com didn't resolve: Try again")
+            )]
+        );
+        let calls = apple.calls()?;
+        assert_eq!(count(&calls, "run --rm --name fctl-reach-"), 1);
+        assert_eq!(count(&calls, "system stop"), 0);
+        // While it runs, the host's looks leave it out, rather than start a
+        // fresh sandbox each time.
+        assert_eq!(network_down(&driver).await, None);
+        assert_eq!(
+            apple.calls()?.len(),
+            calls.len() + 1,
+            "{:?}",
+            apple.calls()?
+        );
+
+        // One found so as it runs is left out likewise.
+        let other = "fctl-ses-net-d2";
+        let apple = StuckApple::new(&[other], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.keep_off(other)?;
+        assert_eq!(network_down(&driver).await, None);
+        assert_eq!(network_down(&driver).await, None);
+        let calls = apple.calls()?;
+        assert_eq!(count(&calls, &format!("exec {other} ")), 1);
+        assert_eq!(count(&calls, "run --rm --name fctl-reach-"), 1);
+        assert_eq!(count(&calls, "system stop"), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nothing_restarts_while_the_mac_itself_is_off_the_network() -> Result<()> {
+        // Nothing answers there.
+        let (github, at) = github()?;
+        drop(github);
+        let ours = "fctl-ses-net-e1";
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.lose_network()?;
+        let said = readied(&driver, ours).await?;
+        assert!(
+            said.len() == 1 && said[0].starts_with("Neither this sandbox nor its runner reaches 127.0.0.1 (connecting to 127.0.0.1 failed"),
+            "{said:?}"
+        );
+        assert_eq!(count(&apple.calls()?, "system stop"), 0);
+        assert_eq!(network_down(&driver).await, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn running_sandboxes_that_lose_the_network_get_it_back() -> Result<()> {
+        let (_github, at) = github()?;
+        let ours = "fctl-ses-net-f1";
+        let apple = StuckApple::new(&[ours], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        // While they reach it, the host asks one of them, and nothing else.
+        assert_eq!(network_down(&driver).await, None);
+        assert_eq!(count(&apple.calls()?, "run "), 0);
+        // Then they lose it.
+        apple.lose_network()?;
+        apple.mends_on_restart()?;
+        assert_eq!(network_down(&driver).await, None);
+        let calls = apple.calls()?;
+        assert_eq!(count(&calls, "system stop"), 1);
+        assert!(apple.runs(ours)?);
+        // It looks once a minute.
+        let driver = apple.networked(&at, network::LOOK_EVERY, network::RESTART_EVERY);
+        assert_eq!(network_down(&driver).await, None);
+        let looked = apple.calls()?.len();
+        assert_eq!(network_down(&driver).await, None);
+        assert_eq!(apple.calls()?.len(), looked);
+
+        // Without a session's sandbox running, there is nothing to look at.
+        let apple = StuckApple::new(&["net-f2-dev"], &[])?;
+        let driver = apple.networked(&at, Duration::ZERO, network::RESTART_EVERY);
+        apple.lose_network()?;
+        assert_eq!(network_down(&driver).await, None);
+        assert_eq!(count(&apple.calls()?, "run "), 0);
+        assert_eq!(count(&apple.calls()?, "exec "), 0);
         Ok(())
     }
 

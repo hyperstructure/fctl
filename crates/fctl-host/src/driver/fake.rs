@@ -471,6 +471,13 @@ fn key(name: &str) -> String {
 /// waits for meanwhile. `list`, `inspect` and the others' `stats` answer
 /// as ever. `exec` says `1000` to `id -u`. With `refuse-start` there,
 /// `start` fails.
+///
+/// `fctl-agent reach`, in a sandbox (`exec`) or a fresh one (`run --rm`),
+/// says that it reaches the network, unless `offline` is there, or
+/// `offline-NAME` for the sandbox NAME alone; with `old-agent` there, the
+/// sandboxes' fctl-agent knows no `reach`. `system stop` stops every
+/// sandbox, and fails with `stop-fails` there; `system start` brings the
+/// network back with `mends` there.
 const STUCK_APPLE: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -510,13 +517,32 @@ case "$1" in
     runs "$1" || { echo "Error: container $1 is not running" >&2; exit 1; }
     if frozen "$1"; then cp "$d/vm-$1" "$d/lock"; hang; fi
     wait_lock
-    case "$*" in *"id -u"*) echo 1000 ;; esac ;;
+    case "$*" in
+      *" reach "*)
+        [ ! -e "$d/old-agent" ] || { echo "error: unrecognized subcommand 'reach'" >&2; exit 2; }
+        if [ -e "$d/offline" ] || [ -e "$d/offline-$1" ]; then
+          echo "unreachable: github.com didn't resolve: Try again"
+        else
+          echo "reached github.com:443"
+        fi ;;
+      *"id -u"*) echo 1000 ;;
+    esac ;;
   cp)
     n=${last%%:*}
     runs "$n" || { echo "Error: container $n is not running" >&2; exit 1; }
     frozen "$n" && hang
     wait_lock ;;
   run)
+    case " $* " in
+      *" --rm "*" reach "*)
+        wait_lock
+        if [ -e "$d/offline" ]; then
+          echo "unreachable: github.com didn't resolve: Try again"
+        else
+          echo "reached github.com:443"
+        fi
+        exit 0 ;;
+    esac
     n=; prev=
     for a in "$@"; do [ "$prev" = --name ] && n=$a; prev=$a; done
     wait_lock
@@ -539,7 +565,15 @@ case "$1" in
     rm -f "$d/vm-$last" ;;
   clean) wait_lock ;;
   image) echo '[{"name": "image"}]' ;;
-  system) echo '{"version": "1.5.0"}' ;;
+  system)
+    case "$2" in
+      stop)
+        [ ! -e "$d/stop-fails" ] || { echo "Error: XPC connection error: Connection invalid" >&2; exit 1; }
+        for f in "$d"/vm-*; do [ -e "$f" ] && kill -9 "$(cat "$f")" 2>/dev/null; done
+        : ;;
+      start) [ ! -e "$d/mends" ] || rm -f "$d/offline" ;;
+      *) echo '{"version": "1.5.0"}' ;;
+    esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "##;
@@ -598,6 +632,53 @@ impl StuckApple {
     /// Its `start`s fail from now on, as for a reason of their own.
     pub fn refuse_starts(&self) -> Result<()> {
         Ok(std::fs::write(self.dir.path().join("refuse-start"), "")?)
+    }
+
+    /// A driver that plays it ([`Self::driver`]), whose sandboxes should
+    /// reach `target` (this Mac reaches what answers there), and which
+    /// looks at their network every `look_every` and restarts Apple's
+    /// `container` at most every `restart_every`.
+    pub fn networked(
+        &self,
+        target: &str,
+        look_every: Duration,
+        restart_every: Duration,
+    ) -> ContainerDriver {
+        self.driver().networked(target, look_every, restart_every)
+    }
+
+    /// Its sandboxes, and fresh ones, stop reaching the network.
+    pub fn lose_network(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("offline"), "")?)
+    }
+
+    /// The network comes back.
+    pub fn mend_network(&self) -> Result<()> {
+        let _ = std::fs::remove_file(self.dir.path().join("offline"));
+        Ok(())
+    }
+
+    /// Restarting it brings the network back.
+    pub fn mends_on_restart(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("mends"), "")?)
+    }
+
+    /// The sandbox `name` alone doesn't reach the network.
+    pub fn keep_off(&self, name: &str) -> Result<()> {
+        Ok(std::fs::write(
+            self.dir.path().join(format!("offline-{name}")),
+            "",
+        )?)
+    }
+
+    /// Its sandboxes' fctl-agent knows no `reach`.
+    pub fn old_agents(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("old-agent"), "")?)
+    }
+
+    /// `system stop` fails from now on.
+    pub fn fail_stops(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("stop-fails"), "")?)
     }
 
     /// As if an `exec` had waited on the frozen VM of `name`, and held
