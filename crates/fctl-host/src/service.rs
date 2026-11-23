@@ -279,13 +279,27 @@ pub fn uninstall() -> Result<()> {
 /// which ends this process when the service runs it. Outside the service,
 /// only the files go.
 pub fn retire() {
+    uninstall_unit();
+    stop_unit();
+}
+
+/// Takes the host service's unit away, so that nothing starts the host
+/// again, without stopping it.
+pub fn uninstall_unit() {
     if cfg!(target_os = "macos") {
         let _ = std::fs::remove_file(plist_path());
-        let _ = sh("launchctl", &["bootout", &format!("gui/{}/{LABEL}", uid())]);
     } else {
         let _ = systemctl_user(&["disable", "fctl-host.service"]);
         let _ = std::fs::remove_file(unit_path());
         let _ = systemctl_user(&["daemon-reload"]);
+    }
+}
+
+/// Stops the host service, which ends its process.
+pub fn stop_unit() {
+    if cfg!(target_os = "macos") {
+        let _ = sh("launchctl", &["bootout", &format!("gui/{}/{LABEL}", uid())]);
+    } else {
         let _ = systemctl_user(&["stop", "fctl-host.service"]);
     }
 }

@@ -15,6 +15,10 @@ use std::time::Duration;
 /// certificate authority are.
 const ACCOUNT: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
 
+/// How long a host waits after a patch of its pod's deletion cost failed
+/// for now (the API server busy or away) before it tries again.
+pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The annotation a ReplicaSet reads when it scales down: pods with a
 /// lower cost go first.
 pub const DELETION_COST: &str = "controller.kubernetes.io/pod-deletion-cost";

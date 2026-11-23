@@ -126,9 +126,11 @@ pub struct Daemon {
     /// at its number of sessions: `None` outside one, with
     /// `pod_deletion_cost` off, and once the cluster refused.
     pod: Option<Arc<kube::Pod>>,
-    /// The deletion cost it last set, and whether it is setting one now.
+    /// The deletion cost it last set, whether it is setting one now, and,
+    /// after a failure, when it tries again.
     pod_cost: Option<usize>,
     pod_setting: bool,
+    pod_retry_at: Option<tokio::time::Instant>,
     /// A stop signal waits: from when the retire command runs until the
     /// runner has left and the machine is marked retired, as
     /// `systemctl poweroff` sends one as soon as it is under way.
@@ -392,6 +394,7 @@ impl Daemon {
             pod,
             pod_cost: None,
             pod_setting: false,
+            pod_retry_at: None,
             hold_stop: Arc::default(),
         })
     }
@@ -920,7 +923,10 @@ impl Daemon {
             Chore::PodCost(n, result) => {
                 self.pod_setting = false;
                 match result {
-                    Ok(()) => self.pod_cost = Some(n),
+                    Ok(()) => {
+                        self.pod_cost = Some(n);
+                        self.pod_retry_at = None;
+                    }
                     Err((why, true)) => {
                         tracing::warn!(
                             "can't set this pod's {} ({why}); not trying again",
@@ -929,7 +935,11 @@ impl Daemon {
                         self.pod = None;
                     }
                     Err((why, false)) => {
-                        tracing::warn!("setting this pod's {}: {why}", kube::DELETION_COST);
+                        tracing::warn!(
+                            "setting this pod's {}: {why}; trying again in a minute",
+                            kube::DELETION_COST
+                        );
+                        self.pod_retry_at = Some(tokio::time::Instant::now() + kube::RETRY_AFTER);
                     }
                 }
             }
@@ -954,6 +964,9 @@ impl Daemon {
         if let Some(pod) = self.pod.clone()
             && !self.pod_setting
             && self.pod_cost != Some(self.sessions.len())
+            && self
+                .pod_retry_at
+                .is_none_or(|at| tokio::time::Instant::now() >= at)
         {
             let n = self.sessions.len();
             self.pod_setting = true;
@@ -1109,14 +1122,17 @@ impl Daemon {
                 );
             }
             retire::unmark(&marker);
-            // The runner is gone: a stop signal that waited, or the one
-            // stopping the service sends, ends the host.
+            // Nothing starts the host again, before anything ends it.
+            tracing::info!("uninstalling the host service");
+            let _ = tokio::task::spawn_blocking(crate::service::uninstall_unit).await;
+            // The runner is gone and the service with it: a stop signal
+            // that waited, or the one stopping the service sends, ends the
+            // host.
             hold.store(false, std::sync::atomic::Ordering::SeqCst);
             let _ = wake.send(Chore::Left);
-            tracing::info!("uninstalling the host service");
             // Stopping the service ends this process, on the signal the
             // runtime has to be free to take.
-            let _ = tokio::task::spawn_blocking(crate::service::retire).await;
+            let _ = tokio::task::spawn_blocking(crate::service::stop_unit).await;
             // Still here: something else runs the host. One whose machine
             // goes waits for that rather than exit, so that what restarts it
             // doesn't; one with no command leaves that to what ran it.
@@ -2353,6 +2369,16 @@ mod tests {
         d.pod_setting = true;
         d.on_chore(Chore::PodCost(2, Ok(())));
         assert_eq!((d.pod_cost, d.pod_setting), (Some(2), false));
+        // One that fails for now waits a minute before it tries again.
+        d.pod_setting = true;
+        d.on_chore(Chore::PodCost(3, Err(("503".into(), false))));
+        assert_eq!(d.pod_cost, Some(2));
+        assert!(
+            d.pod_retry_at
+                .is_some_and(|at| at > tokio::time::Instant::now())
+        );
+        d.on_chore(Chore::PodCost(3, Ok(())));
+        assert_eq!((d.pod_cost, d.pod_retry_at), (Some(3), None));
         Ok(())
     }
 

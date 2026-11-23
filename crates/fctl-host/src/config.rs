@@ -370,6 +370,12 @@ impl HostConfig {
     fn from_toml(text: &str) -> Result<Self> {
         let mut cfg: Self = toml::from_str(text)?;
         cfg.image = cfg.image.filter(|i| !means_default_image(i));
+        // An empty command takes nothing away: as none, the host leaves
+        // and stops, rather than wait for a machine that stays.
+        cfg.retire_command = cfg
+            .retire_command
+            .map(|c| c.trim().to_owned())
+            .filter(|c| !c.is_empty());
         Ok(cfg)
     }
 
@@ -641,6 +647,12 @@ mod tests {
             Some(std::time::Duration::from_secs(20 * 60))
         );
         assert_eq!(cfg.retire_command.as_deref(), Some("systemctl poweroff"));
+        // An empty one, written by hand, is none: the host leaves and
+        // stops rather than wait for a machine that stays.
+        for empty in ["\"\"", "\"   \""] {
+            let cfg = HostConfig::from_toml(&format!("retire_command = {empty}\n"))?;
+            assert_eq!(cfg.retire_command, None, "{empty}");
+        }
         // A pod's deletion cost follows its sessions unless the host says not.
         assert!(cfg.kubernetes.pod_deletion_cost);
         let off = HostConfig::from_toml("[kubernetes]\npod_deletion_cost = false\n")?;
