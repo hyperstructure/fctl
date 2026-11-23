@@ -887,6 +887,13 @@ fn snapshot_limit(spec: Option<&SessionSpec>) -> Option<u64> {
     }
 }
 
+/// Whether this run's spec asks its agent to save a snapshot as it stops:
+/// not known, so not said, for a run the host recovered after a restart.
+fn saves_by_spec(spec: Option<&SessionSpec>) -> bool {
+    spec.and_then(|s| s.snapshot.as_ref())
+        .is_some_and(|s| s.save)
+}
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -1222,6 +1229,8 @@ async fn run(
     // the run off before its agent said it had ended.
     let mut snapshot_came = false;
     let mut forced = false;
+    // When the stop began, which bounds how long parts may keep it waiting.
+    let mut stop_since: Option<Instant> = None;
     let mut upload: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
     let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<HostToAgent>();
     // Screenshots and calls under way (`MAX_IN_FLIGHT`).
@@ -1653,7 +1662,8 @@ async fn run(
                                     snapshot_came = true;
                                     // A stop waits while its parts come.
                                     if let Some((destroy, deadline)) = stop {
-                                        stop = Some((destroy, deadline.max(Instant::now() + crate::snapshots::STOP_PER_PART)));
+                                        let most = stop_since.unwrap_or_else(Instant::now) + crate::snapshots::STOP_MOST;
+                                        stop = Some((destroy, deadline.max(Instant::now() + crate::snapshots::STOP_PER_PART).min(most)));
                                     }
                                     match saved {
                                         Some(saved) => {
@@ -1907,9 +1917,12 @@ async fn run(
                         // Without a link, the agent gets it once the host
                         // attaches again, or its sandbox stops at the
                         // deadline: later for one that saves a snapshot.
-                        let saves = snapshot_limit(spec.as_deref()).is_some();
-                        let wait = if saves { crate::snapshots::STOP_SAVING } else { Duration::from_secs(60) };
+                        // A run recovered after a restart, whose spec the
+                        // host no longer has, gets the plain wait, which
+                        // its parts extend as they come.
+                        let wait = if saves_by_spec(spec.as_deref()) { crate::snapshots::STOP_SAVING } else { Duration::from_secs(60) };
                         stop = Some((destroy, Instant::now() + wait));
+                        stop_since = Some(Instant::now());
                         let frame = HostToAgent::Stop { reason, grace_ms: 30_000 };
                         match &link {
                             Some(l) => l.send(frame),
@@ -2030,12 +2043,12 @@ async fn run(
     }
     // Cut off by the stop's deadline before any of it came, from an agent
     // that would have saved one.
-    if forced && !snapshot_came && snapshot_limit(spec.as_deref()).is_some() {
+    if forced && !snapshot_came && saves_by_spec(spec.as_deref()) {
         uplink.send(UplinkUp::Notice {
             notice: Notice::new(
                 NoticeLevel::Warn,
                 "snapshot_not_saved",
-                "The session's snapshot wasn't saved: its agent hadn't finished saving it when the stop's time ran out. A resume on another runner starts from the task and the branch.",
+                "The session's snapshot wasn't saved: the run ended before its agent saved one. A resume on another runner starts from the task and the branch.",
             ),
         });
     }
@@ -2300,6 +2313,11 @@ mod tests {
         assert_eq!(snapshot_limit(Some(&restores)), None);
         assert_eq!(snapshot_limit(Some(&spec(serde_json::Value::Null)?)), None);
         assert_eq!(snapshot_limit(None), Some(2048 * 1024 * 1024));
+        // Only a spec that asks for one says a run saves; a recovered run's
+        // isn't known.
+        assert!(saves_by_spec(Some(&saves)));
+        assert!(!saves_by_spec(Some(&restores)));
+        assert!(!saves_by_spec(None));
         Ok(())
     }
 

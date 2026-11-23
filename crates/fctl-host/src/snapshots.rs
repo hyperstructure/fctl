@@ -27,6 +27,9 @@ pub const STOP_SAVING: Duration = Duration::from_secs(3 * 60);
 /// How long a stop waits after each part of a snapshot, while they come.
 pub const STOP_PER_PART: Duration = Duration::from_secs(60);
 
+/// The longest a stop waits for a snapshot, however its parts come.
+pub const STOP_MOST: Duration = Duration::from_secs(15 * 60);
+
 /// A snapshot whose parts come from the agent, spooled to a file, at most
 /// `limit` bytes: an agent runs what the session runs, which mustn't fill
 /// the disk the runner's other sandboxes share.
@@ -66,9 +69,17 @@ impl Spool {
         if n != self.next {
             return Err(format!("part {n} came where part {} was due", self.next));
         }
+        // As many parts as its size takes, none of them empty: an agent
+        // only sends a part with something in it.
+        if u64::from(n) > self.limit / SNAPSHOT_PART_BYTES as u64 {
+            return Err(format!("part {n} is more parts than its size takes"));
+        }
         let bytes = STANDARD
             .decode(data.as_bytes())
             .map_err(|e| format!("part {n} isn't base64: {e}"))?;
+        if bytes.is_empty() {
+            return Err(format!("part {n} is empty"));
+        }
         self.bytes += bytes.len() as u64;
         if self.bytes > self.limit {
             return Err(format!(
@@ -268,6 +279,21 @@ mod tests {
             .map_err(anyhow::Error::msg)?;
         let over = spool.add(1, &STANDARD.encode(b"0123456789a"));
         assert!(over.is_err_and(|e| e.contains("10 bytes")));
+        // Empty parts, and more parts than its size takes, are refused too.
+        let mut empty = Spool::start(dir.path(), &session, "snp_3", 10)?;
+        assert!(empty.add(0, "").is_err_and(|e| e.contains("empty")));
+        let mut many = Spool::start(dir.path(), &session, "snp_4", 10)?;
+        // Its size and one part's room take two parts at most.
+        many.add(0, &STANDARD.encode(b"x"))
+            .map_err(anyhow::Error::msg)?;
+        many.add(1, &STANDARD.encode(b"y"))
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            many.add(2, &STANDARD.encode(b"z"))
+                .is_err_and(|e| e.contains("more parts"))
+        );
+        empty.discard();
+        many.discard();
         spool.discard();
         assert_eq!(std::fs::read_dir(dir.path().join("snapshots"))?.count(), 0);
         Ok(())
