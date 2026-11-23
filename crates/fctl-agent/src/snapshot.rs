@@ -119,6 +119,12 @@ async fn git(home: &Path, dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> R
         .current_dir(dir)
         .env("HOME", home)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // The work-in-progress commit stays in the sandbox and the
+        // snapshot: it needs an author, not the session's.
+        .env("GIT_AUTHOR_NAME", "fctl")
+        .env("GIT_AUTHOR_EMAIL", "fctl@localhost")
+        .env("GIT_COMMITTER_NAME", "fctl")
+        .env("GIT_COMMITTER_EMAIL", "fctl@localhost")
         .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -725,6 +731,24 @@ mod tests {
         Ok(spec)
     }
 
+    /// A repository's work as uncommitted: what changed and isn't staged,
+    /// what is staged, and the untracked files.
+    async fn work(repo: &Path) -> Result<(String, String, String)> {
+        Ok((
+            sh(repo, "git diff --name-status").await?,
+            sh(repo, "git diff --cached --name-status").await?,
+            sh(repo, "git ls-files --others --exclude-standard").await?,
+        ))
+    }
+
+    fn expected() -> (String, String, String) {
+        (
+            "D\tgone.txt\nM\tkept.txt".into(),
+            String::new(),
+            "new.txt".into(),
+        )
+    }
+
     /// A sandbox with a clone of `origin`: its home and working directory.
     async fn sandbox(root: &Path, name: &str, origin: &Path) -> Result<Paths> {
         let home = root.join(name);
@@ -791,13 +815,7 @@ mod tests {
         assert!(saved.saved.conversation && saved.saved.changes);
         assert_eq!((saved.saved.agent_seq, saved.saved.left_out.len()), (42, 0));
         // The sandbox it was saved in is as it was.
-        let left = sh(&a.workdir, "git status --porcelain").await?;
-        assert!(
-            left.contains(" M kept.txt")
-                && left.contains(" D gone.txt")
-                && left.contains("?? new.txt"),
-            "{left}"
-        );
+        assert_eq!(work(&a.workdir).await?, expected());
         assert_eq!(sh(&a.workdir, "git log --format=%s -1").await?, "local");
         let b = sandbox(root.path(), "b", &origin).await?;
         let restored = restore(
@@ -828,13 +846,7 @@ mod tests {
             "changed\n"
         );
         assert!(!b.workdir.join("gone.txt").exists());
-        let status = sh(&b.workdir, "git status --porcelain").await?;
-        assert!(
-            status.contains(" M kept.txt")
-                && status.contains(" D gone.txt")
-                && status.contains("?? new.txt"),
-            "{status}"
-        );
+        assert_eq!(work(&b.workdir).await?, expected());
         // Another key, a damaged file, an older Claude Code: refused.
         let scratch = root.path().join("scratch2");
         assert!(
