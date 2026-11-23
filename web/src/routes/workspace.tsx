@@ -33,6 +33,7 @@ import { PageTabs, TabCount } from "@/components/page-tabs";
 import { ExperimentalPill, TokenHungry } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
 import { DriverLine } from "@/components/runner-driver";
+import { SnapshotStoreLine } from "@/components/runner-snapshots";
 import { ServiceAccountsPanel } from "@/components/service-accounts/panel";
 import { SessionRow } from "@/components/session/row";
 import {
@@ -1079,6 +1080,7 @@ function Runners({ w }: { w: G.Workspace }) {
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
                   <DriverLine runner={r} />
+                  <SnapshotStoreLine runner={r} />
                   {enrolled && (r.enrollment?.token_name || r.remove_offline_after_minutes) && (
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-ink-4">
                       {r.enrollment?.token_name && (
