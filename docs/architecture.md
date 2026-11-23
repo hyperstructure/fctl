@@ -1152,8 +1152,8 @@ another, and has each grow and shrink with the sessions that wait for it
 [ADR 0094](adr/0094-runner-pools-scale-with-the-sessions-that-wait-for-them.md)).
 
 1. **Labels.** A token has labels (`enrollment_tokens.labels`; `fctl
-   runners enrollment-tokens create "AWS large" --labels aws,large`, or the
-   Runners tab), lowercase letters, digits, `-`, `_`, `.` and `:`, at most
+   runners enrollment-tokens create "AWS large" --labels aws,large`, or
+   `labels` in the API), lowercase letters, digits, `-`, `_`, `.` and `:`, at most
    16. Every runner it enrolled carries them beside the ones its host sets
    in `host.toml` (`labels`), in FleetDO's placement and in the runners
    list (`Runner.labels`, with `Runner.pool` naming its token). FleetDO
@@ -1163,7 +1163,8 @@ another, and has each grow and shrink with the sessions that wait for it
    /api/v1/workspaces/{id}/enrollment-tokens/{token}`, `fctl runners
    enrollment-tokens set`) move its runners at once, older hosts' too.
 2. **Projects choose by labels.** A project's `runner_labels` (`fctl
-   projects set --runners gpu`, Settings → Runners) are the labels a
+   projects set --runners gpu`, or `settings.runner_labels` in the API)
+   are the labels a
    runner needs to run its sessions, review agents' too: FleetDO passes
    them to `fctl_domain::schedule::pick`, which takes only runners with
    them all, home runners included. Without them, any runner of the

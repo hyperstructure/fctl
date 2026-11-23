@@ -78,8 +78,10 @@ idle_timeout_minutes?: number,
  * The labels a runner needs to run its sessions: a pool's (the labels
  * of the enrollment token its runners enrolled with), or ones a host
  * sets in its `host.toml`. A session waits for a runner that has them
- * all. Empty: any runner of the workspace. An update that leaves it
- * out keeps what was stored; older control planes ignore it.
+ * all. Empty: any runner of the workspace. Always sent, as `[]` for
+ * none: an update that leaves it out keeps what was stored (see
+ * `fctl_domain::settings::keep_unsent`). Older control planes ignore
+ * it.
  */
 runner_labels?: Array<string>, 
 /**

@@ -807,8 +807,15 @@ impl Show {
         loop {
             let demand = read().await;
             match (&demand, self.watch) {
-                (Ok(d), _) => self.show(d)?,
-                // Watching, a read that fails says so and tries again.
+                (Ok(d), false) => self.show(d)?,
+                // Watching, a read or a put that fails says so and tries
+                // again: an exporter runs for good, through a throttled
+                // call or credentials that expire.
+                (Ok(d), true) => {
+                    if let Err(e) = self.show(d) {
+                        eprintln!("{}", style::red(&format!("{e:#}")));
+                    }
+                }
                 (Err(e), true) => eprintln!("{}", style::red(&format!("{e:#}"))),
                 (Err(_), false) => return demand.map(|_| ()),
             }

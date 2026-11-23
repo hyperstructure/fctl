@@ -264,11 +264,13 @@ impl Pool {
         schedule::could_run(&slot, q.labels, q.want, q.image, q.review, false)
     }
 
-    /// Whether it may still grow: below its `max_runners`, or with a free
-    /// slot.
+    /// Whether it may take another session: a free slot, or, while its
+    /// token still enrolls runners, room for another below its
+    /// `max_runners`. A closed pool (revoked or expired) can't grow.
     fn has_room(&self) -> bool {
         let enrolled = u32::try_from(self.runners.len()).unwrap_or(u32::MAX);
-        self.info.max_runners.is_none_or(|max| enrolled < max) || self.slots().free > 0
+        let may_grow = !self.info.closed && self.info.max_runners.is_none_or(|max| enrolled < max);
+        may_grow || self.slots().free > 0
     }
 
     fn slots(&self) -> PoolSlots {
@@ -310,9 +312,10 @@ impl Pool {
 /// every session that waits, and how many of those no pool could run.
 ///
 /// A session counts towards one pool: of those that could run it, one
-/// that may still grow before one at its limit, one whose runners said
-/// what they give before one whose didn't yet, then the one with the
-/// fewest labels it doesn't ask for, then the oldest. Sessions that wait
+/// whose token still enrolls before a revoked or expired one, one that may
+/// still grow before one at its limit, one whose runners said what they
+/// give before one whose didn't yet, then the one with the fewest labels
+/// it doesn't ask for, then the oldest. Sessions that wait
 /// for the runner that has their sandbox (`home`), or for their last run
 /// to stop there (`stopping`), count nowhere.
 ///
@@ -320,7 +323,7 @@ impl Pool {
 /// runners run and every one that counts towards it, at the capacity its
 /// runners announce, and at least the runners that run a session now, so
 /// that scaling it down to that never takes a busy one; within its
-/// `max_runners`. A pool whose runners never said what they give wants one
+/// `max_runners`, and for a closed pool the runners it has. A pool whose runners never said what they give wants one
 /// runner while sessions count towards it.
 pub fn demand(
     pools: Vec<Pool>,
@@ -341,7 +344,14 @@ pub fn demand(
             .filter(|(_, p)| p.runs(q))
             .min_by_key(|(i, p)| {
                 let extra = p.info.labels.len() + p.shape.as_ref().map_or(0, |s| s.labels.len());
-                (!p.has_room(), p.shape.is_none(), extra, p.created_at, *i)
+                (
+                    p.info.closed,
+                    !p.has_room(),
+                    p.shape.is_none(),
+                    extra,
+                    p.created_at,
+                    *i,
+                )
             })
             .map(|(i, _)| i);
         match first.and_then(|i| waiting.get_mut(i)) {
@@ -387,7 +397,13 @@ fn wanted(pool: &Pool, running: u32, busy: u32, waiting: u32) -> u32 {
             .max(busy),
         None => u32::from(waiting > 0).max(busy),
     };
-    pool.info.max_runners.map_or(want, |max| want.min(max))
+    // A closed pool enrolls no more: no more than it has.
+    let most = if pool.info.closed {
+        Some(u32::try_from(pool.runners.len()).unwrap_or(u32::MAX))
+    } else {
+        pool.info.max_runners
+    };
+    most.map_or(want, |max| want.min(max))
 }
 
 // ───────────────────────────── Prometheus ─────────────────────────────
@@ -837,6 +853,28 @@ mod tests {
             .collect();
         assert_eq!(counted, [("full", 0), ("big", 2), ("general", 1)]);
         assert_eq!(unpooled, 0);
+    }
+
+    #[test]
+    fn a_revoked_pool_leaves_its_sessions_to_the_one_that_replaced_it() {
+        let none: Vec<String> = vec![];
+        // The old token, revoked, still has a runner and a shape; its
+        // replacement, with the same labels, has neither yet.
+        let mut old = pool("old", &["gpu"], None, Some(shape(4, 65_536)), vec![up(4)]);
+        old.info.closed = true;
+        old.created_at = 1;
+        let mut new = pool("new", &["gpu"], None, None, vec![]);
+        new.created_at = 2;
+        let gpu = s(&["gpu"]);
+        let queue = [queued(&gpu, 0, "busy"), queued(&none, 0, "busy")];
+        let (out, _, _) = demand(vec![old, new], &queue, 0);
+        let counted: Vec<(&str, u32, u32)> = out
+            .iter()
+            .map(|p| (p.pool.name.as_str(), p.waiting.sessions, p.wanted))
+            .collect();
+        // The new pool starts a runner for them; the old one wants no more
+        // than the runner it has.
+        assert_eq!(counted, [("old", 0, 1), ("new", 2, 1)]);
     }
 
     #[test]

@@ -2713,7 +2713,8 @@ impl FleetObject {
     }
 
     /// What a workspace's pools need now (`/demand`): every pool of it, or
-    /// those `b.pools` names, from what D1 has of their tokens and runners,
+    /// those `b.pools` names, counted with all of them, from what D1 has of
+    /// their tokens and runners,
     /// what their runners do here, and the workspace's sessions that wait
     /// (`fctl_domain::pools::demand`). A pool whose token no longer enrolls
     /// and that has no runners left is no pool any more.
@@ -2752,9 +2753,6 @@ impl FleetObject {
             .collect();
         let mut pools = Vec::new();
         for t in tokens {
-            if b.pools.as_ref().is_some_and(|only| !only.contains(&t.id)) {
-                continue;
-            }
             let mine: Vec<&crate::pools::MemberRow> =
                 runners.iter().filter(|r| r.pool == t.id).collect();
             if !t.open && mine.is_empty() {
@@ -2773,7 +2771,11 @@ impl FleetObject {
                     h.features.iter().any(|f| f == FEATURE_DRIVERS)
                         && fctl_domain::schedule::driver_problem(&h.driver, &h.drivers).is_some()
                 });
-                if connected && let Some(h) = &hello {
+                // One that waits for approval says nothing of its pool.
+                if connected
+                    && r.pending_until.is_none()
+                    && let Some(h) = &hello
+                {
                     let seen = row.and_then(|row| row.last_seen).map_or(0, |t| t as i64);
                     if latest.as_ref().is_none_or(|(at, _)| seen > *at) {
                         latest = Some((seen, h.clone()));
@@ -2854,7 +2856,13 @@ impl FleetObject {
                 kind: q.wait.as_deref().unwrap_or("no_runner"),
             })
             .collect();
-        let (pools, waiting, unpooled) = fctl_domain::pools::demand(pools, &queued, now);
+        // Counted over every pool of the workspace, which a session counts
+        // towards one of, then narrowed to those asked for: a pool read
+        // alone counts what the workspace's view does.
+        let (mut pools, waiting, unpooled) = fctl_domain::pools::demand(pools, &queued, now);
+        if let Some(only) = &b.pools {
+            pools.retain(|p| only.iter().any(|id| id == p.pool.id.as_str()));
+        }
         Ok(fctl_proto::api::WorkspaceDemand {
             pools,
             waiting,

@@ -241,12 +241,13 @@ pub async fn rows(
 
 /// Keeps what runner `runner_id` announced as its pool's shape, which the
 /// pool's demand counts with once none of its runners is online. Runners
-/// that enrolled with no token change nothing.
+/// that enrolled with no token change nothing, nor do those that wait for
+/// approval: an unapproved machine has no say in its pool.
 pub async fn keep_shape(db: &D1Database, runner_id: &str, shape: &PoolShape) -> AppResult<()> {
     q(
         db,
         "UPDATE enrollment_tokens SET shape = ?1 \
-         WHERE id = (SELECT enrollment_id FROM runners WHERE id = ?2)",
+         WHERE id = (SELECT enrollment_id FROM runners WHERE id = ?2 AND pending_until IS NULL)",
         &[s(&serde_json::to_string(shape)?), s(runner_id)],
     )?
     .run()
@@ -370,8 +371,14 @@ mod tests {
             seen_at: NOW,
         };
         keep_shape(&db, "rnr_1", &shape).await?;
-        // A runner in no pool keeps nothing.
+        // A runner in no pool keeps nothing, nor one that waits for
+        // approval.
         keep_shape(&db, "rnr_laptop", &shape).await?;
+        let unapproved = PoolShape {
+            capacity: 64,
+            ..shape.clone()
+        };
+        keep_shape(&db, "rnr_3", &unapproved).await?;
         let (tokens, runners) = rows(&db, "wsp_acme", NOW).await?;
         let names: Vec<(&str, bool, Option<&str>)> = tokens
             .iter()
