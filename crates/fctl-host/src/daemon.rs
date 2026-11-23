@@ -129,6 +129,10 @@ pub struct Daemon {
     /// The deletion cost it last set, and whether it is setting one now.
     pod_cost: Option<usize>,
     pod_setting: bool,
+    /// A stop signal waits: from when the retire command runs until the
+    /// runner has left and the machine is marked retired, as
+    /// `systemctl poweroff` sends one as soon as it is under way.
+    hold_stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Where a retirement is (`crate::retire`).
@@ -220,6 +224,9 @@ enum Chore {
     /// The pod's deletion cost was set to this, or setting it failed, and
     /// whether it will fail every time.
     PodCost(usize, Result<(), (String, bool)>),
+    /// The runner has left and the machine is marked retired: a stop
+    /// signal that waited ends the host now.
+    Left,
 }
 
 const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
@@ -385,6 +392,7 @@ impl Daemon {
             pod,
             pod_cost: None,
             pod_setting: false,
+            hold_stop: Arc::default(),
         })
     }
 
@@ -892,8 +900,13 @@ impl Daemon {
                 drained,
             } => {
                 tracing::error!("{}", retire::Kept::Command(why).words());
+                let _ = std::fs::remove_file(retire::retired_marker(&self.ctx.cfg.data_dir()));
+                self.hold_stop
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 self.keep(Some(drained));
             }
+            // It woke the loop, whose stop signal may go through now.
+            Chore::Left => {}
             Chore::Undrained(result) => {
                 self.undraining = false;
                 match result {
@@ -921,6 +934,12 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// Whether a stop signal ends the host now: not while a retirement's
+    /// command has run and the runner hasn't left yet.
+    fn may_stop(&self) -> bool {
+        !self.hold_stop.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// An API client with the runner's token.
@@ -1008,6 +1027,16 @@ impl Daemon {
     /// machine away. Without one, it leaves at once.
     fn run_retire_command(&mut self, drained: retire::Drained) {
         self.retiring = Some(Retiring::Running(drained));
+        // Marked before the command, which may take the machine down at
+        // once: whatever starts the host again finds it retired, and
+        // waits. A command that fails takes the mark back.
+        let at = fctl_domain::account::iso8601(expiry::now_ms());
+        if let Err(e) = std::fs::write(retire::retired_marker(&self.ctx.cfg.data_dir()), &at) {
+            tracing::warn!("saving that this machine retires: {e}");
+        }
+        // A stop signal waits until the runner has left.
+        self.hold_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let command = self.ctx.cfg.retire_command.clone();
         let tx = self.chores_tx.clone();
         tokio::spawn(async move {
@@ -1052,9 +1081,15 @@ impl Daemon {
         let data_dir = self.ctx.cfg.data_dir();
         let marker = retire::marker(&data_dir);
         let command = self.ctx.cfg.retire_command.is_some();
+        let hold = self.hold_stop.clone();
+        let wake = self.chores_tx.clone();
         tokio::spawn(async move {
             if drained.enrolled {
-                match api.remove_this_runner().await {
+                let removed =
+                    tokio::time::timeout(Duration::from_secs(20), api.remove_this_runner())
+                        .await
+                        .unwrap_or_else(|_| Err(fctl_client::Error::Other("timed out".into())));
+                match removed {
                     Ok(_) => {
                         tracing::info!("retired: the runner left its workspace");
                         if let Err(e) = HostConfig::remove_token() {
@@ -1071,11 +1106,10 @@ impl Daemon {
                 );
             }
             retire::unmark(&marker);
-            // Whatever runs the host again finds it retired, and waits.
-            let at = fctl_domain::account::iso8601(expiry::now_ms());
-            if let Err(e) = std::fs::write(retire::retired_marker(&data_dir), &at) {
-                tracing::warn!("saving that this machine retired: {e}");
-            }
+            // The runner is gone: a stop signal that waited, or the one
+            // stopping the service sends, ends the host.
+            hold.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = wake.send(Chore::Left);
             tracing::info!("uninstalling the host service");
             // Stopping the service ends this process, on the signal the
             // runtime has to be free to take.
@@ -1458,7 +1492,7 @@ impl Daemon {
         loop {
             let recovered = tokio::select! {
                 r = self.recover() => r,
-                _ = &mut shutdown => return Ok(()),
+                _ = &mut shutdown, if self.may_stop() => return Ok(()),
             };
             if recovered {
                 break;
@@ -1470,7 +1504,7 @@ impl Daemon {
             );
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
-                _ = &mut shutdown => return Ok(()),
+                _ = &mut shutdown, if self.may_stop() => return Ok(()),
             }
             wait = (wait * 2).min(Duration::from_secs(60));
         }
@@ -1487,7 +1521,7 @@ impl Daemon {
         loop {
             let connected = tokio::select! {
                 c = ws::connect(&url, Some(&self.ctx.token)) => c,
-                _ = &mut shutdown => return Ok(()),
+                _ = &mut shutdown, if self.may_stop() => return Ok(()),
             };
             match connected {
                 Ok(socket) => {
@@ -1511,7 +1545,7 @@ impl Daemon {
                     Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
                     _ = self.sweep.tick() => self.start_sweep(),
                     _ = self.update_check.tick(), if self.ready.is_some() => self.update_if_quiet(),
-                    _ = &mut shutdown => return Ok(()),
+                    _ = &mut shutdown, if self.may_stop() => return Ok(()),
                 }
             }
             backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -1567,7 +1601,7 @@ impl Daemon {
                     self.outbox.push_back(HostToFleet::Heartbeat(hb));
                     self.check_idle();
                 }
-                _ = &mut *shutdown => {
+                _ = &mut *shutdown, if self.may_stop() => {
                     tracing::info!("shutting down; sessions keep running in their sandboxes");
                     std::process::exit(0);
                 }
@@ -2256,12 +2290,19 @@ mod tests {
         d.retiring = Some(Retiring::Draining);
         d.on_chore(Chore::RetireDrained(Ok((theirs, 0))));
         assert_eq!(d.retiring, Some(Retiring::Running(theirs)));
-        // It failed: the runner stays as drained as it was before.
+        // Marked retired before the command, which may take the machine
+        // down at once, and a stop signal waits meanwhile.
+        let data = d.ctx.cfg.data_dir();
+        assert!(retire::retired(&data).is_some());
+        assert!(!d.may_stop());
+        // It failed: the runner stays as drained as it was before, unmarked.
         d.on_chore(Chore::RetireRan {
             result: Err("exit 1".into()),
             drained: theirs,
         });
         assert_eq!((d.retiring, d.owe_undrain), (None, false));
+        assert_eq!(retire::retired(&data), None);
+        assert!(d.may_stop());
         Ok(())
     }
 

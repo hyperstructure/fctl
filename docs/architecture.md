@@ -1456,8 +1456,11 @@ scale-in, and never removes a busy one:
    leaves fctl without going away itself.
 4. Once the command worked, an enrolled runner leaves its workspace
    (`DELETE /api/v1/runner`, as `fctl host uninstall` removes it), the
-   host forgets its token, notes that the machine retired (`retired` in
-   its data directory), uninstalls its service and stops. Run otherwise,
+   host forgets its token, uninstalls its service and stops. The machine
+   is marked retired (`retired` in its data directory) before the command
+   runs, and a stop signal waits until the runner has left, as `systemctl
+   poweroff` sends one as soon as it is under way; a command that fails
+   takes the mark back. Run otherwise,
    it waits for the machine to go rather than exit, and `fctl host run`
    on a machine that retired waits too, so that a unit or container that
    restarts it doesn't make it a runner again: `fctl host install` does.
