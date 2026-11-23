@@ -40,20 +40,25 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     ctx.verified(Sensitive::ConnectClaude)?;
     let keys = ctx.keys()?;
     // The same token again: the connection that has it takes it back, as it
-    // was, and runs out when it did, unless they say now when it was made.
+    // was, and runs out when it did, unless they give a day it could have
+    // been made (not "just now" for one fctl got long ago). Its person says
+    // it works: Claude's refusals of it count afresh.
     if let Some(same) = same_token(&ctx.db, &keys, &user.id, &token, false).await? {
-        let (expires_at, made_at) = match body.made_at {
-            Some(m) => (
-                fctl_domain::claude_oversight::runs_out(Some(m), same.created_at).0,
-                Some(m),
-            ),
-            None => (
-                same.expires_at.unwrap_or_else(|| {
-                    fctl_domain::claude_oversight::runs_out(None, same.created_at).0
-                }),
-                same.made_at,
-            ),
-        };
+        let had = (
+            same.expires_at.unwrap_or_else(|| {
+                fctl_domain::claude_oversight::runs_out(None, same.created_at).0
+            }),
+            same.made_at,
+        );
+        let (expires_at, made_at) =
+            fctl_domain::claude_oversight::again(body.made_at, had, same.created_at);
+        q(
+            &ctx.db,
+            "DELETE FROM claude_refusals WHERE credential_id = ?",
+            &[s(&same.id)],
+        )?
+        .run()
+        .await?;
         q(
             &ctx.db,
             "UPDATE claude_credentials SET label = COALESCE(?1, label), status = 'active', ended_at = NULL, \
@@ -233,7 +238,14 @@ pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     let (id, created) = match existing {
         Some(e) => {
             // Connected again, it works again: a token Claude refused is
-            // replaced on the runners before.
+            // replaced on the runners before, and its refusals count afresh.
+            q(
+                &ctx.db,
+                "DELETE FROM claude_refusals WHERE credential_id = ?",
+                &[s(&e.id)],
+            )?
+            .run()
+            .await?;
             q(
                 &ctx.db,
                 "UPDATE claude_credentials SET label = COALESCE(?, label), status = 'active', ended_at = NULL, \

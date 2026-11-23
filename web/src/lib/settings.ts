@@ -149,11 +149,15 @@ export function claudeGist(claude: G.ClaudeCredentialInfo[], now = Date.now()): 
   const { ending } = yourClaude(claude, now);
   if (ending?.expires_at !== undefined) {
     const days = daysLeft(ending.expires_at, now);
-    const when = days <= 1 ? "within a day" : `in ${days} days`;
-    return {
-      text: claude.length === 1 ? `Runs out ${when}` : `${claudeName(ending)} runs out ${when}`,
-      attention: true,
-    };
+    // Past its date, it ran out (or, estimated, may have): "runs out" would say it's still to come.
+    const verb =
+      ending.expires_at <= now
+        ? ending.expiry_estimated
+          ? "may have run out"
+          : "ran out"
+        : `runs out ${days <= 1 ? "within a day" : `in ${days} days`}`;
+    const text = claude.length === 1 ? verb : `${claudeName(ending)} ${verb}`;
+    return { text: text.charAt(0).toUpperCase() + text.slice(1), attention: true };
   }
   const used = claude.find((c) => c.is_default) ?? claude[0];
   return {

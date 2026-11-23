@@ -204,6 +204,16 @@ fn state_line(c: &ClaudeCredentialInfo, now: i64) -> Option<String> {
                 format!(
                     "Claude ended this login{on}: sign in again with `fctl claude connect --login`, or connect a long-lived token with `fctl claude connect`."
                 )
+            } else if c.on_runners {
+                // It works again once a new token is on the runners and
+                // connected again: another connection wouldn't bring it back.
+                format!(
+                    "Claude refused it{on}: make a new one with `claude setup-token`, keep it on your runners with `fctl host claude set-token`, then run `fctl claude connect --on-runners`."
+                )
+            } else if c.provisioned {
+                format!(
+                    "Claude refused it{on}: your admins set it, so ask them for a new one, or connect one of your own with `claude setup-token`, then `fctl claude connect`."
+                )
             } else {
                 format!(
                     "Claude refused it{on}: connect a new one with `claude setup-token`, then `fctl claude connect`."
@@ -735,6 +745,19 @@ mod tests {
                 ": connect a new one with `claude setup-token`, then `fctl claude connect`."
             ),
             "{line}"
+        );
+        // One kept on runners works again only from the runners.
+        ended.on_runners = true;
+        assert!(
+            state_line(&ended, NOW).is_some_and(|l| l.ends_with(
+                "keep it on your runners with `fctl host claude set-token`, then run `fctl claude connect --on-runners`."
+            ))
+        );
+        ended.on_runners = false;
+        ended.provisioned = true;
+        assert!(
+            state_line(&ended, NOW)
+                .is_some_and(|l| l.contains(": your admins set it, so ask them for a new one"))
         );
         login.status = CredentialStatus::Invalid;
         assert!(

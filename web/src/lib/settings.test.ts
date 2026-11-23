@@ -117,6 +117,15 @@ describe("what the list of pages says", () => {
     });
     // A month away is no news yet; the page says it under the token.
     expect(claudeGist([{ ...token, expires_at: now + 20 * day }], now)).toEqual({ text: "Laptop" });
+    // Past its date, it ran out, or may have where the date is an estimate.
+    expect(claudeGist([{ ...token, expires_at: now - day }], now)).toEqual({
+      text: "Ran out",
+      attention: true,
+    });
+    expect(claudeGist([{ ...token, expires_at: now - day, expiry_estimated: true }], now)).toEqual({
+      text: "May have run out",
+      attention: true,
+    });
   });
 
   it("says first what Security needs", () => {

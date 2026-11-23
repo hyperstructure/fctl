@@ -235,6 +235,14 @@ describe("your Claude connection on the Agent Floor", () => {
     expect(view.container.querySelector('a[href="/settings"]')?.textContent).toBe("Connect a new token");
   });
 
+  it("says a token past its date ran out, rather than asking for a new one before then", () => {
+    const view = open([token({ expires_at: Date.now() - 2 * day })]);
+    expect(view.container.textContent).toMatch(
+      /Your Claude token ran out on .+: sessions on it fail once Claude refuses it\. Make a new one with claude setup-token and connect it\./,
+    );
+    expect(view.container.textContent).not.toContain("before then");
+  });
+
   it("says when Claude refused your only token, which sessions can't run without", () => {
     const view = open([token({ status: "invalid", ended_at: Date.now() - day })]);
     expect(view.container.textContent).toMatch(

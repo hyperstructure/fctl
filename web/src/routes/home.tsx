@@ -668,13 +668,16 @@ function YourClaude({ claude }: { claude: G.ClaudeCredentialInfo[] }) {
   }
   if (!ending?.expires_at) return null;
   const days = daysLeft(ending.expires_at, now);
+  // Past its date while Claude still took it last: it ran out, or soon will be refused.
+  const past = ending.expires_at <= now;
   return (
     <div className="flex items-center gap-3 rounded-xl border border-amber/25 bg-amber-soft px-4 py-3 text-[13.5px] text-ink-2 max-sm:flex-col max-sm:items-start">
       <KeyRound aria-hidden="true" className="size-4 shrink-0 text-amber max-sm:hidden" />
       <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
         Your Claude token {runsOutWords(ending.expires_at, ending.expiry_estimated, now)}
-        {days > 0 ? `, in ${days === 1 ? "a day" : `${days} days`}` : ""}. Make a new one with claude
-        setup-token and connect it before then, or your sessions stop.
+        {past
+          ? ": sessions on it fail once Claude refuses it. Make a new one with claude setup-token and connect it."
+          : `, in ${days === 1 ? "a day" : `${days} days`}. Make a new one with claude setup-token and connect it before then, or your sessions stop.`}
       </span>
       <Link to="/settings" search={{ tab: "claude" }}>
         <Button size="sm" icon={<KeyRound className="size-3.5" />}>

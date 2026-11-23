@@ -514,20 +514,24 @@ pub async fn set_claude(ctx: &mut Ctx, req: &mut Request, who: &str) -> AppResul
     }
     let keys = ctx.keys()?;
     // The same token again, as a provisioning job that sets it on each run
-    // does: it runs out when it did, unless the request says when it was
-    // made, and what Claude said of it stays.
+    // does: it runs out when it did, unless the request gives a day it could
+    // have been made, and what Claude said of it stays.
     let same = crate::api::claude::same_token(&ctx.db, &keys, &user.id, &token, true).await?;
     let (expires_at, made_at) = match (body.made_at, &same) {
-        (Some(m), _) => (
+        (_, Some(c)) => fctl_domain::claude_oversight::again(
+            body.made_at,
+            (
+                c.runs_out().map_or_else(
+                    || fctl_domain::claude_oversight::runs_out(None, c.created_at).0,
+                    |r| r.0,
+                ),
+                c.made_at,
+            ),
+            c.created_at,
+        ),
+        (Some(m), None) => (
             fctl_domain::claude_oversight::runs_out(Some(m), ctx.now).0,
             Some(m),
-        ),
-        (None, Some(c)) => (
-            c.runs_out().map_or_else(
-                || fctl_domain::claude_oversight::runs_out(None, c.created_at).0,
-                |r| r.0,
-            ),
-            c.made_at,
         ),
         (None, None) => (
             fctl_domain::claude_oversight::runs_out(None, ctx.now).0,
@@ -672,8 +676,9 @@ pub struct Expiry {
 /// What puts a new token, sealed as `sealed`, in `user_id`'s Claude
 /// credential `id` that an admin token set, in place: people's and
 /// workspaces' choices of it stay. What Claude said of the token it
-/// replaces isn't this one's, and goes, unless it is the same token
-/// (`same`). Either way it works again.
+/// replaces (its usage, its answers, its limit pauses and its refusals)
+/// isn't this one's, and goes, unless it is the same token (`same`), whose
+/// refusals alone go. Either way it works again.
 #[allow(clippy::too_many_arguments)]
 pub fn replace_claude(
     db: &D1Database,
@@ -685,22 +690,31 @@ pub fn replace_claude(
     same: bool,
     now: i64,
 ) -> AppResult<Vec<Query>> {
+    let refusals = q(
+        db,
+        "DELETE FROM claude_refusals WHERE credential_id = ?1 \
+         AND EXISTS (SELECT 1 FROM claude_credentials WHERE id = ?1 AND user_id = ?2 AND provisioned = 1)",
+        &[s(id), s(user_id)],
+    )?;
     if same {
-        return Ok(vec![q(
-            db,
-            "UPDATE claude_credentials SET secret_enc = ?1, label = COALESCE(?2, label), status = 'active', \
+        return Ok(vec![
+            q(
+                db,
+                "UPDATE claude_credentials SET secret_enc = ?1, label = COALESCE(?2, label), status = 'active', \
              ended_at = NULL, warned_at = CASE WHEN expires_at = ?3 THEN warned_at END, expires_at = ?3, \
              made_at = ?4, updated_at = ?5 WHERE id = ?6 AND user_id = ?7 AND provisioned = 1",
-            &[
-                s(sealed),
-                os(label),
-                n(expiry.at),
-                crate::db::on(expiry.made_at),
-                n(now),
-                s(id),
-                s(user_id),
-            ],
-        )?]);
+                &[
+                    s(sealed),
+                    os(label),
+                    n(expiry.at),
+                    crate::db::on(expiry.made_at),
+                    n(now),
+                    s(id),
+                    s(user_id),
+                ],
+            )?,
+            refusals,
+        ]);
     }
     Ok(vec![
         q(
@@ -721,9 +735,17 @@ pub fn replace_claude(
         )?,
         q(
             db,
-            "DELETE FROM claude_usage WHERE credential_id = ?",
-            &[s(id)],
+            "DELETE FROM claude_usage WHERE credential_id = ?1 \
+             AND EXISTS (SELECT 1 FROM claude_credentials WHERE id = ?1 AND user_id = ?2 AND provisioned = 1)",
+            &[s(id), s(user_id)],
         )?,
+        q(
+            db,
+            "DELETE FROM claude_limit_pauses WHERE credential_id = ?1 \
+             AND EXISTS (SELECT 1 FROM claude_credentials WHERE id = ?1 AND user_id = ?2 AND provisioned = 1)",
+            &[s(id), s(user_id)],
+        )?,
+        refusals,
     ])
 }
 
@@ -1285,13 +1307,13 @@ mod tests {
         .await?;
         // A new token goes in place, under its label, and what Claude said
         // of the one before goes.
-        q(
-            &db,
+        for sql in [
             "INSERT INTO claude_usage (credential_id, window, utilization, observed_at) VALUES ('crd_1', 'five_hour', 0.5, 0)",
-            &[],
-        )?
-        .run()
-        .await?;
+            "INSERT INTO claude_refusals (credential_id, session_id, at) VALUES ('crd_1', 'ses_x', 5)",
+            "INSERT INTO claude_limit_pauses (credential_id, session_id, window, resets_at, at) VALUES ('crd_1', 'ses_x', 'five_hour', 9, 5)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
         batch(
             &db,
             replace_claude(
@@ -1317,14 +1339,19 @@ mod tests {
             .await?,
             Some("three Acme seat".into())
         );
-        assert_eq!(
-            count(
-                &db,
-                "SELECT COUNT(*) AS n FROM claude_usage WHERE credential_id = 'crd_1'"
-            )
-            .await?,
-            0
-        );
+        // Its refusals and limit pauses were the old token's: one more
+        // refusal mustn't end the new one.
+        for table in ["claude_usage", "claude_refusals", "claude_limit_pauses"] {
+            assert_eq!(
+                count(
+                    &db,
+                    &format!("SELECT COUNT(*) AS n FROM {table} WHERE credential_id = 'crd_1'")
+                )
+                .await?,
+                0,
+                "{table}"
+            );
+        }
         // His own isn't one to replace.
         let own = replace_claude(
             &db,
@@ -1404,13 +1431,13 @@ mod tests {
         )?
         .run()
         .await?;
-        q(
-            &db,
+        for sql in [
             "INSERT INTO claude_usage (credential_id, window, utilization, observed_at) VALUES ('crd_3', 'five_hour', 0.5, 0)",
-            &[],
-        )?
-        .run()
-        .await?;
+            "INSERT INTO claude_refusals (credential_id, session_id, at) VALUES ('crd_3', 'ses_x', 5)",
+            "INSERT INTO claude_limit_pauses (credential_id, session_id, window, resets_at, at) VALUES ('crd_3', 'ses_x', 'five_hour', 9, 5)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
         let same = replace_claude(
             &db,
             "usr_bob",
@@ -1438,6 +1465,23 @@ mod tests {
             count(
                 &db,
                 "SELECT COUNT(*) AS n FROM claude_usage WHERE credential_id = 'crd_3'"
+            )
+            .await?,
+            1
+        );
+        // Set again, it works: its refusals count afresh, its pauses stay.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM claude_refusals WHERE credential_id = 'crd_3'"
+            )
+            .await?,
+            0
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM claude_limit_pauses WHERE credential_id = 'crd_3'"
             )
             .await?,
             1

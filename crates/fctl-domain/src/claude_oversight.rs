@@ -66,6 +66,25 @@ pub fn runs_out(made_at: Option<Millis>, connected_at: Millis) -> (Millis, bool)
     }
 }
 
+/// When a token connected again runs out, and when it was made: the day
+/// someone gives now (`given`), if `claude setup-token` could have made it
+/// then, no later than fctl first got the token (`connected_at`, a day's
+/// leeway for time zones), else what it had (`had`). An app that offers
+/// "just now" as the day sends today's for a token pasted again, which
+/// would move its date a year out and silence its warnings.
+pub fn again(
+    given: Option<Millis>,
+    had: (Millis, Option<Millis>),
+    connected_at: Millis,
+) -> (Millis, Option<Millis>) {
+    match given {
+        Some(made) if made <= connected_at.saturating_add(DAY_MS) => {
+            (made.saturating_add(TOKEN_LIFE_MS), Some(made))
+        }
+        _ => had,
+    }
+}
+
 /// What is wrong with `made_at` as when `claude setup-token` made a token
 /// someone connects at `now`, or `None`.
 pub fn made_at_problem(made_at: Millis, now: Millis) -> Option<String> {
@@ -614,6 +633,21 @@ mod tests {
     fn a_token_runs_out_a_year_after_it_was_made_or_around_a_year_after_it_came() {
         assert_eq!(runs_out(Some(NOW), 0), (NOW + TOKEN_LIFE_MS, false));
         assert_eq!(runs_out(None, NOW), (NOW + TOKEN_LIFE_MS, true));
+    }
+
+    #[test]
+    fn a_token_connected_again_keeps_its_date_unless_given_one_it_could_have() {
+        let connected = NOW - 300 * DAY_MS;
+        let had = (connected + TOKEN_LIFE_MS, None);
+        // Nothing said, or "just now" for a token fctl got 300 days ago.
+        assert_eq!(again(None, had, connected), had);
+        assert_eq!(again(Some(NOW), had, connected), had);
+        // The day it was made, before fctl got it.
+        let made = connected - 10 * DAY_MS;
+        assert_eq!(
+            again(Some(made), had, connected),
+            (made + TOKEN_LIFE_MS, Some(made))
+        );
     }
 
     #[test]
