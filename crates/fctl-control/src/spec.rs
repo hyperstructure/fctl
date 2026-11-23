@@ -705,6 +705,7 @@ async fn review_spec(
         crew_of: None,
         // What it reviews could steer what runs in its sandbox.
         id_tokens: None,
+        snapshot: None,
     })
 }
 

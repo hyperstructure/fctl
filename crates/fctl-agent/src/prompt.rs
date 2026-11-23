@@ -1281,6 +1281,7 @@ mod tests {
             autopilot: None,
             crew_of: None,
             id_tokens: None,
+            snapshot: None,
         }
     }
 
