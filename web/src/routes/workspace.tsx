@@ -61,6 +61,13 @@ import { ROW, ROW_COVER } from "@/components/ui/list-row";
 import { Unavailable } from "@/components/unavailable";
 import { WebhooksPanel } from "@/components/webhooks/panel";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import {
+  ClaudeDetail,
+  ClaudeFacts,
+  ClaudeOverviewHeader,
+  NobodyHere,
+  useClaudeOverview,
+} from "@/components/workspace/claude-people";
 import { WorkspaceColorField } from "@/components/workspace/color-field";
 import { LinearTab } from "@/components/workspace/linear";
 import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
@@ -70,6 +77,7 @@ import { ApiFailure, api, workspaces } from "@/lib/api";
 import type { AuditNames } from "@/lib/audit";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
+import { matches, type Narrow } from "@/lib/claude-oversight";
 import { cn } from "@/lib/cn";
 import { approvedBy, minutesText } from "@/lib/enrollment";
 import { ago, agoShort, driverProblem } from "@/lib/format";
@@ -595,6 +603,18 @@ function People({ w }: { w: G.Workspace }) {
   const { data: me } = useMe();
   const admin = w.role === "owner" || w.role === "admin";
   const list = useQuery({ queryKey: keys.workspaceMembers(w.id), queryFn: () => workspaces.members(w.id) });
+  // Its admins' view of what each member's sessions run on, the pill that narrows the list to some of
+  // them, and the person whose connection is open.
+  const claude = useClaudeOverview(w);
+  const [narrow, setNarrow] = useState<Narrow>("everyone");
+  const [opened, setOpened] = useState<string | null>(null);
+  const claudeOf = new Map(claude?.data?.members.map((m) => [m.user.id, m]));
+  const narrowed = narrow !== "everyone" && !!claude?.data;
+  const members = (list.data?.members ?? []).filter((m) => {
+    if (!narrowed) return true;
+    const c = claudeOf.get(m.user.id);
+    return !!c && matches(c, narrow);
+  });
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<G.WorkspaceRole>("member");
   const [transferTo, setTransferTo] = useState<G.WorkspaceMember | null>(null);
@@ -729,91 +749,119 @@ function People({ w }: { w: G.Workspace }) {
           </div>
         </Banner>
       )}
-      <ul className={cn("border-t border-line", admin && "mt-8")}>
+      <ClaudeOverviewHeader w={w} overview={claude} narrow={narrow} onNarrow={setNarrow} />
+      <ul className={cn("border-t border-line", admin && (claude ? "mt-5" : "mt-8"))}>
         {list.isPending && (
           <li className="space-y-3 py-4">
             <Skeleton className="h-10" />
             <Skeleton className="h-10" />
           </li>
         )}
-        {list.data?.members.map((m) => {
+        {narrowed && list.data && members.length === 0 && (
+          <NobodyHere narrow={narrow} w={w} onAll={() => setNarrow("everyone")} />
+        )}
+        {members.map((m) => {
           const you = m.user.id === me?.user.id;
+          const c = claudeOf.get(m.user.id);
+          const open = opened === m.user.id && !!c && !!claude?.data;
           return (
-            <li key={m.user.id} className="flex items-center gap-3 border-b border-line py-3">
-              <Avatar user={m.user} size={30} />
-              <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 text-[14px] text-ink">
-                    <span className="truncate">{m.user.name}</span>
-                    {you && <span className="text-[12px] text-ink-4">you</span>}
-                    {admin && m.two_factor && (
-                      <ShieldCheck className="size-3.5 text-accent" aria-label="Has two-factor sign-in" />
+            <li key={m.user.id} className="border-b border-line py-3">
+              <div className="flex items-center gap-3">
+                <Avatar user={m.user} size={30} />
+                <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 text-[14px] text-ink">
+                      <span className="truncate">{m.user.name}</span>
+                      {you && <span className="text-[12px] text-ink-4">you</span>}
+                      {admin && m.two_factor && (
+                        <ShieldCheck className="size-3.5 text-accent" aria-label="Has two-factor sign-in" />
+                      )}
+                    </div>
+                    <div className="truncate text-[12px] text-ink-4">
+                      {m.email} · joined {ago(m.joined_at)}
+                      {admin && w.require_two_factor && !m.two_factor && (
+                        <span className="text-amber"> · closed to them until they set up two-factor</span>
+                      )}
+                    </div>
+                    {claude && !claude.isError && (
+                      <ClaudeFacts
+                        w={w}
+                        member={c}
+                        loading={claude.isPending}
+                        open={open}
+                        onToggle={() => setOpened((o) => (o === m.user.id ? null : m.user.id))}
+                        panel={`claude-${m.user.id}`}
+                      />
                     )}
                   </div>
-                  <div className="truncate text-[12px] text-ink-4">
-                    {m.email} · joined {ago(m.joined_at)}
-                    {admin && w.require_two_factor && !m.two_factor && (
-                      <span className="text-amber"> · closed to them until they set up two-factor</span>
+                  <div className="-ml-1 flex shrink-0 items-center gap-1 sm:ml-0">
+                    {m.role === "owner" ? (
+                      <span className="px-2 text-[12.5px] text-ink-3">Primary admin</span>
+                    ) : admin && !you ? (
+                      <Select
+                        size="sm"
+                        aria-label={`Role of ${m.user.name}`}
+                        value={m.role}
+                        onChange={(r) => setMemberRole.mutate({ user: m.user.id, role: r })}
+                        options={inviteRoles}
+                      />
+                    ) : (
+                      <span className="px-2 text-[12.5px] text-ink-3">{roleLabel(m.role)}</span>
+                    )}
+                    {w.role === "owner" && m.role === "admin" && (
+                      <Button size="sm" variant="ghost" onClick={() => setTransferTo(m)}>
+                        Make primary admin
+                      </Button>
+                    )}
+                    {admin && !you && m.role !== "owner" && (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${m.user.name}`}
+                        className="rounded p-1.5 text-ink-4 hover:text-danger"
+                        onClick={() => setRemoving(m)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
                     )}
                   </div>
-                </div>
-                <div className="-ml-1 flex shrink-0 items-center gap-1 sm:ml-0">
-                  {m.role === "owner" ? (
-                    <span className="px-2 text-[12.5px] text-ink-3">Primary admin</span>
-                  ) : admin && !you ? (
-                    <Select
-                      size="sm"
-                      aria-label={`Role of ${m.user.name}`}
-                      value={m.role}
-                      onChange={(r) => setMemberRole.mutate({ user: m.user.id, role: r })}
-                      options={inviteRoles}
-                    />
-                  ) : (
-                    <span className="px-2 text-[12.5px] text-ink-3">{roleLabel(m.role)}</span>
-                  )}
-                  {w.role === "owner" && m.role === "admin" && (
-                    <Button size="sm" variant="ghost" onClick={() => setTransferTo(m)}>
-                      Make primary admin
-                    </Button>
-                  )}
-                  {admin && !you && m.role !== "owner" && (
-                    <button
-                      type="button"
-                      aria-label={`Remove ${m.user.name}`}
-                      className="rounded p-1.5 text-ink-4 hover:text-danger"
-                      onClick={() => setRemoving(m)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                  )}
                 </div>
               </div>
+              {open && claude?.data && c && (
+                <ClaudeDetail
+                  w={w}
+                  overview={claude.data}
+                  member={c}
+                  id={`claude-${m.user.id}`}
+                  onClose={() => setOpened(null)}
+                />
+              )}
             </li>
           );
         })}
-        {list.data?.invitations.map((i) => (
-          <li key={i.id} className="flex items-center gap-3 border-b border-line py-3">
-            <span className="flex size-[30px] items-center justify-center rounded-full border border-dashed border-line-strong text-ink-4">
-              <MailPlus className="size-3.5" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[14px] text-ink-2">{i.email}</div>
-              <div className="truncate text-[12px] text-ink-4">
-                Invited as {roleLabel(i.role).toLowerCase()}
-                {i.invited_by && ` by ${i.invited_by.name}`} · {ago(i.created_at)} · until{" "}
-                {new Date(i.expires_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+        {!narrowed &&
+          list.data?.invitations.map((i) => (
+            <li key={i.id} className="flex items-center gap-3 border-b border-line py-3">
+              <span className="flex size-[30px] items-center justify-center rounded-full border border-dashed border-line-strong text-ink-4">
+                <MailPlus className="size-3.5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[14px] text-ink-2">{i.email}</div>
+                <div className="truncate text-[12px] text-ink-4">
+                  Invited as {roleLabel(i.role).toLowerCase()}
+                  {i.invited_by && ` by ${i.invited_by.name}`} · {ago(i.created_at)} · until{" "}
+                  {new Date(i.expires_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                </div>
               </div>
-            </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              loading={revoke.isPending && revoke.variables === i.id}
-              onClick={() => revoke.mutate(i.id)}
-            >
-              Take back
-            </Button>
-          </li>
-        ))}
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={revoke.isPending && revoke.variables === i.id}
+                onClick={() => revoke.mutate(i.id)}
+              >
+                Take back
+              </Button>
+            </li>
+          ))}
       </ul>
       <Dialog
         open={!!removing}
