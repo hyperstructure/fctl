@@ -297,6 +297,39 @@ pub async fn update(
     if change.is_empty() {
         return http::ok(&row.to_token());
     }
+    apply(&ctx.db, a.id(), token, &change).await?;
+    let mut data = serde_json::Map::new();
+    data.insert(
+        "name".into(),
+        serde_json::json!(change.name.as_deref().unwrap_or(&row.name)),
+    );
+    if let Some(labels) = &change.labels {
+        data.insert("labels".into(), serde_json::json!(labels));
+    }
+    if let Some(p) = change.placement {
+        data.insert("placement".into(), serde_json::json!(p));
+    }
+    if let Some(max) = change.max_runners {
+        data.insert("max_runners".into(), serde_json::json!(max));
+    }
+    ctx.audit_in(
+        Some(a.id()),
+        "workspace.enrollment_token_changed",
+        Some(token),
+        Some(serde_json::Value::Object(data)),
+    );
+    // Its runners' labels and placement, and the names sessions wait for.
+    crate::api::runners::pool_changed(ctx, token);
+    http::ok(&token_row(ctx, a.id(), token).await?.to_token())
+}
+
+/// Changes token `token` of workspace `workspace_id` as `change` says.
+async fn apply(
+    db: &worker::D1Database,
+    workspace_id: &str,
+    token: &str,
+    change: &enrollment::TokenChange,
+) -> AppResult<()> {
     let mut sets: Vec<&str> = Vec::new();
     let mut params = Vec::new();
     if let Some(name) = &change.name {
@@ -315,10 +348,13 @@ pub async fn update(
         sets.push("max_runners = ?");
         params.push(on(max.map(i64::from)));
     }
+    if sets.is_empty() {
+        return Ok(());
+    }
     params.push(s(token));
-    params.push(s(a.id()));
+    params.push(s(workspace_id));
     q(
-        &ctx.db,
+        db,
         &format!(
             "UPDATE enrollment_tokens SET {} WHERE id = ? AND workspace_id = ?",
             sets.join(", ")
@@ -327,25 +363,7 @@ pub async fn update(
     )?
     .run()
     .await?;
-    let mut data = serde_json::json!({ "name": change.name.as_deref().unwrap_or(&row.name) });
-    if let Some(labels) = &change.labels {
-        data["labels"] = serde_json::json!(labels);
-    }
-    if let Some(p) = change.placement {
-        data["placement"] = serde_json::json!(p);
-    }
-    if let Some(max) = change.max_runners {
-        data["max_runners"] = serde_json::json!(max);
-    }
-    ctx.audit_in(
-        Some(a.id()),
-        "workspace.enrollment_token_changed",
-        Some(token),
-        Some(data),
-    );
-    // Its runners' labels and placement, and the names sessions wait for.
-    crate::api::runners::pool_changed(ctx, token);
-    http::ok(&token_row(ctx, a.id(), token).await?.to_token())
+    Ok(())
 }
 
 /// `DELETE /api/v1/workspaces/{id}/enrollment-tokens/{token}`: revokes it,
@@ -529,9 +547,12 @@ pub async fn demand(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     {
         return Err(AppError(r.error(&p.workspace.name, p.token.personal)));
     }
-    let demand =
-        crate::pools::workspace_demand(ctx, &p.token.workspace_id, Some(&[p.token.id.clone()]))
-            .await?;
+    let demand = crate::pools::workspace_demand(
+        ctx,
+        &p.token.workspace_id,
+        Some(std::slice::from_ref(&p.token.id)),
+    )
+    .await?;
     match demand.pools.into_iter().next() {
         Some(pool) => http::ok(&pool),
         None => Err(not_found("Pool")),
@@ -748,4 +769,85 @@ fn tell_approvers(ctx: &Ctx, p: &Presented, runner: &fctl_proto::api::Runner) {
         }
         Ok(())
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    async fn token(db: &worker::D1Database, id: &str) -> AppResult<EnrollmentToken> {
+        let row: Option<TokenRow> = q(db, &format!("{TOKEN_SELECT} WHERE t.id = ?"), &[s(id)])?
+            .first()
+            .await?;
+        row.map(|r| r.to_token())
+            .ok_or_else(|| not_found("Enrollment token"))
+    }
+
+    /// A token's labels and placement read as they were stored, and an
+    /// update changes what it names and leaves the rest.
+    #[wasm_bindgen_test]
+    async fn tokens_keep_their_pools_labels_and_placement() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0)",
+            "INSERT INTO enrollment_tokens (id, workspace_id, name, token_hash, max_runners, created_by, created_at, labels, placement) \
+             VALUES ('enr_large', 'wsp_acme', 'AWS large', 'h1', 20, 'usr_ada', 1, '[\"aws\",\"large\"]', 'packed')",
+            // From before pools: no labels, no placement.
+            "INSERT INTO enrollment_tokens (id, workspace_id, name, token_hash, created_by, created_at) \
+             VALUES ('enr_old', 'wsp_acme', 'Build fleet', 'h2', 'usr_ada', 2)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        let large = token(&db, "enr_large").await?;
+        assert_eq!(large.labels, ["aws", "large"]);
+        assert_eq!(large.placement, Placement::Packed);
+        let old = token(&db, "enr_old").await?;
+        assert!(old.labels.is_empty());
+        assert_eq!(old.placement, Placement::Spread);
+        // Its labels and limit go; its name and placement stay.
+        let change = enrollment::check_change(&UpdateEnrollmentTokenRequest {
+            labels: Some(vec![]),
+            max_runners: Some(0),
+            ..Default::default()
+        })
+        .map_err(AppError)?;
+        apply(&db, "wsp_acme", "enr_large", &change).await?;
+        let large = token(&db, "enr_large").await?;
+        assert!(large.labels.is_empty());
+        assert_eq!(large.max_runners, None);
+        assert_eq!(
+            (large.name.as_str(), large.placement),
+            ("AWS large", Placement::Packed)
+        );
+        // Another workspace's id changes nothing.
+        let change = enrollment::check_change(&UpdateEnrollmentTokenRequest {
+            name: Some("GPU".into()),
+            labels: Some(vec!["gpu".into()]),
+            placement: Some(Placement::Spread),
+            max_runners: Some(4),
+        })
+        .map_err(AppError)?;
+        apply(&db, "wsp_other", "enr_old", &change).await?;
+        assert_eq!(token(&db, "enr_old").await?.name, "Build fleet");
+        apply(&db, "wsp_acme", "enr_old", &change).await?;
+        let gpu = token(&db, "enr_old").await?;
+        assert_eq!(
+            (
+                gpu.name.as_str(),
+                gpu.labels.as_slice(),
+                gpu.placement,
+                gpu.max_runners
+            ),
+            (
+                "GPU",
+                ["gpu".to_owned()].as_slice(),
+                Placement::Spread,
+                Some(4)
+            )
+        );
+        Ok(())
+    }
 }

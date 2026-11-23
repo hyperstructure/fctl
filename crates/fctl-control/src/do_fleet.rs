@@ -259,23 +259,6 @@ struct Serves {
     packed: bool,
 }
 
-/// A pool that sessions which ask for its labels name as they wait, as D1
-/// had it at the last dispatch.
-#[derive(Clone, Debug)]
-struct NamedPool {
-    workspace_id: String,
-    name: String,
-    labels: Vec<String>,
-    /// For a token its maker made for their own sessions: them.
-    owner: Option<String>,
-    max_runners: Option<u32>,
-    created_at: i64,
-    /// Its runners that don't wait for approval, and of those the ones
-    /// that never connected.
-    runners: u32,
-    starting: u32,
-}
-
 impl Serves {
     /// Whether it takes a session that wants `want`: one of its workspace
     /// that runs as someone it runs sessions for there. Whether its host
@@ -401,7 +384,7 @@ pub struct FleetObject {
     waiting_workspaces: RefCell<HashSet<String>>,
     /// The pools with labels, read with them: a session whose project asks
     /// for labels names the pool that has them as it waits.
-    named_pools: RefCell<Vec<NamedPool>>,
+    named_pools: RefCell<Vec<crate::pools::NamedPool>>,
     /// session id → when it last asked for credentials
     /// (`fctl_domain::throttle`).
     credential_asks: RefCell<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
@@ -1350,15 +1333,8 @@ impl FleetObject {
         }
         // Its pool's shape, which its demand counts with once no runner of
         // it is online, so that it starts again from none.
-        if let Ok(shape) = serde_json::to_string(&pool_shape(&hello, now))
-            && let Ok(db) = self.env.d1("DB")
-            && let Ok(q) = crate::db::q(
-                &db,
-                "UPDATE enrollment_tokens SET shape = ?1 \
-                 WHERE id = (SELECT enrollment_id FROM runners WHERE id = ?2)",
-                &[crate::db::s(&shape), crate::db::s(&rs.id)],
-            )
-            && let Err(e) = q.run().await
+        if let Ok(db) = self.env.d1("DB")
+            && let Err(e) = crate::pools::keep_shape(&db, &rs.id, &pool_shape(&hello, now)).await
         {
             worker::console_error!("keeping the shape of {}'s pool: {}", rs.id, e.0.message);
         }
@@ -2748,56 +2724,9 @@ impl FleetObject {
             .env
             .d1("DB")
             .map_err(|e| ApiError::internal(e.to_string()))?;
-        #[derive(Deserialize)]
-        struct T {
-            id: String,
-            name: String,
-            labels: Option<String>,
-            placement: Option<String>,
-            #[serde(deserialize_with = "crate::db::opt_int", default)]
-            max_runners: Option<i64>,
-            #[serde(deserialize_with = "crate::db::int")]
-            created_at: i64,
-            owner: Option<String>,
-            owner_name: Option<String>,
-            #[serde(deserialize_with = "crate::db::int_bool", default)]
-            open: bool,
-            shape: Option<String>,
-        }
-        #[derive(Deserialize)]
-        struct R {
-            id: String,
-            pool: String,
-            #[serde(deserialize_with = "crate::db::int_bool", default)]
-            enabled: bool,
-            #[serde(deserialize_with = "crate::db::opt_int", default)]
-            pending_until: Option<i64>,
-            #[serde(deserialize_with = "crate::db::opt_int", default)]
-            last_seen_at: Option<i64>,
-        }
-        let tokens: Vec<T> = crate::db::q(
-            &db,
-            "SELECT t.id, t.name, t.labels, t.placement, t.max_runners, t.created_at, t.shape, \
-             CASE WHEN t.personal = 1 THEN t.created_by END AS owner, u.name AS owner_name, \
-             (t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)) AS open \
-             FROM enrollment_tokens t LEFT JOIN users u ON u.id = t.created_by \
-             WHERE t.workspace_id = ?1 ORDER BY t.created_at",
-            &[crate::db::s(&b.workspace_id), crate::db::n(now)],
-        )
-        .map_err(|e| e.0)?
-        .all()
-        .await
-        .map_err(|e| e.0)?;
-        let runners: Vec<R> = crate::db::q(
-            &db,
-            "SELECT r.id, r.enrollment_id AS pool, r.enabled, r.pending_until, r.last_seen_at \
-             FROM runners r JOIN enrollment_tokens t ON t.id = r.enrollment_id WHERE t.workspace_id = ?",
-            &[crate::db::s(&b.workspace_id)],
-        )
-        .map_err(|e| e.0)?
-        .all()
-        .await
-        .map_err(|e| e.0)?;
+        let (tokens, runners) = crate::pools::rows(&db, &b.workspace_id, now)
+            .await
+            .map_err(|e| e.0)?;
         // What each runner does here: connected, draining, its hello and
         // the sessions assigned to it.
         #[derive(Deserialize)]
@@ -2823,7 +2752,8 @@ impl FleetObject {
             if b.pools.as_ref().is_some_and(|only| !only.contains(&t.id)) {
                 continue;
             }
-            let mine: Vec<&R> = runners.iter().filter(|r| r.pool == t.id).collect();
+            let mine: Vec<&crate::pools::MemberRow> =
+                runners.iter().filter(|r| r.pool == t.id).collect();
             if !t.open && mine.is_empty() {
                 continue;
             }
@@ -2859,11 +2789,9 @@ impl FleetObject {
                         .map_or(0, |c| c.n as u32),
                 });
             }
-            let shape = latest.map(|(_, h)| pool_shape(&h, now)).or_else(|| {
-                t.shape
-                    .as_deref()
-                    .and_then(|j| serde_json::from_str::<fctl_proto::api::PoolShape>(j).ok())
-            });
+            let shape = latest
+                .map(|(_, h)| pool_shape(&h, now))
+                .or_else(|| t.shape());
             pools.push(Pool {
                 info: fctl_proto::api::PoolInfo {
                     id: fctl_proto::EnrollmentTokenId(t.id.clone()),
@@ -3770,9 +3698,13 @@ impl FleetObject {
     /// The pool a session whose project asks for `labels` waits for: of its
     /// workspace's pools that have them, and run its person's sessions, the
     /// one with the fewest other labels, then the oldest.
-    fn pool_for(&self, want: &spec::SessionWants, labels: &[String]) -> Option<NamedPool> {
+    fn pool_for(
+        &self,
+        want: &spec::SessionWants,
+        labels: &[String],
+    ) -> Option<crate::pools::NamedPool> {
         let pools = self.named_pools.borrow();
-        let fits: Vec<&NamedPool> = pools
+        let fits: Vec<&crate::pools::NamedPool> = pools
             .iter()
             .filter(|p| p.workspace_id == want.workspace_id)
             .filter(|p| p.owner.is_none() || p.owner == want.person)
@@ -3892,58 +3824,10 @@ impl FleetObject {
     /// token still enrolls, or that have runners. A session that asks for
     /// their labels names one as it waits.
     async fn load_named_pools(&self, db: &worker::D1Database) {
-        #[derive(Deserialize)]
-        struct P {
-            workspace_id: String,
-            name: String,
-            labels: Option<String>,
-            owner: Option<String>,
-            #[serde(deserialize_with = "crate::db::opt_int", default)]
-            max_runners: Option<i64>,
-            #[serde(deserialize_with = "crate::db::int")]
-            created_at: i64,
-            #[serde(deserialize_with = "crate::db::int_bool", default)]
-            open: bool,
-            #[serde(deserialize_with = "crate::db::int", default)]
-            runners: i64,
-            #[serde(deserialize_with = "crate::db::int", default)]
-            starting: i64,
+        match crate::pools::named(db, now_ms()).await {
+            Ok(pools) => *self.named_pools.borrow_mut() = pools,
+            Err(e) => worker::console_error!("reading pools: {}", e.0.message),
         }
-        let rows: Vec<P> = match crate::db::q(
-            db,
-            "SELECT t.workspace_id, t.name, t.labels, t.max_runners, t.created_at, \
-             CASE WHEN t.personal = 1 THEN t.created_by END AS owner, \
-             (t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?1)) AS open, \
-             (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id AND x.pending_until IS NULL) AS runners, \
-             (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id AND x.pending_until IS NULL \
-               AND x.last_seen_at IS NULL) AS starting \
-             FROM enrollment_tokens t WHERE t.labels IS NOT NULL",
-            &[crate::db::n(now_ms())],
-        ) {
-            Ok(q) => match q.all().await {
-                Ok(r) => r,
-                Err(e) => {
-                    worker::console_error!("reading pools: {}", e.0.message);
-                    return;
-                }
-            },
-            Err(_) => return,
-        };
-        let count = |n: i64| u32::try_from(n).unwrap_or(0);
-        *self.named_pools.borrow_mut() = rows
-            .into_iter()
-            .filter(|p| p.open || p.runners > 0)
-            .map(|p| NamedPool {
-                workspace_id: p.workspace_id,
-                name: p.name,
-                labels: crate::model::pool_labels(p.labels.as_deref()),
-                owner: p.owner,
-                max_runners: p.max_runners.and_then(|m| u32::try_from(m).ok()),
-                created_at: p.created_at,
-                runners: count(p.runners),
-                starting: count(p.starting),
-            })
-            .collect();
     }
 
     /// A pool's labels, placement or name changed: its runners carry them
@@ -3951,20 +3835,11 @@ impl FleetObject {
     /// start now.
     async fn pool_changed(&self, token_id: &str) {
         let Ok(db) = self.env.d1("DB") else { return };
-        #[derive(Deserialize)]
-        struct Id {
-            id: String,
-        }
-        let runners: Vec<Id> = match crate::db::q(
-            &db,
-            "SELECT id FROM runners WHERE enrollment_id = ?",
-            &[crate::db::s(token_id)],
-        ) {
-            Ok(q) => q.all().await.unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
+        let runners = crate::pools::runners_of(&db, token_id)
+            .await
+            .unwrap_or_default();
         self.load_runner_workspaces(&db).await;
-        let ids: Vec<&str> = runners.iter().map(|r| r.id.as_str()).collect();
+        let ids: Vec<&str> = runners.iter().map(String::as_str).collect();
         self.feed_runners(&ids).await;
         self.dispatch().await;
     }
