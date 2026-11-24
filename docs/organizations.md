@@ -265,6 +265,10 @@ What can go wrong:
 - **"Your account signs in with Google as your acme.dev address…"** Ada
   chose a personal Google account when Google asked: choose the Workspace
   one.
+- **"Another Google account signs in to the account with this email…"**
+  Ada's Workspace account was recreated, and the old one is still linked:
+  `fctl admin unlink ada@acme.dev` (or **Admin → People → Unlink
+  Google**), and Ada's next sign-in links the new one.
 - **"Google can't vouch for this address, as it doesn't host it…"**
   Ada's address isn't a Google Workspace or Gmail one, so Google doesn't
   sign Ada in: send a link (step 5).

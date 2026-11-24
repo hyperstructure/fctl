@@ -1211,6 +1211,12 @@ address at those domains, a connected one too:
 - **Their addresses stay**: they can't disconnect an address at those
   domains, as that would let them sign in another way. An instance admin
   or an admin token can.
+- **A Google account that's gone keeps its place**: when you recreate
+  someone's Workspace account at the same address, the old one, still
+  linked, keeps the new one from linking (so that whoever gets a recycled
+  address doesn't get its account). Unlink it under **Admin → People →
+  Unlink Google**, or with `fctl admin unlink ada@acme.com`, and their
+  next sign-in links the new one.
 - **You keep a way in while Google is down**: the primary instance owner's
   password and passkeys sign in whatever the rules say (**Primary instance
   owner? Sign in with your password** on the sign-in page). Nobody else's

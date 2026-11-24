@@ -1636,6 +1636,7 @@ fctl admin sign-in                         # the providers, the domains that req
 fctl admin sign-in require acme.com acme.dev   # their people sign in with Google alone: says whom it concerns, then asks
 fctl admin sign-in require acme.com --passkeys --yes   # passkeys alone sign them in too; without asking
 fctl admin sign-in unrequire acme.dev      # its people sign in as they like again
+fctl admin unlink grace@example.com        # her Google account was recreated: her next Google sign-in links the new one
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them

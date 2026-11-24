@@ -2252,6 +2252,17 @@ impl Api {
         .await
     }
 
+    /// Unlinks someone's accounts of `provider` (`google`), for when theirs
+    /// was recreated or its address handed to someone else (admins).
+    pub async fn admin_unlink(&self, user_id: &str, provider: &str) -> Result<User> {
+        self.delete(&format!(
+            "/admin/users/{}/identities/{}",
+            enc(user_id),
+            enc(provider)
+        ))
+        .await
+    }
+
     pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
         self.delete(&format!("/admin/users/{}/two-factor", enc(user_id)))
             .await

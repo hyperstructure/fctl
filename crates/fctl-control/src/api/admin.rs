@@ -323,6 +323,75 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     http::ok(&Ok { ok: true })
 }
 
+/// `DELETE /api/v1/admin/users/{user}/identities/{provider}`: unlinks
+/// someone's accounts of `provider`, for when theirs was recreated or its
+/// address handed to someone else. Where their domain signs in with the
+/// provider, the one that blocked the new account from linking goes, and
+/// their next sign-in with it links the account they sign in with. Only
+/// the primary instance owner unlinks an admin's, and nobody theirs, which
+/// they unlink in Settings.
+pub async fn unlink(ctx: &mut Ctx, id: &str, provider: &str) -> AppResult<Response> {
+    let actor = ctx.admin()?.clone();
+    let target = user(ctx, id).await?;
+    if target.id == actor.id {
+        return Err(conflict(
+            "Unlink your own in Settings → Security, where you keep another way in.",
+        ));
+    }
+    if target.is_owner() {
+        return Err(forbidden(
+            "Only the primary instance owner unlinks their own, in Settings",
+        ));
+    }
+    if target.role() != InstanceRole::Member && actor.role() != InstanceRole::Owner {
+        return Err(forbidden(
+            "Only the primary instance owner can unlink an admin's sign-in",
+        ));
+    }
+    // Their next sign-in with the provider, as anyone with the address
+    // there, links to their account where a rule makes it the way in.
+    ctx.verified(Sensitive::UnlinkSignIn)?;
+    let changed = q(
+        &ctx.db,
+        "DELETE FROM identities WHERE user_id = ? AND provider = ?",
+        &[s(&target.id), s(provider)],
+    )?
+    .run()
+    .await?;
+    if changed == 0 {
+        return Err(not_found("Linked account"));
+    }
+    let name = crate::sign_in::provider_name(provider).to_owned();
+    ctx.audit(
+        "identity.unlinked",
+        Some(&target.id),
+        Some(serde_json::json!({ "provider": provider, "by_admin": true, "count": changed })),
+    );
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        &target,
+        &format!("Your {name} account was unlinked"),
+        format!(
+            "{} unlinked the {name} account that signed in to your {instance} account ({}). Where your organization requires {name}, your next sign-in with it links the account you sign in with.\n\nIf you didn't ask for this, tell an admin of {instance}: {}",
+            actor.name,
+            target.email,
+            ctx.cfg.url("/login")
+        ),
+    );
+    let row: Option<UserRow> = q(
+        &ctx.db,
+        &format!(
+            "SELECT {}, {PROVIDERS_COLUMN} FROM users u WHERE u.id = ?",
+            user_columns("u")
+        ),
+        &[s(&target.id)],
+    )?
+    .first()
+    .await?;
+    http::ok(&row.ok_or_else(|| not_found("User"))?.to_user())
+}
+
 /// A link that resets someone's password: emailed to them where the
 /// instance sends email, else for the admin to hand over.
 pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {

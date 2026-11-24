@@ -283,6 +283,9 @@ async fn dispatch(
         (Post, ["admin", "users", id, "reset-link"]) => {
             api::admin::reset_link(ctx, &http::decode(id)).await
         }
+        (Delete, ["admin", "users", id, "identities", provider]) => {
+            api::admin::unlink(ctx, &http::decode(id), &http::decode(provider)).await
+        }
         // What admin tokens do (`fctl_domain::admin_tokens`).
         (Post, ["admin", "users"]) => api::provision::create(ctx, req).await,
         (Get, ["admin", "users", id]) => api::provision::get(ctx, &http::decode(id)).await,

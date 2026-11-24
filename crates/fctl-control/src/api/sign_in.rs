@@ -350,19 +350,21 @@ async fn sign_in(
     http::redirect(return_to)
 }
 
-/// `user` as they are once their sign-in `how`, which meets the rule that
-/// covers them, finished, its second factor too: moved off their password
-/// ([`move_off_password`]). Nothing for someone no rule covers.
+/// `user` as they are once their sign-in `how` finished, its second factor
+/// too: moved off their password ([`move_off_password`]) where a rule
+/// covers them and `how` meets it. Nothing for anyone else, nor for a
+/// sign-in that doesn't meet the rule (one a rule saved while it waited for
+/// its code doesn't take, which `api::two_factor::verify` refuses).
 pub async fn moved_over(
     ctx: &Ctx,
     user: UserRow,
     how: &SignedIn,
     settings: &InstanceSettings,
 ) -> AppResult<UserRow> {
-    match user.sign_in_required(settings) {
-        Some(_) => move_off_password(ctx, user, how, settings).await,
-        None => Ok(user),
+    if user.sign_in_required(settings).is_some() && user.admits(settings, how).is_ok() {
+        return move_off_password(ctx, user, how, settings).await;
     }
+    Ok(user)
 }
 
 /// Takes the password of `user`, whom a rule covers, at a sign-in `how`
@@ -571,9 +573,8 @@ async fn first(
 /// has no way in: a password, a passkey or a linked account given it since
 /// it was read, or an address an admin token changed meanwhile, leaves it
 /// as it is. Under a rule, it checks that no account of the provider at the
-/// rule's domains signs in to it already: one whose vouched domain is
-/// there, or, linked before fctl kept that, whose address is. Whether it
-/// linked it.
+/// rule's domains signs in to it already, one whose vouched domain is
+/// there. Whether it linked it.
 async fn link_first(
     db: &D1Database,
     user_id: &str,
@@ -592,8 +593,7 @@ async fn link_first(
          AND (?9 OR NOT EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = ?2)) \
          AND (?9 OR NOT EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2)) \
          AND NOT (?9 AND EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2 AND i.provider = ?8 \
-           AND COALESCE(i.vouched_domain, lower(substr(i.email, instr(i.email, '@') + 1))) \
-             IN (SELECT value FROM json_each(?10))))",
+           AND i.vouched_domain IN (SELECT value FROM json_each(?10))))",
         &[
             s(fctl_domain::ids::identity_id(now).as_str()),
             s(user_id),
@@ -1129,11 +1129,11 @@ mod tests {
         );
         assert_eq!(googles(&db, "usr_cy").await?, vec!["g-cy".to_owned()]);
         // Nor does one linked before fctl kept which domain Google vouched
-        // for, that showed an address at the rule's domain.
+        // for, which the migration takes from the address it showed.
         q(
             &db,
-            "INSERT INTO identities (id, user_id, provider, subject, email, created_at) VALUES \
-             ('idn_bob_old', 'usr_bob', 'google', 'g-bob-old', 'bob@acme.dev', 0)",
+            "INSERT INTO identities (id, user_id, provider, subject, email, created_at, vouched_domain) VALUES \
+             ('idn_bob_old', 'usr_bob', 'google', 'g-bob-old', 'bob@acme.dev', 0, 'acme.dev')",
             &[],
         )?
         .run()

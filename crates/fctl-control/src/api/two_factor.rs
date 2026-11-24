@@ -421,16 +421,21 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         return Err(expired());
     }
     clear_cookie(ctx);
+    // A domain's rule saved while it waited for its code may not take it:
+    // before the code is used up, or a reset's password set.
+    let how = row.how(reason);
+    let settings = crate::instance::settings(&ctx.db).await?;
+    if let Err(required) = user.admits(&settings, &how) {
+        return Err(AppError(crate::sign_in::refused(&required, &how)));
+    }
     let used = use_code(ctx, &user, valid).await?;
     if reason == ChallengeReason::PasswordReset {
         apply_reset(ctx, &user, &row).await?;
         crate::api::auth::password_reset_notice(ctx, &user).await?;
     }
-    let how = row.how(reason);
     // A provider's sign-in that a domain's rule requires moves its person off
     // their password, now that it is whole (`api::sign_in::moved_over`).
     let user = if reason == ChallengeReason::Google {
-        let settings = crate::instance::settings(&ctx.db).await?;
         crate::api::sign_in::moved_over(ctx, user, &how, &settings).await?
     } else {
         user

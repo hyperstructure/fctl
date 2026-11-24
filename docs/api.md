@@ -621,7 +621,9 @@ sign-in doesn't meet it, and asks them to confirm it's them
 (`verification_required`) where it lets anyone sign in another way. A CLI's
 or an access token's request whose sign-in a rule doesn't meet answers
 `401` (`unauthorized`), with what to do. `self_sign_up` in the same request
-says whether signing in makes accounts. Each token in `GET
+says whether signing in makes accounts. `DELETE
+/api/v1/admin/users/{user}/identities/google` unlinks someone's Google
+account, for when theirs was recreated or its address handed on. Each token in `GET
 /api/v1/auth/tokens` says how its sign-in was made (`method`: `password`,
 `passkey` or `google`), and `GET /api/v1/auth/me` the rule that covers you
 (`sign_in`).

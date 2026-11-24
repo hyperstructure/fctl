@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   ShieldOff,
   Trash2,
+  Unlink,
   Users as UsersIcon,
   X,
 } from "lucide-react";
@@ -604,6 +605,16 @@ function Users() {
   const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
   const [reset, setReset] = useState<string | null>(null);
   const [resetTwoFactor, setResetTwoFactor] = useState<G.User | null>(null);
+  const [unlinking, setUnlinking] = useState<G.User | null>(null);
+  const unlink = useMutation({
+    mutationFn: (u: G.User) => api.adminUnlink(u.id, "google"),
+    onSuccess: (u) => {
+      setUnlinking(null);
+      void users.refetch();
+      toast(`Unlinked ${u.name}'s Google account: their next Google sign-in links the one they sign in with`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
   const forget = useMutation({
     mutationFn: (id: string) => api.resetTwoFactor(id),
     onSuccess: (u) => {
@@ -726,6 +737,16 @@ function Users() {
                           Reset two-factor
                         </Button>
                       )}
+                      {u.providers.includes("google") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<Unlink className="size-3.5" />}
+                          onClick={() => setUnlinking(u)}
+                        >
+                          Unlink Google
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant={u.status === "active" ? "ghost" : "secondary"}
@@ -771,6 +792,32 @@ function Users() {
         description="Valid for one hour. Whoever opens it can set a new password, so send it privately."
       >
         {reset && <CodeBox value={reset} />}
+      </Dialog>
+      <Dialog
+        open={!!unlinking}
+        onClose={() => setUnlinking(null)}
+        title={`Unlink ${unlinking?.name ?? "their"} Google account?`}
+        description="For when their Google account was recreated, or its address handed to someone else: an account of theirs that is gone keeps the new one from linking where their domain signs in with Google."
+      >
+        <div className="flex flex-col gap-5">
+          <p className="text-[13.5px] leading-relaxed text-ink-2">
+            Google stops signing them in, and they are emailed about it when email is set up. Where their
+            domain signs in with Google, whoever next signs in with Google as their address there links to
+            their account: make sure that will be them.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setUnlinking(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              loading={unlink.isPending}
+              onClick={() => unlinking && unlink.mutate(unlinking)}
+            >
+              Unlink Google
+            </Button>
+          </div>
+        </div>
       </Dialog>
       <Dialog
         open={!!resetTwoFactor}

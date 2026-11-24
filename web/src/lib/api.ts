@@ -587,6 +587,9 @@ export const api = {
       {},
     ),
   resetTwoFactor: (id: string) => request<G.User>("DELETE", `/admin/users/${enc(id)}/two-factor`),
+  /** Unlinks someone's accounts of a provider, for when theirs was recreated or its address handed on (admins). */
+  adminUnlink: (id: string, provider: string) =>
+    request<G.User>("DELETE", `/admin/users/${enc(id)}/identities/${enc(provider)}`),
   allowlist: () => request<G.AllowList>("GET", "/admin/allowlist"),
   allow: (b: G.CreateAllowRequest) => request<G.CreatedAllow>("POST", "/admin/allowlist", b),
   disallow: (id: string) =>

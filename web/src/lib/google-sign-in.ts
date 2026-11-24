@@ -17,7 +17,7 @@ const GOOGLE_ERRORS: Record<string, string> = {
   google_link_passkey:
     "An account with this email exists. Sign in with your passkey, then link Google in Settings.",
   google_link_other:
-    "Another Google account signs in to the account with this email. Sign in with that one, then link this one in Settings.",
+    "Another Google account signs in to the account with this email. Sign in with that one, then link this one in Settings. If that one is gone, ask an admin of this instance to unlink it.",
   // A domain's rule made Google the way in for this address, and that Google account signs in to another account.
   google_linked_elsewhere:
     "That Google account signs in to another account here. Choose the Google account of the address you typed.",

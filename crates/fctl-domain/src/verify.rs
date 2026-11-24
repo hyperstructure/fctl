@@ -121,6 +121,10 @@ pub enum Sensitive {
     /// provider again: no longer requiring it, letting passkeys alone sign
     /// them in, or requiring another provider.
     RelaxSignIn,
+    /// Unlinking someone's provider account (instance admins): where their
+    /// domain requires the provider, whoever next signs in with its address
+    /// there links to their account.
+    UnlinkSignIn,
 }
 
 impl Sensitive {
@@ -163,6 +167,7 @@ impl Sensitive {
                 "let service accounts start sessions for people without asking them"
             }
             RelaxSignIn => "let people sign in another way than their domain's provider",
+            UnlinkSignIn => "unlink someone's sign-in account",
         }
     }
 }

@@ -30,3 +30,10 @@ ALTER TABLE admin_tokens ADD COLUMN auth_domain TEXT;
 -- says whether that account can meet a domain's rule. `email` is what the
 -- account shows, vouched for or not.
 ALTER TABLE identities ADD COLUMN vouched_domain TEXT;
+
+-- The accounts linked before: by the address they showed. Google sign-ups
+-- and first sign-ins linked only addresses Google vouched for; one that a
+-- person linked from Settings showing an address Google didn't vouch for
+-- is set right at its next sign-in, and an admin can unlink it meanwhile.
+UPDATE identities SET vouched_domain = lower(substr(email, instr(email, '@') + 1))
+  WHERE vouched_domain IS NULL AND email LIKE '%_@_%';

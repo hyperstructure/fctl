@@ -141,6 +141,24 @@ pub fn passkey_refused(required: &Required) -> ApiError {
     )
 }
 
+/// The refusal of a sign-in made `how` that the rule covering its person
+/// doesn't take: a password's, a passkey's or another provider account's.
+pub fn refused(required: &Required, how: &SignedIn) -> ApiError {
+    match &how.method {
+        Some(fctl_domain::sign_in::Method::Passkey) => passkey_refused(required),
+        Some(fctl_domain::sign_in::Method::Provider(_)) => ApiError::new(
+            ErrorCode::AccessDenied,
+            format!(
+                "{}: continue with {} as {}. The account you signed in with isn't one.",
+                says(required),
+                provider_name(&required.provider),
+                as_address(required)
+            ),
+        ),
+        Some(fctl_domain::sign_in::Method::Password) | None => password_refused(required),
+    }
+}
+
 /// The refusal of a CLI's or an access token's request, whose sign-in
 /// doesn't meet the rule that covers its person.
 pub fn token_refused(required: &Required, kind: TokenKind) -> ApiError {
