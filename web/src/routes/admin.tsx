@@ -796,7 +796,7 @@ function Users() {
       <Dialog
         open={!!unlinking}
         onClose={() => setUnlinking(null)}
-        title={`Unlink ${unlinking?.name ?? "their"} Google account?`}
+        title={unlinking ? `Unlink ${unlinking.name}'s Google account?` : "Unlink their Google account?"}
         description="For when their Google account was recreated, or its address handed to someone else: an account of theirs that is gone keeps the new one from linking where their domain signs in with Google."
       >
         <div className="flex flex-col gap-5">
