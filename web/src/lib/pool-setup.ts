@@ -42,7 +42,10 @@ export const PLACES: readonly { value: PoolPlace; label: string; description: st
 /** Machines that a cloud makes and destroys: their runners go once offline a while. */
 export const autoscaled = (p: PoolPlace) => p !== "own";
 
-/** Sessions each machine runs at once until someone says (`host.toml`'s capacity, the modules' default). */
+/**
+ * Sessions each machine runs at once until someone says: the cloud modules' default. `fctl host
+ * install`'s is 4, so the steps always pass the capacity on.
+ */
 export const DEFAULT_CAPACITY = 3;
 
 /** What a pool's setup is made of: this instance, the pool, and its token. */
@@ -116,7 +119,7 @@ export function setupSteps(place: PoolPlace, v: SetupValues): SetupStep[] {
         {
           title: "Enroll it, and start its host service",
           body: "As the user that service runs as. In a boot script (cloud-init's user data, a launch template) both run as they are; on Linux, where nobody logs in, run loginctl enable-linger for that user first.",
-          code: [enrollCommand(v.origin, v.token, v.capacity === DEFAULT_CAPACITY ? undefined : v.capacity)],
+          code: [enrollCommand(v.origin, v.token, v.capacity)],
         },
       ];
     case "aws":
@@ -258,7 +261,7 @@ export function setupSteps(place: PoolPlace, v: SetupValues): SetupStep[] {
         },
         {
           title: "Run the host as a Deployment",
-          body: `Named ${name}, each pod enrolling with the secret's token (FCTL_SERVER=${v.origin}, FCTL_ENROLL_TOKEN from the secret) and running the host with a driver it has there, a Docker daemon say. Its pods keep their deletion cost at their number of sessions, so that scaling down removes the idle ones first, and drain on preStop.`,
+          body: `Named ${name}, each pod enrolling with the secret's token (FCTL_SERVER=${v.origin}, FCTL_ENROLL_TOKEN from the secret, then fctl host install --no-service --capacity ${v.capacity}) and running the host (fctl host run) with a driver it has there, a Docker daemon say. Its pods keep their deletion cost at their number of sessions, so that scaling down removes the idle ones first, and drain on preStop.`,
           link: { href: `${v.site}/docs/self-hosting/#hosts-in-kubernetes`, label: "The role and the hook" },
         },
         {

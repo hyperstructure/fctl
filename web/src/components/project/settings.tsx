@@ -315,7 +315,7 @@ function Webhooks({ project, open }: { project: G.Project; open?: string }) {
  */
 function useSave(
   project: G.Project,
-  done: string,
+  done: string | ((p: G.Project) => string),
   body: () => G.UpdateProjectRequest,
   saved: (p: G.Project) => void,
 ) {
@@ -325,7 +325,7 @@ function useSave(
       queryClient.setQueryData(keys.project(project.slug), p);
       saved(p);
       void queryClient.invalidateQueries({ queryKey: keys.projects });
-      toast(done);
+      toast(typeof done === "string" ? done : done(p));
     },
   });
 }
@@ -991,7 +991,7 @@ function Runners({ project }: { project: G.Project }) {
     enabled: !!wid,
     retry: false,
   });
-  const choices = poolChoices(demand.data?.pools, runners.data?.runners ?? []);
+  const choices = poolChoices(demand.data?.pools, runners.data?.runners ?? [], wid);
   const saved = {
     typed: (project.settings.runner_labels ?? []).join(", "),
     fallback: project.settings.runner_fallback_minutes ?? null,
@@ -1009,7 +1009,7 @@ function Runners({ project }: { project: G.Project }) {
   };
   const save = useSave(
     project,
-    "Saved",
+    (p) => `Sessions that start from now on run on ${where(p)}`,
     () => {
       if (problem)
         throw new ApiFailure(400, { code: "validation", field: "settings.runner_labels", message: problem });
@@ -1027,17 +1027,18 @@ function Runners({ project }: { project: G.Project }) {
         typed: (p.settings.runner_labels ?? []).join(", "),
         fallback: p.settings.runner_fallback_minutes ?? null,
       });
-      toast(`Sessions that start from now on run on ${where(p)}`);
     },
   );
   const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
   const workspaceName = w?.name ?? project.workspace?.name ?? "the workspace";
-  // Nothing has them: its sessions wait for nothing that comes.
-  const has = (r: G.Runner) => labels.every((l) => r.labels.includes(l));
+  // Nothing has them: its sessions wait for nothing that comes. A member's own runners run only
+  // their sessions. Said once the pools are known too, or known to be the admins' to see.
+  const has = (r: G.Runner) => !r.personal?.includes(wid) && labels.every((l) => r.labels.includes(l));
   const none =
     labels.length > 0 &&
     !problem &&
     runners.data !== undefined &&
+    !demand.isPending &&
     !runners.data.runners.some(has) &&
     !poolFor(labels, demand.data?.pools ?? []);
   const fallback = fallbackOf(d.fallback);

@@ -10,6 +10,7 @@ import { ProjectSettings } from "./settings";
 // No request is answered, but a project's update, which answers with what it was sent: the pages
 // show what the cache holds. Each update is noted.
 const updates = vi.hoisted(() => [] as { id: string; body: G.UpdateProjectRequest }[]);
+const toast = vi.hoisted(() => vi.fn());
 const blocker = vi.hoisted(
   () =>
     ({ disabled: [] }) as {
@@ -40,6 +41,10 @@ vi.mock("@/lib/api", async (real) => {
   );
   return { ...(await real<typeof import("@/lib/api")>()), api: pending, workspaces: pending };
 });
+vi.mock("@/components/ui", async (actual) => ({
+  ...(await actual<typeof import("@/components/ui")>()),
+  toast,
+}));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
     search,
@@ -449,8 +454,23 @@ describe("a project's Runners page", () => {
     at: 0,
   };
 
-  /** The page, with Acme's runners and pools as its admins read them. */
-  function runners(labels: string[], fallback?: number) {
+  // Grace's own pool, and her runner in it, which run only her sessions.
+  const graces: G.PoolDemand = {
+    ...pool,
+    pool: {
+      id: "enr_grace",
+      name: "Grace's GPUs",
+      labels: ["gpu"],
+      placement: "packed",
+      owner: { id: "usr_grace", name: "Grace" },
+    },
+  };
+
+  /**
+   * The page, with Acme's runners and pools as its admins read them, or without the pools while
+   * they load (`pools: false`).
+   */
+  function runners(labels: string[], fallback?: number, pools = true) {
     queryClient.setQueryData(keys.workspace("wsp_acme"), {
       ...acme,
       primary: { id: "usr_ada", name: "Ada" },
@@ -459,14 +479,22 @@ describe("a project's Runners page", () => {
       runners: [
         runner({ id: "rnr_1", labels: ["aws", "large"], pool: { id: "enr_large", name: "AWS large" } }),
         runner({ id: "rnr_mac", name: "studio-mac" }),
+        runner({
+          id: "rnr_grace",
+          labels: ["gpu"],
+          pool: { id: "enr_grace", name: "Grace's GPUs" },
+          personal: ["wsp_acme"],
+        }),
       ],
     });
-    queryClient.setQueryData<G.WorkspaceDemand>(keys.workspaceDemand("wsp_acme"), {
-      pools: [pool],
-      waiting: { sessions: 0 },
-      unpooled: 0,
-      at: 0,
-    });
+    queryClient.removeQueries({ queryKey: keys.workspaceDemand("wsp_acme") });
+    if (pools)
+      queryClient.setQueryData<G.WorkspaceDemand>(keys.workspaceDemand("wsp_acme"), {
+        pools: [pool, graces],
+        waiting: { sessions: 0 },
+        unpooled: 0,
+        at: 0,
+      });
     return open(
       "runners",
       project({
@@ -491,6 +519,8 @@ describe("a project's Runners page", () => {
         (o) => o.textContent,
       );
       expect(options).toContain("AWS large4 runners with 16 CPUs and 64 GiB · aws, large");
+      // A member's own pool runs only their sessions: no project chooses it.
+      expect(options.some((o) => o?.startsWith("Grace's GPUs"))).toBe(false);
       const large = [...s.container.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
         o.textContent?.startsWith("AWS large"),
       );
@@ -514,11 +544,17 @@ describe("a project's Runners page", () => {
   });
 
   it("says in amber when no runner has its labels, and who adds one", () => {
+    // Grace's own pool and runner have them, but run only her sessions.
     const s = runners(["gpu"]);
     expect(shown(s)).toBe("Runners with labels you choose");
     expect(s.container.querySelector(".text-amber")?.textContent).toBe(
       "No runner of Acme has the label gpu: its sessions wait until one does. Ada and its other admins add runners and pools on its Runners tab.",
     );
+  });
+
+  it("says nothing of labels no runner has until it knows the pools", () => {
+    const s = runners(["arm"], undefined, false);
+    expect(s.container.querySelector(".text-amber")).toBeNull();
   });
 
   it("saves the labels and the wait, for sessions that start from then on", async () => {
@@ -528,10 +564,13 @@ describe("a project's Runners page", () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "gpu, Large");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    toast.mockClear();
     await act(async () => s.button("Save").click());
     expect(updates.at(-1)?.body.settings).toMatchObject({
       runner_labels: ["gpu", "large"],
       runner_fallback_minutes: null,
     });
+    // One toast, which says where its sessions run now.
+    expect(toast.mock.calls).toEqual([["Sessions that start from now on run on runners with gpu, large"]]);
   });
 });

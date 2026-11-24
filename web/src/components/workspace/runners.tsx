@@ -88,9 +88,15 @@ import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 /** How enrollment works, on fctl.sh. */
 const GUIDE = () => `${siteUrl()}/docs/getting-started/#many-machines-and-autoscaling`;
 
-/** Refetches what a change to the workspace's runners touches. */
+/** Refetches what a change to the workspace's runners touches: the pools' cards count them too. */
 function refetch(w: G.Workspace) {
-  for (const k of [keys.workspaceRunners(w.id), keys.enrollmentTokens(w.id), keys.runners, keys.workspaces])
+  for (const k of [
+    keys.workspaceRunners(w.id),
+    keys.enrollmentTokens(w.id),
+    keys.workspaceDemand(w.id),
+    keys.runners,
+    keys.workspaces,
+  ])
     void queryClient.invalidateQueries({ queryKey: k });
 }
 
@@ -896,7 +902,7 @@ function EditPool({
         </div>
         {save.error && !field && <Banner tone="error">{save.error.message}</Banner>}
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={close}>
+          <Button type="button" variant="ghost" onClick={close}>
             Cancel
           </Button>
           <Button
