@@ -16,6 +16,7 @@ import {
   Globe,
   History,
   Inbox,
+  KeyRound,
   LayoutGrid,
   Link2,
   Mail,
@@ -25,6 +26,7 @@ import {
   ShieldCheck,
   ShieldOff,
   Trash2,
+  Unlink,
   Users as UsersIcon,
   X,
 } from "lucide-react";
@@ -34,6 +36,7 @@ import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
 import { PageTabs, TabCount } from "@/components/page-tabs";
 import { DriverLine } from "@/components/runner-driver";
+import { SignInAdmin } from "@/components/sign-in/admin";
 import {
   Avatar,
   AvatarStack,
@@ -82,7 +85,16 @@ import { installCommand } from "@/lib/install";
 import { keys, queryClient, useInstance, useMe, useRunners, useWorkspaces } from "@/lib/queries";
 import { maxWorkspacesWords } from "@/lib/workspaces";
 
-type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "early-access" | "settings" | "audit";
+type Tab =
+  | "people"
+  | "workspaces"
+  | "github"
+  | "runners"
+  | "access"
+  | "sign-in"
+  | "early-access"
+  | "settings"
+  | "audit";
 
 const TABS: { tab: Tab; label: string }[] = [
   { tab: "people", label: "People" },
@@ -90,6 +102,7 @@ const TABS: { tab: Tab; label: string }[] = [
   { tab: "github", label: "GitHub" },
   { tab: "runners", label: "Runners" },
   { tab: "access", label: "Access" },
+  { tab: "sign-in", label: "Sign-in" },
   // Where the instance takes requests for early access.
   { tab: "early-access", label: "Early access" },
   { tab: "settings", label: "Settings" },
@@ -98,8 +111,9 @@ const TABS: { tab: Tab; label: string }[] = [
 
 /**
  * Each tab's icon, as the rest of the app draws what it holds: people, the grid Settings draws
- * workspaces with, GitHub's mark, the chip runners are, a door for who gets in, the inbox requests
- * land in, the sidebar's gear, and a clock turning back for what happened.
+ * workspaces with, GitHub's mark, the chip runners are, a door for who gets in, a key for how they
+ * sign in, the inbox requests land in, the sidebar's gear, and a clock turning back for what
+ * happened.
  */
 const ICONS: Record<Tab, (className: string) => ReactNode> = {
   people: (className) => <UsersIcon className={className} aria-hidden="true" />,
@@ -107,6 +121,7 @@ const ICONS: Record<Tab, (className: string) => ReactNode> = {
   github: (className) => <GithubIcon className={className} />,
   runners: (className) => <Cpu className={className} aria-hidden="true" />,
   access: (className) => <DoorOpen className={className} aria-hidden="true" />,
+  "sign-in": (className) => <KeyRound className={className} aria-hidden="true" />,
   "early-access": (className) => <Inbox className={className} aria-hidden="true" />,
   settings: (className) => <Settings className={className} aria-hidden="true" />,
   audit: (className) => <History className={className} aria-hidden="true" />,
@@ -145,6 +160,7 @@ export function Admin() {
         {tab === "workspaces" && <Workspaces />}
         {tab === "github" && <Github />}
         {tab === "access" && <Access />}
+        {tab === "sign-in" && <SignInTab />}
         {tab === "early-access" && early && <EarlyAccess />}
         {tab === "runners" && <Runners />}
         {tab === "settings" && <InstanceSettings />}
@@ -596,6 +612,16 @@ function Users() {
   const instanceName = useInstance().data?.name ?? "this instance";
   const [reset, setReset] = useState<string | null>(null);
   const [resetTwoFactor, setResetTwoFactor] = useState<G.User | null>(null);
+  const [unlinking, setUnlinking] = useState<G.User | null>(null);
+  const unlink = useMutation({
+    mutationFn: (u: G.User) => api.adminUnlink(u.id, "google"),
+    onSuccess: (u) => {
+      setUnlinking(null);
+      void users.refetch();
+      toast(`Unlinked ${u.name}'s Google account: their next Google sign-in links the one they sign in with`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
   const forget = useMutation({
     mutationFn: (id: string) => api.resetTwoFactor(id),
     onSuccess: (u) => {
@@ -749,6 +775,16 @@ function Users() {
                           Reset two-factor
                         </Button>
                       )}
+                      {u.providers.includes("google") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<Unlink className="size-3.5" />}
+                          onClick={() => setUnlinking(u)}
+                        >
+                          Unlink Google
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant={u.status === "active" ? "ghost" : "secondary"}
@@ -794,6 +830,32 @@ function Users() {
         description="Valid for one hour. Whoever opens it can set a new password, so send it privately."
       >
         {reset && <CodeBox value={reset} />}
+      </Dialog>
+      <Dialog
+        open={!!unlinking}
+        onClose={() => setUnlinking(null)}
+        title={unlinking ? `Unlink ${unlinking.name}'s Google account?` : "Unlink their Google account?"}
+        description="For when their Google account was recreated, or its address handed to someone else: an account of theirs that is gone keeps the new one from linking where their domain signs in with Google."
+      >
+        <div className="flex flex-col gap-5">
+          <p className="text-[13.5px] leading-relaxed text-ink-2">
+            Google stops signing them in, and they are emailed about it when email is set up. Where their
+            domain signs in with Google, whoever next signs in with Google as their address there links to
+            their account: make sure that will be them.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setUnlinking(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              loading={unlink.isPending}
+              onClick={() => unlinking && unlink.mutate(unlinking)}
+            >
+              Unlink Google
+            </Button>
+          </div>
+        </div>
       </Dialog>
       <Dialog
         open={!!resetTwoFactor}
@@ -1746,7 +1808,8 @@ function RunnerImages({ runner: r }: { runner: G.Runner }) {
   );
 }
 
-function InstanceSettings() {
+/** The instance's settings, and saving a change to them with a toast that says what it did. */
+function useInstanceSettings() {
   const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
   const save = useMutation({
     mutationFn: (b: G.UpdateInstanceSettingsRequest) => api.updateInstanceSettings(b),
@@ -1767,14 +1830,31 @@ function InstanceSettings() {
       }
       if (b.claude_instance_view !== undefined)
         void queryClient.invalidateQueries({ queryKey: keys.adminClaude });
+      // How people sign in says whether signing in makes accounts.
+      if (b.self_sign_up !== undefined) void queryClient.invalidateQueries({ queryKey: keys.signIn });
       toast(settingsSaved(s, b));
     },
     onError: (e) => toast(e.message, "error"),
   });
+  return { settings, save };
+}
+
+/** Admin → Sign-in: how people sign in, the providers and the domains that require one, then two-factor sign-in. */
+function SignInTab() {
+  const { settings, save } = useInstanceSettings();
+  return (
+    <>
+      <SignInAdmin save={(b) => save.mutate(b)} saving={save.isPending} />
+      <SignInSettings settings={settings.data} save={(b) => save.mutate(b)} saving={save.isPending} />
+    </>
+  );
+}
+
+function InstanceSettings() {
+  const { settings, save } = useInstanceSettings();
   const s = settings.data;
   return (
     <>
-      <SignInSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <SensitiveActions settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <ServiceAccountSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <ClaudeOversightSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
@@ -2022,6 +2102,10 @@ function workspaceLimits(current: number | undefined): SelectOption[] {
 
 /** What changed, for the toast. */
 function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest): string {
+  if (b.self_sign_up !== undefined)
+    return s.self_sign_up
+      ? "Signing in makes accounts again, where the allowlist admits the address"
+      : "Only invitations, addresses you allow and admin tokens make accounts now";
   if (b.export_interval_hours !== undefined)
     return `People can export their data ${exportEvery(s.export_interval_hours)}`;
   if (b.max_workspaces !== undefined)
@@ -2273,6 +2357,8 @@ function SignInSettings({
     max_workspaces: 5,
     snapshots: true,
     max_snapshot_mb: 200,
+    sign_in: [],
+    self_sign_up: true,
     claude_oversight: "details",
     claude_limit_pauses: true,
     claude_instance_view: false,
@@ -2294,8 +2380,8 @@ function SignInSettings({
   const google = confirm?.body.two_factor_google !== undefined;
   return (
     <Section
-      title="Sign-in"
-      description="How people prove it's them. Everyone can turn on two-factor sign-in for themselves in Settings."
+      title="Two-factor sign-in"
+      description="A second factor after a password or Google. Everyone can turn it on for themselves in Settings."
     >
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">

@@ -318,6 +318,8 @@ pub async fn authenticate(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
         via_cookie: false,
         signed_in_at: found.secret_made_at,
         verified_at: None,
+        // A program's secret, which no sign-in made.
+        signed_in_with: fctl_domain::sign_in::SignedIn::default(),
         two_factor_setup_required: false,
         settings,
         limits: Some(held(&found.workspace_id, TokenAccess::Read)),

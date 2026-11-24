@@ -18,6 +18,7 @@ import {
   userHandle,
 } from "@/lib/passkeys";
 import { keys, queryClient } from "@/lib/queries";
+import { says } from "@/lib/sign-in";
 import { AddPasskey } from "./add";
 
 /** Whether this browser takes passkeys; undefined until it has said. */
@@ -42,15 +43,25 @@ export function PasskeySettings({ me }: { me: G.Me }) {
     if (accepted) signalDetails(rpId(), handle, me.user.email, me.user.name);
   }, [accepted, me.user.id, me.user.email, me.user.name]);
   const required = me.two_factor.required;
+  // A domain of yours signs in with a provider, which passkeys alone don't get past.
+  const held = me.sign_in && !me.sign_in.exempt && !me.sign_in.passkeys ? me.sign_in : undefined;
   return (
     <Section
       title="Passkeys"
       description={
-        <>
-          Sign in with your fingerprint, face or screen lock: no password, no code, and nothing a fake site
-          could catch. Your device or password manager keeps them.
-          {required && " Here they also count as your second factor."}
-        </>
+        held ? (
+          <>
+            Confirm it's you with your fingerprint, face or screen lock, after you sign in with{" "}
+            {held.provider_name} and before sensitive actions. They don't sign you in alone:{" "}
+            {says(held.domains, held.provider_name)}.
+          </>
+        ) : (
+          <>
+            Sign in with your fingerprint, face or screen lock: no password, no code, and nothing a fake site
+            could catch. Your device or password manager keeps them.
+            {required && " Here they also count as your second factor."}
+          </>
+        )
       }
     >
       <div className="flex flex-col gap-5">

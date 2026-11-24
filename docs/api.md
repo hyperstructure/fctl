@@ -614,6 +614,38 @@ much they see and how they hear by email (`claude_oversight`,
 long-lived token with `POST /api/v1/me/claude/token`, `{"token", "label",
 "made_at"}`.
 
+## Sign-in rules
+
+An instance's admins require a provider of the people at some domains
+([Requiring Google for your domains](self-hosting.md#requiring-google-for-your-domains)).
+`GET /api/v1/admin/sign-in` says how people sign in: the providers (with
+the redirect URI each one's OAuth client lists), the rules and whom each
+covers, how many people have a password, a passkey or no way in yet, and
+how the caller's own sign-in was made. `POST
+/api/v1/admin/sign-in/preview` with `{"rules": […]}` says what saving those
+rules would do, changing nothing: whose passwords and passkeys would stop
+working, who signs in with the provider already, and whether it would sign
+the caller out (`"you": "signs_out"`). Saving them is `PATCH
+/api/v1/admin/settings` with `sign_in`, the whole list:
+
+```sh
+curl -sS -X PATCH "$FCTL_SERVER/api/v1/admin/settings" -H "Authorization: Bearer $FCTL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sign_in": [{"domains": ["acme.com", "acme.dev"], "provider": "google", "passkeys": false}]}'
+```
+
+It answers `409` (`conflict`) where it would sign out the caller, whose
+sign-in doesn't meet it, and asks them to confirm it's them
+(`verification_required`) where it lets anyone sign in another way. A CLI's
+or an access token's request whose sign-in a rule doesn't meet answers
+`401` (`unauthorized`), with what to do. `self_sign_up` in the same request
+says whether signing in makes accounts. `DELETE
+/api/v1/admin/users/{user}/identities/google` unlinks someone's Google
+account, for when theirs was recreated or its address handed on. Each token in `GET
+/api/v1/auth/tokens` says how its sign-in was made (`method`: `password`,
+`passkey` or `google`), and `GET /api/v1/auth/me` the rule that covers you
+(`sign_in`).
+
 ## Runner pools
 
 What a pool (an enrollment token's runners) needs now, for whatever scales

@@ -15,4 +15,11 @@ current: boolean,
  * What an access token is limited to. Absent: it does everything its
  * person may (browser sessions and the CLI's sign-ins always do).
  */
-scope?: TokenScope, };
+scope?: TokenScope, 
+/**
+ * How the sign-in it comes from was made: `password`, `passkey`, or a
+ * provider's id (`google`). A CLI's sign-in takes the method of the
+ * browser that approved it, and an access token that of the sign-in
+ * that made it. Absent for those from before fctl recorded it.
+ */
+method?: string, };

@@ -5,6 +5,7 @@
 // action the app doesn't know yet shows its key and target, as every entry did before.
 
 import type * as G from "@/gen";
+import { domainsWords } from "./sign-in";
 
 /** Where something an entry names leads: a session's page, or a project's. */
 export type AuditTo = { session: string } | { project: string };
@@ -457,8 +458,18 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
         "linked their ",
         d.provider === "google" ? "Google" : named(d.provider, "other"),
         " sign-in",
-        // An account with no way in yet (an admin token's) takes the first one.
-        d.via === "first_sign_in" ? " as they first signed in" : "",
+        // An account with no way in yet (an admin token's) takes the first one; at a domain that signs in
+        // with Google only, any account does.
+        d.via === "first_sign_in"
+          ? " as they first signed in"
+          : d.via === "sign_in_rule"
+            ? " as their domain requires"
+            : "",
+      ];
+    case "user.password_removed":
+      return [
+        "moved off their password, as their domain signs in with ",
+        d.provider === "google" ? "Google" : named(d.provider, "a provider"),
       ];
     case "identity.unlinked":
       return ["unlinked a sign-in"];
@@ -484,6 +495,13 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
       return ["set up this instance"];
     case "instance.settings_updated":
       return ["changed this instance's settings"];
+    case "sign_in.rules_changed": {
+      const rules = Array.isArray(d.rules) ? (d.rules as { domains?: unknown; provider?: unknown }[]) : [];
+      const domains = rules.flatMap((r) => (Array.isArray(r.domains) ? r.domains.map(String) : []));
+      return domains.length === 0
+        ? ["stopped requiring a provider at any domain"]
+        : ["required a provider at ", named(domainsWords(domains), "some domains")];
+    }
     case "instance.transferred":
       return ["made ", user(t), " this instance's primary owner"];
     case "claude.token_added":

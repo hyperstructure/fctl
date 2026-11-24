@@ -61,6 +61,7 @@ pub mod schedules;
 pub mod search;
 pub mod service_accounts;
 pub mod settings;
+pub mod sign_in;
 pub mod size;
 pub mod slugs;
 pub mod snapshots;

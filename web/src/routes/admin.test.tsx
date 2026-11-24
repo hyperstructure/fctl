@@ -304,6 +304,8 @@ const instanceSettings = (s: Partial<G.InstanceSettings> = {}): G.InstanceSettin
   claude_limit_pauses: true,
   claude_instance_view: false,
   claude_refusals: 2,
+  sign_in: [],
+  self_sign_up: true,
   ...s,
 });
 
@@ -385,6 +387,7 @@ describe("what admins see of Claude connections, for the whole instance", () => 
         passkeys: 0,
         two_factor: false,
         created_at: 0,
+        providers: [],
       }) as unknown as G.User;
     const fill = (view: boolean) => (c: QueryClient) => {
       c.setQueryData(keys.instanceSettings, instanceSettings({ claude_instance_view: view }));
