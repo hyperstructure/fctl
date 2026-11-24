@@ -1793,10 +1793,17 @@ must be that key: a runner names no other session's object), its size
 and its checksum. The instance's size limit doesn't hold there; the
 host's own does (`max_mb`, 2048 MiB unless set), also for what it
 downloads, which it hands to the agent a part at a time, as the link
-writes them. The commit's answer says where the session's snapshot
-before was (`SnapshotCommitted.replaced`), which the host deletes when it
-is in its own bucket; past its workspace's days, the control plane
-forgets one, and the bucket's lifecycle rules delete it. Hosts say their
+writes them. A request that S3 answers with a 5xx, a 429 or a
+`RequestTimeout`, or that breaks off, goes again, signed anew, up to
+four times in all, 1, 3 and 9 seconds apart. The commit's answer says
+where the session's snapshot before was (`SnapshotCommitted.replaced`,
+which D1 keeps as `replaced` so that a commit that comes again, its
+answer lost, says it too), which the host deletes when it is in its own
+bucket. A commit the control plane refuses deletes the new object; one
+that gets no answer leaves it, as D1 may name it, and the transcript says
+the snapshot may not have been saved. Past its workspace's days, the
+control plane forgets one, and the bucket's lifecycle rules delete it.
+Hosts say their
 bucket in their hello and heartbeats, with why the last upload or
 download failed while it does (`SnapshotStore`, which
 `Runner.snapshot_store` shows), and a host that can't read its `url`
@@ -1806,8 +1813,9 @@ FleetDO still sends a resume to the runner that has the session's
 sandbox, which has everything, but doesn't wait for it: where that runner
 is busy or away, a session with a snapshot to restore starts on another
 at once, rather than after ten minutes (`SessionWants.snapshot`), on a
-runner whose host restores snapshots, and has the snapshot's bucket for
-one in a bucket. While those are busy, it waits for one as long as it
+runner whose host restores snapshots, and, for one in a bucket, has that
+bucket under the prefix the snapshot is in (`Bucket::holds`). While
+those are busy, it waits for one as long as it
 would for its sandbox's runner, rather than start elsewhere without its
 conversation; after that, and where none could take it, it waits, or
 starts, as any other session does. The hourly job deletes the snapshots past their workspace's

@@ -1408,18 +1408,25 @@ The host signs its requests with the
 machine's own credentials, where AWS's tools look for them: the
 instance's role on EC2, a web identity (IRSA) or the container's
 credentials (Pod Identity) on EKS, the `AWS_*` variables. They need
-these, on the prefix alone:
+these on the prefix, and `s3:ListBucket` on the bucket, without which S3
+answers a request for a snapshot that its lifecycle rule deleted with
+403 rather than 404, and the runner shows it as the bucket refusing it:
 
 ```json
-{ "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
-  "Resource": "arn:aws:s3:::acme-fctl/sessions/*" }
+[
+  { "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+    "Resource": "arn:aws:s3:::acme-fctl/sessions/*" },
+  { "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::acme-fctl" }
+]
 ```
 
 A session's snapshot is at `sessions/<session>/<snapshot>`, and a
 host that saves a new one deletes the one before, when that one is in its
 bucket too. A session resumes with its snapshot only on a runner whose
-host has the same bucket, and waits up to ten minutes for one that is
-busy before it starts on another from its branch.
+host has the same bucket and prefix, and waits up to ten minutes for one
+that is busy before it starts on another from its branch. Requests that
+S3 asks to slow down, or that fail on the way, go again up to three
+times.
 The control plane forgets a snapshot once its workspace's days have
 passed, but it can't delete it from your bucket: give the prefix a
 lifecycle rule that expires objects after as many days (30 unless the
