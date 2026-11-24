@@ -281,7 +281,10 @@ signing in on them, enroll themselves with one of the workspace's
 create`): a name, its labels and placement, how long it works, how many
 runners it may enroll at once, whether each waits for an admin's
 approval, and whether runners that stay offline are removed. The token is
-shown once. On each machine, from its boot script
+shown once, with what to copy where its machines run, the token and the
+instance filled in: the commands below for machines of your own, fctl's
+Terraform module for AWS, its Google Cloud and Azure examples, or a KEDA
+`ScaledObject` for Kubernetes ([Runners in your cloud](runners-in-your-cloud.md)). On each machine, from its boot script
 (cloud-init's user data, a launch template) or a shell:
 
 ```sh

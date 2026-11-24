@@ -6,6 +6,7 @@
 
 import type * as G from "@/gen";
 import { cpus, memory } from "./format";
+import { DEFAULT_CAPACITY, type PoolPlace } from "./pool-setup";
 import { defaultPlacement, labelProblem, parseLabels } from "./pools";
 
 /** How long a new token works. */
@@ -74,6 +75,10 @@ export interface EnrollmentForm {
   labels: string;
   /** How its runners take sessions, once chosen; until then, as its offline removal suggests. */
   placement?: G.Placement;
+  /** Sessions each machine runs, as typed: for the commands that set them up, not the token. */
+  capacity: string;
+  /** Where its machines run, whose setup the new pool shows. */
+  place: PoolPlace;
 }
 
 export const NEW_ENROLLMENT: EnrollmentForm = {
@@ -84,7 +89,15 @@ export const NEW_ENROLLMENT: EnrollmentForm = {
   approval: false,
   offline: "keep",
   labels: "",
+  capacity: String(DEFAULT_CAPACITY),
+  place: "own",
 };
+
+/** Sessions each machine runs, as typed: a whole number from 1 to 64, else undefined. */
+export function capacityOf(typed: string): number | undefined {
+  const n = Number(typed.trim());
+  return typed.trim() && Number.isInteger(n) && n >= 1 && n <= 64 ? n : undefined;
+}
 
 /** The most runners one token keeps at once (`fctl_domain::enrollment::MAX_RUNNERS`). */
 export const MAX_RUNNERS = 1000;
@@ -99,7 +112,10 @@ export function limitOf(typed: string): number | undefined {
 
 /** Whether the form makes a token: it has a name, its limit, if any, is one, and so are its labels. */
 export const enrollmentReady = (f: EnrollmentForm) =>
-  !!f.name.trim() && !Number.isNaN(limitOf(f.limit)) && !labelProblem(parseLabels(f.labels));
+  !!f.name.trim() &&
+  !Number.isNaN(limitOf(f.limit)) &&
+  !labelProblem(parseLabels(f.labels)) &&
+  capacityOf(f.capacity) !== undefined;
 
 /** The placement the form makes: the one chosen, or the one its offline removal suggests. */
 export const placementOf = (f: EnrollmentForm): G.Placement =>
@@ -209,9 +225,12 @@ export function tokenState(t: G.EnrollmentToken, now: number): "active" | "revok
   return "active";
 }
 
-/** The command that enrolls a machine with `secret`, from a shell or a boot script, a variable a line. */
-export function enrollCommand(origin: string, secret: string): string {
-  return `FCTL_SERVER=${origin} \\\nFCTL_ENROLL_TOKEN=${secret} \\\nfctl host install`;
+/**
+ * The command that enrolls a machine with `secret`, from a shell or a boot script, a variable a line,
+ * running `capacity` sessions at once where it says.
+ */
+export function enrollCommand(origin: string, secret: string, capacity?: number): string {
+  return `FCTL_SERVER=${origin} \\\nFCTL_ENROLL_TOKEN=${secret} \\\nfctl host install${capacity ? ` --capacity ${capacity}` : ""}`;
 }
 
 /** `ip-10-0-3-17 · linux/x86_64 · docker · fctl 0.28.0`: what a runner said of its machine. */

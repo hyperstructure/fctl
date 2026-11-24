@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import {
+  capacityOf,
   describeEnrollment,
   enrollCommand,
   enrolledFrom,
@@ -46,6 +47,8 @@ describe("enrollmentRequest", () => {
           approval: true,
           offline: "1h",
           labels: "AWS, large",
+          capacity: "4",
+          place: "aws",
         },
         true,
       ),
@@ -65,6 +68,10 @@ describe("enrollmentRequest", () => {
     expect(placementOf({ ...NEW_ENROLLMENT, offline: "5m", placement: "spread" })).toBe("spread");
     expect(placementOf(NEW_ENROLLMENT)).toBe("spread");
     expect(enrollmentReady({ ...NEW_ENROLLMENT, name: "CI", labels: "a/b" })).toBe(false);
+    expect(enrollmentReady({ ...NEW_ENROLLMENT, name: "CI", capacity: "0" })).toBe(false);
+    expect(capacityOf(" 8 ")).toBe(8);
+    expect(capacityOf("65")).toBeUndefined();
+    expect(capacityOf("")).toBeUndefined();
   });
 
   it("makes a member's for their own sessions, whatever the form held", () => {

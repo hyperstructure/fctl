@@ -20,7 +20,8 @@ import {
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
+import { Step } from "@/components/claude/guide";
 import { SET_TOKEN_FROM_FILE } from "@/components/claude/on-runners";
 import {
   Banner,
@@ -42,10 +43,10 @@ import type * as G from "@/gen";
 import { api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import {
+  capacityOf,
   describeEnrollment,
   ENROLLMENT_EXPIRIES,
   type EnrollmentForm,
-  enrollCommand,
   enrolledFrom,
   enrollmentReady,
   enrollmentRequest,
@@ -62,7 +63,15 @@ import {
   whoseToken,
 } from "@/lib/enrollment";
 import { ago } from "@/lib/format";
-import { installCommand, siteUrl } from "@/lib/install";
+import { siteUrl } from "@/lib/install";
+import {
+  autoscaled,
+  DEFAULT_CAPACITY,
+  PLACES,
+  type PoolPlace,
+  resourceName,
+  setupSteps,
+} from "@/lib/pool-setup";
 import {
   enrolled,
   labelProblem,
@@ -74,7 +83,7 @@ import {
   poolLine,
   poolState,
 } from "@/lib/pools";
-import { keys, queryClient, useMe } from "@/lib/queries";
+import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 
 /** How enrollment works, on fctl.sh. */
 const GUIDE = () => `${siteUrl()}/docs/getting-started/#many-machines-and-autoscaling`;
@@ -955,7 +964,7 @@ function NewEnrollmentToken({
       }
     >
       {created ? (
-        <Created w={w} token={created} onRunners={onRunners} onDone={close} />
+        <Created w={w} token={created} form={form} onRunners={onRunners} onDone={close} />
       ) : (
         <TokenForm w={w} admin={admin} form={form} set={set} create={create} />
       )}
@@ -997,134 +1006,179 @@ function TokenForm({
   const offline = OFFLINE_REMOVAL.find((o) => o.value === form.offline)?.minutes;
   const personal = !admin || form.personal;
   const whose: Whose = personal ? { you: true } : { everyone: true };
+  const labels = parseLabels(form.labels);
+  const labelError = labelProblem(labels);
+  const capacity = capacityOf(form.capacity);
   return (
     <form
-      className="flex flex-col gap-5"
+      className="flex flex-col gap-6"
       onSubmit={(e) => {
         e.preventDefault();
         if (enrollmentReady(form)) create.mutate();
       }}
     >
-      <Field label="Name" hint="What it's for, which the runners it enrolls show." error={err("name")}>
-        {(id) => (
-          <Input
-            id={id}
-            value={form.name}
-            onChange={(e) => set({ name: e.target.value })}
-            placeholder={personal ? "My cluster" : "Build fleet"}
-            autoFocus
-          />
-        )}
-      </Field>
-      {admin && (
-        <Field label="Runs">
-          {(id) => (
-            <Select
-              id={id}
-              value={personal ? "mine" : "everyone"}
-              onChange={(v) => set({ personal: v === "mine" })}
-              options={WHOSE_OPTIONS}
-            />
+      <ol className="flex flex-col">
+        <Step n={1} done={!!form.name.trim()} title="Name it">
+          <Field label="Name" hint="What it's for, which the runners it enrolls show." error={err("name")}>
+            {(id) => (
+              <Input
+                id={id}
+                value={form.name}
+                onChange={(e) => set({ name: e.target.value })}
+                placeholder={personal ? "My cluster" : "AWS large"}
+                autoFocus
+              />
+            )}
+          </Field>
+          {admin && (
+            <Field label="Runs">
+              {(id) => (
+                <Select
+                  id={id}
+                  value={personal ? "mine" : "everyone"}
+                  onChange={(v) => set({ personal: v === "mine" })}
+                  options={WHOSE_OPTIONS}
+                />
+              )}
+            </Field>
           )}
-        </Field>
-      )}
-      <div className="grid items-start gap-4 sm:grid-cols-2">
-        <Field
-          label="Labels"
-          hint="Projects that ask for them run on its runners. Commas or spaces between them."
-          error={labelProblem(parseLabels(form.labels)) ?? err("labels")}
-        >
-          {(id) => (
-            <Input
-              id={id}
-              value={form.labels}
-              onChange={(e) => set({ labels: e.target.value })}
-              placeholder="aws, large"
-              className="font-mono"
+        </Step>
+        <Step n={2} done={false} title="Choose its labels and machines">
+          <div className="grid items-start gap-4 sm:grid-cols-2">
+            <Field
+              label="Labels"
+              hint="Projects that ask for them run on its runners. Commas or spaces between them."
+              error={labelError ?? err("labels")}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  value={form.labels}
+                  onChange={(e) => set({ labels: e.target.value })}
+                  placeholder="aws, large"
+                  className="font-mono"
+                />
+              )}
+            </Field>
+            <Field label="Placement">
+              {(id) => (
+                <Select
+                  id={id}
+                  value={placementOf(form)}
+                  onChange={(v) => set({ placement: v as G.Placement })}
+                  options={PLACEMENTS}
+                />
+              )}
+            </Field>
+            <Field
+              label="Sessions each machine runs"
+              hint={capacity === undefined ? undefined : "What the commands below give each host."}
+              error={capacity === undefined ? "A whole number from 1 to 64" : undefined}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  inputMode="numeric"
+                  value={form.capacity}
+                  onChange={(e) => set({ capacity: e.target.value })}
+                />
+              )}
+            </Field>
+            <Field
+              label="Runners at once"
+              hint={Number.isNaN(limit) ? undefined : "Removed and rejected ones free their place."}
+              error={
+                err("max_runners") ??
+                (Number.isNaN(limit) ? `A whole number from 1 to ${MAX_RUNNERS}, or none` : undefined)
+              }
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  inputMode="numeric"
+                  value={form.limit}
+                  onChange={(e) => set({ limit: e.target.value })}
+                  placeholder="No limit"
+                />
+              )}
+            </Field>
+          </div>
+          <Field label="When they go offline" error={err("remove_offline_after_minutes")}>
+            {(id) => (
+              <Select
+                id={id}
+                value={form.offline}
+                onChange={(offline) => set({ offline })}
+                options={OFFLINE_REMOVAL.map((o) => ({
+                  value: o.value,
+                  label: o.label,
+                  description: o.description,
+                }))}
+              />
+            )}
+          </Field>
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-line px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-[13.5px] text-ink">Approve each runner</div>
+              <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-3">
+                {personal
+                  ? "Runners it enrolls wait on this tab, with where they enrolled from, until you approve them; until then they run nothing. You get a notification."
+                  : `Runners it enrolls wait on this tab, with where they enrolled from, until an admin approves them; until then they run nothing. ${w.name}'s admins get a notification.`}
+              </p>
+            </div>
+            <Switch
+              checked={form.approval}
+              onChange={(approval) => set({ approval })}
+              label="Approve each runner"
             />
-          )}
-        </Field>
-        <Field label="Placement">
-          {(id) => (
-            <Select
-              id={id}
-              value={placementOf(form)}
-              onChange={(v) => set({ placement: v as G.Placement })}
-              options={PLACEMENTS}
-            />
-          )}
-        </Field>
-      </div>
-      <div className="grid items-start gap-4 sm:grid-cols-2">
-        <Field label="Expires" error={err("expires_in_hours")}>
-          {(id) => (
-            <Select
-              id={id}
-              value={form.expires}
-              onChange={(expires) => set({ expires })}
-              options={ENROLLMENT_EXPIRIES.map((e) => ({ value: e.value, label: e.label }))}
-            />
-          )}
-        </Field>
-        <Field
-          label="Runners at once"
-          hint={Number.isNaN(limit) ? undefined : "Removed and rejected ones free their place."}
-          error={
-            err("max_runners") ??
-            (Number.isNaN(limit) ? `A whole number from 1 to ${MAX_RUNNERS}, or none` : undefined)
-          }
-        >
-          {(id) => (
-            <Input
-              id={id}
-              inputMode="numeric"
-              value={form.limit}
-              onChange={(e) => set({ limit: e.target.value })}
-              placeholder="No limit"
-            />
-          )}
-        </Field>
-      </div>
-      <Field label="When they go offline" error={err("remove_offline_after_minutes")}>
-        {(id) => (
-          <Select
-            id={id}
-            value={form.offline}
-            onChange={(offline) => set({ offline })}
-            options={OFFLINE_REMOVAL.map((o) => ({
-              value: o.value,
-              label: o.label,
-              description: o.description,
-            }))}
-          />
-        )}
-      </Field>
-      <div className="flex items-start justify-between gap-4 rounded-lg border border-line px-4 py-3">
-        <div className="min-w-0">
-          <div className="text-[13.5px] text-ink">Approve each runner</div>
-          <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-3">
-            {personal
-              ? "Runners it enrolls wait on this tab, with where they enrolled from, until you approve them; until then they run nothing. You get a notification."
-              : `Runners it enrolls wait on this tab, with where they enrolled from, until an admin approves them; until then they run nothing. ${w.name}'s admins get a notification.`}
-          </p>
-        </div>
-        <Switch
-          checked={form.approval}
-          onChange={(approval) => set({ approval })}
-          label="Approve each runner"
-        />
-      </div>
+          </div>
+          <Field label="Its token expires" error={err("expires_in_hours")}>
+            {(id) => (
+              <Select
+                id={id}
+                value={form.expires}
+                onChange={(expires) => set({ expires })}
+                options={ENROLLMENT_EXPIRIES.map((e) => ({ value: e.value, label: e.label }))}
+              />
+            )}
+          </Field>
+        </Step>
+        <Step n={3} done={false} title="Choose where it runs">
+          <Field
+            label="Its machines"
+            hint={
+              autoscaled(form.place)
+                ? "Once it is made, the next step has what to copy there, with its token and this instance filled in."
+                : "Once it is made, the next step has the commands that enroll a machine."
+            }
+          >
+            {(id) => (
+              <Select
+                id={id}
+                value={form.place}
+                onChange={(v) => {
+                  const place = v as PoolPlace;
+                  // A cloud destroys machines without uninstalling them: their runners go a while after.
+                  set(autoscaled(place) && form.offline === "keep" ? { place, offline: "5m" } : { place });
+                }}
+                options={PLACES}
+              />
+            )}
+          </Field>
+        </Step>
+      </ol>
       <div
         aria-live="polite"
         className="rounded-lg border border-line bg-sunken/50 px-4 py-3 text-[13px] leading-relaxed text-ink-2"
       >
         {describeEnrollment(whose, form.approval, Number.isNaN(limit) ? undefined : limit, offline)}{" "}
-        {poolLine(labelProblem(parseLabels(form.labels)) ? [] : parseLabels(form.labels), placementOf(form))}{" "}
+        {poolLine(labelError ? [] : labels, placementOf(form))}{" "}
         {expires
           ? `It expires on ${new Date(Date.now() + expires * 3_600_000).toLocaleDateString(undefined, { dateStyle: "long" })}${expires < 24 ? ` at ${new Date(Date.now() + expires * 3_600_000).toLocaleTimeString(undefined, { timeStyle: "short" })}` : ""}.`
           : "It never expires: revoke it when you no longer need it."}
         {offline === undefined && " A runner it enrolls also goes when its host service is uninstalled."}
       </div>
+      <PoolPreview w={w} form={form} whose={whose} labels={labelError ? [] : labels} />
       {create.error && !field && <Banner tone="error">{create.error.message}</Banner>}
       <div className="flex justify-end">
         <Button type="submit" variant="primary" loading={create.isPending} disabled={!enrollmentReady(form)}>
@@ -1136,24 +1190,122 @@ function TokenForm({
 }
 
 /**
- * The new token, once, and how a machine enrolls with it. `onRunners`: your sessions here run on the
- * Claude token you keep on your runners, which a machine your token enrolls needs too.
+ * How the pool will look on this tab once its first runner is online, drawn with its own card from
+ * what the form says: a preview, not a control.
+ */
+function PoolPreview({
+  w,
+  form,
+  whose,
+  labels,
+}: {
+  w: G.Workspace;
+  form: EnrollmentForm;
+  whose: Whose;
+  labels: string[];
+}) {
+  const now = Date.now();
+  const capacity = capacityOf(form.capacity) ?? DEFAULT_CAPACITY;
+  const limit = limitOf(form.limit);
+  const max = limit === undefined || Number.isNaN(limit) ? undefined : limit;
+  const offline = OFFLINE_REMOVAL.find((o) => o.value === form.offline)?.minutes;
+  const expires = ENROLLMENT_EXPIRIES.find((e) => e.value === form.expires)?.hours;
+  const me = useMe().data?.user;
+  const name = form.name.trim() || "Your pool";
+  const token: G.EnrollmentToken = {
+    id: "enr_preview" as G.EnrollmentTokenId,
+    name,
+    personal: !("everyone" in whose),
+    approval: form.approval,
+    max_runners: max,
+    remove_offline_after_minutes: offline,
+    expires_at: expires ? now + expires * 3_600_000 : undefined,
+    created_by: me ? { id: me.id, name: me.name } : undefined,
+    created_at: now,
+    last_used_at: now,
+    runners: 1,
+    pending: 0,
+    labels,
+    placement: placementOf(form),
+  };
+  const demand: G.PoolDemand = {
+    pool: { id: token.id, name, labels, placement: placementOf(form), max_runners: max },
+    runners: { online: 1, busy: 0, draining: 0, pending: 0, starting: 0, offline: 0 },
+    slots: { capacity, busy: 0, free: capacity },
+    waiting: { sessions: 0 },
+    wanted: 1,
+    at: now,
+  };
+  const runner = `${resourceName(name).replace(/^fctl-/, "")}-1`;
+  return (
+    <div>
+      <div className="mb-2 text-[12.5px] text-ink-4">Once its first runner is online:</div>
+      <ul aria-hidden className="pointer-events-none select-none">
+        <PoolCard
+          token={token}
+          demand={demand}
+          whose={whose}
+          now={now}
+          runners={[{ id: "rnr_preview" } as G.Runner]}
+          row={() => (
+            <li key="preview" className="flex items-center gap-4 py-3.5">
+              <span className="size-2 shrink-0 rounded-full bg-accent shadow-[0_0_10px_var(--c-accent)]" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[14px] text-ink">
+                  {runner} <span className="ml-1 text-[12px] text-ink-4">online</span>
+                </div>
+                <div className="mt-0.5 truncate text-[12px] text-ink-4">
+                  {"everyone" in whose ? `${w.name}'s` : "Your"} runner · 0/{capacity} sessions · seen just
+                  now
+                </div>
+              </div>
+            </li>
+          )}
+        />
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The new pool's token, once, and what bringing its machines online takes where they run, every value
+ * filled in (lib/pool-setup.ts). `onRunners`: your sessions here run on the Claude token you keep on
+ * your runners, which a machine your token enrolls needs too.
  */
 function Created({
   w,
   token,
+  form,
   onRunners,
   onDone,
 }: {
   w: G.Workspace;
   token: G.CreatedEnrollmentToken;
+  form: EnrollmentForm;
   onRunners: boolean;
   onDone: () => void;
 }) {
   const t = token.token;
   const whose: Whose = t.personal ? { you: true } : { everyone: true };
+  const version = useInstance().data?.version ?? "";
+  // The form scrolled the dialog down to its button: the token, shown once, is at the top.
+  const top = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    top.current?.closest("dialog")?.scrollTo({ top: 0 });
+  }, []);
+  const place = PLACES.find((p) => p.value === form.place) ?? PLACES[0];
+  const steps = setupSteps(form.place, {
+    origin: location.origin,
+    hostname: location.hostname,
+    site: siteUrl(),
+    name: t.name,
+    token: token.secret,
+    capacity: capacityOf(form.capacity) ?? DEFAULT_CAPACITY,
+    maxRunners: t.max_runners,
+    version,
+  });
   return (
-    <div className="flex flex-col gap-5">
+    <div ref={top} className="flex flex-col gap-5">
       <div>
         <Banner tone="warn">
           Copy it now: it is shown once. Whoever has it enrolls machines in {w.name}
@@ -1165,34 +1317,45 @@ function Created({
         </Banner>
         <CodeBox value={token.secret} className="mt-2" />
       </div>
-      <ol className="flex flex-col gap-3 text-[13px] leading-relaxed text-ink-3">
-        <li>
-          <span className="text-ink-2">1. Install fctl on the machine</span>
-          <CodeBox value={installCommand()} className="mt-1.5" />
-        </li>
-        <li>
-          <span className="text-ink-2">
-            2. Enroll it as a runner and start its host service, as the user that service runs as
-          </span>
-          <CodeBox value={enrollCommand(location.origin, token.secret)} className="mt-1.5" />
-        </li>
-        {t.personal && onRunners && (
-          <li>
-            <span className="text-ink-2">3. Keep your Claude token on it</span>
-            <p className="mt-0.5">
-              Your sessions here run on the Claude token you keep on your runners, so they run on one of these
-              once it keeps it too. Give the machine your token from{" "}
-              <code className="font-mono">claude setup-token</code> as a file only its user reads (a
-              Kubernetes secret, say), then:
-            </p>
-            <CodeBox value={SET_TOKEN_FROM_FILE} className="mt-1.5" />
-          </li>
-        )}
-      </ol>
+      <div>
+        <h3 className="text-[14.5px] font-medium text-ink">
+          {form.place === "own" ? "Bring a machine online" : `Bring it online on ${place?.label}`}
+        </h3>
+        <ol className="mt-3 flex flex-col">
+          {steps.map((s, i) => (
+            <Step key={s.title} n={i + 1} done={false} title={s.title}>
+              {s.body && <p>{s.body}</p>}
+              {s.code?.map((c) => (
+                <CodeBox key={c} value={c} />
+              ))}
+              {s.link && (
+                <a
+                  href={s.link.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-0.5 self-start text-accent hover:underline"
+                >
+                  {s.link.label} <ArrowUpRight className="size-3.5" />
+                </a>
+              )}
+            </Step>
+          ))}
+          {t.personal && onRunners && (
+            <Step n={steps.length + 1} done={false} title="Keep your Claude token on it">
+              <p>
+                Your sessions here run on the Claude token you keep on your runners, so they run on one of
+                these once it keeps it too. Give the machine your token from{" "}
+                <code className="font-mono">claude setup-token</code> as a file only its user reads (a
+                Kubernetes secret, say), then:
+              </p>
+              <CodeBox value={SET_TOKEN_FROM_FILE} />
+            </Step>
+          )}
+        </ol>
+      </div>
       <p className="text-[12.5px] leading-relaxed text-ink-4">
-        In a boot script (cloud-init's user data, a launch template) both run as they are; on Linux, where
-        nobody logs in, run <code className="font-mono text-[11.5px] text-ink-3">loginctl enable-linger</code>{" "}
-        for that user first. Run again, the install keeps the runner the machine enrolled.{" "}
+        Its runners show under it on this tab as they enroll. Run again, the install keeps the runner a
+        machine enrolled.{" "}
         {t.remove_offline_after_minutes
           ? `A runner goes when its host service is uninstalled (fctl host uninstall), or once it has been offline for ${minutesText(t.remove_offline_after_minutes)}.`
           : "A runner goes when its host service is uninstalled (fctl host uninstall)."}
