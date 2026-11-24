@@ -46,6 +46,15 @@ pub async fn record(
             ],
         )?);
     }
+    // A reading is Claude's answer: it took the credential then.
+    if let Some(latest) = readings.iter().map(|r| r.observed_at).max() {
+        statements.push(q(
+            &db,
+            "UPDATE claude_credentials SET answered_at = ?1 \
+             WHERE id = (SELECT credential_id FROM sessions WHERE id = ?2) AND COALESCE(answered_at, 0) < ?1",
+            &[n(latest.min(observed_at)), s(session_id)],
+        )?);
+    }
     if let Some(listed) = listed {
         statements.push(q(
             &db,

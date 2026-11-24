@@ -12,6 +12,7 @@ pub mod base_branch;
 pub mod branches;
 pub mod cbor;
 pub mod claude;
+pub mod claude_oversight;
 pub mod clouds;
 pub mod context;
 pub mod cookies;

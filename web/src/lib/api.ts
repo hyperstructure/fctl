@@ -615,6 +615,8 @@ export const api = {
   adminDisconnectGithub: (account: string, workspace: string) =>
     request<G.GithubInstallations>("DELETE", `/admin/github/${enc(account)}/workspaces/${enc(workspace)}`),
   audit: (before?: number) => request<G.AuditList>("GET", `/admin/audit${before ? `?before=${before}` : ""}`),
+  /** What every account's sessions run on, where the instance lets its admins see it. */
+  adminClaude: () => request<G.ClaudeOverview>("GET", "/admin/claude"),
   instanceSettings: () => request<G.InstanceSettings>("GET", "/admin/settings"),
   updateInstanceSettings: (b: G.UpdateInstanceSettingsRequest) =>
     request<G.InstanceSettings>("PATCH", "/admin/settings", b),
@@ -632,6 +634,8 @@ export const workspaces = {
   setAvatar: (id: string, image: Blob) => putAvatar<G.Workspace>(`/workspaces/${enc(id)}/avatar`, image),
   removeAvatar: (id: string) => request<G.Workspace>("DELETE", `/workspaces/${enc(id)}/avatar`),
   members: (id: string) => request<G.WorkspaceMemberList>("GET", `/workspaces/${enc(id)}/members`),
+  /** What each member's sessions there run on, as much as its admins see (its admins). */
+  claude: (id: string) => request<G.ClaudeOverview>("GET", `/workspaces/${enc(id)}/claude`),
   setRole: (id: string, user: string, role: G.WorkspaceRole) =>
     request<G.WorkspaceMemberList>("PATCH", `/workspaces/${enc(id)}/members/${enc(user)}`, { role }),
   /** Removes someone, or leaves (your own id). */
