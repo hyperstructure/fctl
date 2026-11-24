@@ -1,0 +1,12 @@
+#!/bin/sh
+# Takes this machine out of its Auto Scaling group, one machine fewer, once its runner has
+# run nothing for a while: what `fctl host install --retire-command` runs, as the host's user.
+# The group's drain hook then lets it go, as for any machine the group takes. At the group's
+# minimum size the call fails, and the machine stays a runner until it next retires.
+set -eu
+md() {
+  t=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') &&
+    curl -sf -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+}
+aws autoscaling terminate-instance-in-auto-scaling-group --region "$(md placement/region)" \
+  --instance-id "$(md instance-id)" --should-decrement-desired-capacity

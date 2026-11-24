@@ -114,7 +114,11 @@ ask for ([Runner pools](cli.md#runner-pools)), or keep `capacity` lower.
 ## 3. Write the machine's scripts
 
 The image needs a handful of files, the same on every cloud. They go in
-a directory, `runner/`, beside the Packer template of step 4.
+a directory, `runner/`, beside the Packer template of step 4. fctl's
+repository has them all, with the template, in
+[`deploy/cloud`](../deploy/cloud), and the reference deployments that
+build on them in [`deploy/cloud/terraform`](../deploy/cloud/terraform)
+([With Terraform](#with-terraform)).
 
 `runner/provision.sh` prepares the image, as root:
 
@@ -153,8 +157,13 @@ fi
 # Sandboxes don't reach the cloud's metadata service, only the DNS it serves.
 install -m 0755 /tmp/runner/fctl-firewall /tmp/runner/fctl-enroll /tmp/runner/fctl-drain /usr/local/sbin/
 install -m 0755 "/tmp/runner/fctl-scale-in-$CLOUD" /usr/local/sbin/fctl-scale-in
-install -m 0644 /tmp/runner/fctl-firewall.service /tmp/runner/fctl-scale-in.service /etc/systemd/system/
-systemctl enable fctl-firewall.service fctl-scale-in.service
+# What retires an idle machine and what sizes its group, where the cloud has them.
+for script in retire size-group; do
+  [ ! -f "/tmp/runner/fctl-$script-$CLOUD" ] || install -m 0755 "/tmp/runner/fctl-$script-$CLOUD" "/usr/local/sbin/fctl-$script"
+done
+install -m 0644 /tmp/runner/fctl-firewall.service /tmp/runner/fctl-scale-in.service \
+  /tmp/runner/fctl-size-group.service /tmp/runner/fctl-size-group.timer /etc/systemd/system/
+systemctl enable fctl-firewall.service fctl-scale-in.service fctl-size-group.timer
 
 # The host's user, in the docker group, whose systemd manager starts at boot.
 useradd --create-home --shell /bin/bash fctl
@@ -252,6 +261,36 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
+```
+
+`runner/fctl-size-group.service` and `runner/fctl-size-group.timer`
+size the machine's group to what its pool needs, every minute, on a
+machine whose boot script asks for it
+([How many machines](#how-many-machines)):
+
+```ini
+[Unit]
+Description=Size this fctl runner's group to what its pool wants
+ConditionPathExists=/etc/default/fctl-size-group
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fctl-size-group
+```
+
+```ini
+[Unit]
+Description=Size this fctl runner's group every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+RandomizedDelaySec=20s
+
+[Install]
+WantedBy=timers.target
 ```
 
 ## 4. The image
@@ -400,14 +439,14 @@ below, or for a Spot reclaim's two minutes' notice:
 # Drains this runner when Auto Scaling takes the machine, then lets it go on.
 set -u
 until [ -f /etc/default/fctl-scale-in ]; do sleep 5; done
-. /etc/default/fctl-scale-in # GROUP and HOOK, from the boot script
+. /etc/default/fctl-scale-in # GROUP, HOOK and DEADLINE, from the boot script
 md() {
   t=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') &&
     curl -sf -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
 }
 while :; do
   if md spot/instance-action >/dev/null; then deadline=45; break; fi # two minutes' notice
-  if [ "$(md autoscaling/target-lifecycle-state)" = Terminated ]; then deadline=6900; break; fi # the hook's two hours
+  if [ "$(md autoscaling/target-lifecycle-state)" = Terminated ]; then deadline=${DEADLINE:-6900}; break; fi # under the hook's timeout
   sleep 5
 done
 fctl-drain "$deadline"
@@ -736,6 +775,43 @@ Once its turns have ended, it leaves the Runners tab, and the cloud
 deletes the machine. A session that ran there stops once its turn has
 ended, and a message resumes it on another runner.
 
+## With Terraform
+
+fctl's repository keeps the files of step 3 and the Packer template in
+[`deploy/cloud`](../deploy/cloud), and reference deployments that build
+on them in [`deploy/cloud/terraform`](../deploy/cloud/terraform):
+
+- **`aws`**, a module that does steps 4 and 5. It builds the image with
+  EC2 Image Builder (or takes one Packer built, `ami_id`), keeps the
+  token in Secrets Manager, and makes the machines' role, the launch
+  template, and the group with its drain hook. Its machines retire
+  themselves once their runner has run nothing for 20 minutes
+  (`retire_idle_minutes`), so that the group, whose machines are
+  protected from scale-in, never takes a busy one; a Lambda function
+  raises the group's size to what the pool needs every minute, from none
+  too (`min_size = 0`) ([How many machines](#how-many-machines)).
+- **`google`** and **`azure`**, smaller examples that do steps 6 and 7
+  with an image Packer built: the secret, the machines' identity and its
+  roles, the instance template or scale set with its drain, and the
+  group, which its machines size every minute.
+
+```hcl
+module "runners" {
+  source           = "github.com/hyperstructure/fctl//deploy/cloud/terraform/aws"
+  fctl_server      = "https://fctl.acme.dev"
+  fctl_version     = "0.38.0" # what the instance runs: its /api/v1/health says
+  enrollment_token = file("enroll-token")
+  vpc_id           = "vpc-0a1b2c3d"
+  subnet_ids       = ["subnet-0a1b2c3d", "subnet-4e5f6a7b"] # private, with a NAT gateway
+}
+```
+
+Pin the source to a release with `?ref=v…`. The token goes into
+Terraform's state as well as the secret store: keep the state as safe as
+the token. The first `terraform apply` takes about 25 minutes, most of
+it the image build. A new `fctl_version` builds a new image, and the
+group replaces its machines through their drain hook.
+
 ## The clouds side by side
 
 | | AWS | Google Cloud | Azure |
@@ -790,10 +866,103 @@ The token's runners are a pool, and fctl says how many machines it
 needs now, its `wanted`: enough for the sessions its runners run and
 those that wait for it, never fewer than its runners that run one, nor
 more than `--max-runners` ([Runner pools](cli.md#runner-pools)). The
-enrollment token reads it, without signing in. Size the group to it
-with a job that runs every minute where you run such jobs (cron on a
-machine outside the group, a scheduled container), with the cloud's CLI
-signed in as someone who may read the secret and resize the group:
+enrollment token reads it, without signing in (`GET
+/api/v1/runner/enroll/demand`, `fctl runners demand --json`). A token
+that removes offline runners gives each session to its busiest runner
+that still has room, so that the others empty out.
+
+**On Google Cloud and Azure**, the machines can size their group
+themselves: `fctl-size-group.timer` runs `fctl-size-group` every minute
+on each, which sets the group's size to `wanted`, never below `MIN`.
+The group still picks which machine it takes by its own rules, and the
+drain lets that machine's turns end first.
+`runner/fctl-size-group-googlecompute`:
+
+```sh
+#!/bin/sh
+# Sizes this machine's managed instance group to the runners its pool wants, never below MIN:
+# what fctl-size-group.timer runs every minute, as root, on each of the group's machines.
+set -eu
+. /etc/default/fctl-size-group # SERVER and MIN, from the startup script
+md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1"; }
+wanted=$(curl -sf -H "Authorization: Bearer $(cat /etc/fctl/enroll-token)" "$SERVER/api/v1/runner/enroll/demand" | jq .wanted)
+case "$wanted" in '' | *[!0-9]*) exit 1 ;; esac # no answer: the size stays as it is
+[ "$wanted" -ge "$MIN" ] || wanted=$MIN
+api="https://compute.googleapis.com/compute/v1/projects/$(md project/project-id)/$(md instance/attributes/created-by | sed 's|^projects/[^/]*/||')"
+access=$(md instance/service-accounts/default/token | jq -r .access_token)
+size=$(curl -sf -H "Authorization: Bearer $access" "$api" | jq .targetSize)
+[ "$size" = "$wanted" ] || curl -sf -X POST -H "Authorization: Bearer $access" -H 'Content-Length: 0' "$api/resize?size=$wanted" >/dev/null
+```
+
+`runner/fctl-size-group-azure-arm`:
+
+```sh
+#!/bin/sh
+# Sizes this machine's scale set to the runners its pool wants, never below MIN: what
+# fctl-size-group.timer runs every minute, as root, on each of the scale set's machines.
+set -eu
+. /etc/default/fctl-size-group # SERVER and MIN, from the boot script
+md() { curl -sf -H Metadata:true --noproxy '*' "http://169.254.169.254/metadata/$1"; }
+wanted=$(curl -sf -H "Authorization: Bearer $(cat /etc/fctl/enroll-token)" "$SERVER/api/v1/runner/enroll/demand" | jq .wanted)
+case "$wanted" in '' | *[!0-9]*) exit 1 ;; esac # no answer: the size stays as it is
+[ "$wanted" -ge "$MIN" ] || wanted=$MIN
+api="https://management.azure.com$(md 'instance/compute?api-version=2021-02-01' |
+  jq -r '"/subscriptions/\(.subscriptionId)/resourceGroups/\(.resourceGroupName)/providers/Microsoft.Compute/virtualMachineScaleSets/\(.vmScaleSetName)"')?api-version=2024-07-01"
+access=$(md 'identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fmanagement.azure.com%2F' | jq -r .access_token)
+size=$(curl -sf -H "Authorization: Bearer $access" "$api" | jq .sku.capacity)
+[ "$size" = "$wanted" ] || curl -sf -X PATCH -H "Authorization: Bearer $access" -H 'Content-Type: application/json' \
+  -d "{\"sku\": {\"capacity\": $wanted}}" "$api" >/dev/null
+```
+
+Turn it on with two lines in the startup script (Google Cloud) or the
+boot script (Azure), after the token is read, so that the timer finds
+the token and where to ask:
+
+```sh
+mkdir -p /etc/fctl && (umask 077 && printf %s "$token" > /etc/fctl/enroll-token)
+printf 'SERVER=https://fctl.acme.dev\nMIN=1\n' > /etc/default/fctl-size-group
+```
+
+And let the machines resize their group: on Google Cloud, a role with
+`compute.instanceGroupManagers.get` and `.update` for their service
+account; on Azure, **Virtual Machine Contributor** on the scale set for
+its identity. Keep `MIN` at 1 or more: with no machine, nothing sizes
+the group.
+
+**On AWS**, the machines can leave instead, so that the group never
+takes a busy one: protect them from scale-in, and enroll them with
+`--retire-when-idle 20m --retire-command /usr/local/sbin/fctl-retire`. Once a machine's
+runner has run nothing for 20 minutes, it drains and runs
+`runner/fctl-retire-amazon-ebs`, which takes it out of the group with
+one machine fewer, through the drain hook (its role needs
+`autoscaling:TerminateInstanceInAutoScalingGroup` on the group):
+
+```sh
+#!/bin/sh
+# Takes this machine out of its Auto Scaling group, one machine fewer, once its runner has
+# run nothing for a while: what `fctl host install --retire-command` runs, as the host's user.
+# The group's drain hook then lets it go, as for any machine the group takes. At the group's
+# minimum size the call fails, and the machine stays a runner until it next retires.
+set -eu
+md() {
+  t=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') &&
+    curl -sf -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+}
+aws autoscaling terminate-instance-in-auto-scaling-group --region "$(md placement/region)" \
+  --instance-id "$(md instance-id)" --should-decrement-desired-capacity
+```
+
+Something outside the group then raises its size to `wanted` every
+minute, and never lowers it. The AWS module in
+[`deploy/cloud/terraform`](../deploy/cloud/terraform) runs that as a
+Lambda function, which also puts `WaitingSessions`, `BusySlots` and
+`WantedRunners` into CloudWatch, for dashboards and alarms; so does
+`fctl runners demand --cloudwatch --watch`.
+
+**Anywhere**, a job that runs every minute where you run such jobs
+(cron on a machine outside the group, a scheduled container) can size
+the group to `wanted` both ways, with the cloud's CLI signed in as
+someone who may read the secret and resize the group:
 
 ```sh
 #!/bin/sh
@@ -806,14 +975,6 @@ aws autoscaling set-desired-capacity --auto-scaling-group-name "$GROUP" --desire
 # Google Cloud: gcloud compute instance-groups managed resize "$GROUP" --region="$REGION" --size="$wanted"
 # Azure: az vmss scale --resource-group "$RESOURCE_GROUP" --name "$GROUP" --new-capacity "$wanted"
 ```
-
-On Google Cloud and Azure, the job reads the token as their boot
-scripts do. A token that removes offline runners gives each session to
-its busiest runner that still has room, so that the others empty out;
-the group still picks which machine it takes by its own rules, and the
-drain lets that machine's turns end first. On AWS, `fctl runners demand
---cloudwatch --watch` puts the same numbers into CloudWatch as well,
-for dashboards and alarms.
 
 ## Keeping the image current
 

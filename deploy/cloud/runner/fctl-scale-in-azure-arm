@@ -1,0 +1,15 @@
+#!/bin/sh
+# Drains this runner when Azure deletes or evicts the machine, then lets it go on.
+set -u
+events='http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01'
+md() { curl -sf -H Metadata:true --noproxy '*' "$@"; }
+me=$(md 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text')
+while :; do # polling keeps scheduled events on
+  event=$(md "$events" | jq -c --arg me "$me" \
+    'first(.Events[] | select((.EventType == "Terminate" or .EventType == "Preempt") and any(.Resources[]; . == $me)))')
+  [ -n "$event" ] && break
+  sleep 5
+done
+left=$(($(date -d "$(echo "$event" | jq -r .NotBefore)" +%s) - $(date +%s) - 60))
+fctl-drain "$((left > 1 ? left : 1))"
+md -X POST -d "{\"StartRequests\":[{\"EventId\":$(echo "$event" | jq .EventId)}]}" "$events"

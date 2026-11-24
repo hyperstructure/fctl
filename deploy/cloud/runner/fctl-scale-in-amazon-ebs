@@ -1,0 +1,17 @@
+#!/bin/sh
+# Drains this runner when Auto Scaling takes the machine, then lets it go on.
+set -u
+until [ -f /etc/default/fctl-scale-in ]; do sleep 5; done
+. /etc/default/fctl-scale-in # GROUP, HOOK and DEADLINE, from the boot script
+md() {
+  t=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') &&
+    curl -sf -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+}
+while :; do
+  if md spot/instance-action >/dev/null; then deadline=45; break; fi # two minutes' notice
+  if [ "$(md autoscaling/target-lifecycle-state)" = Terminated ]; then deadline=${DEADLINE:-6900}; break; fi # under the hook's timeout
+  sleep 5
+done
+fctl-drain "$deadline"
+aws autoscaling complete-lifecycle-action --region "$(md placement/region)" --auto-scaling-group-name "$GROUP" \
+  --lifecycle-hook-name "$HOOK" --instance-id "$(md instance-id)" --lifecycle-action-result CONTINUE || true

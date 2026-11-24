@@ -1,0 +1,11 @@
+#!/bin/sh
+# Drains this runner when Compute Engine shuts the machine down, then powers it off.
+set -u
+md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/instance/$1"; }
+while :; do
+  if [ "$(md preempted)" = TRUE ]; then fctl-drain 45; exit 0; fi # two minutes' notice, when asked for
+  [ "$(md attributes/shutdown-status)" = PENDING_STOP ] && break
+  sleep 5
+done
+fctl-drain 6600 # under the template's two hours
+shutdown -h now

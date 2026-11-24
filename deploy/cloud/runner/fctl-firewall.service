@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep fctl's sandboxes from the cloud's metadata services
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/fctl-firewall
+
+[Install]
+RequiredBy=docker.service
