@@ -315,6 +315,32 @@ pub async fn people(db: &D1Database) -> AppResult<Vec<Person>> {
         .collect())
 }
 
+/// Unlinks `user_id`'s accounts of `provider`, and signs them out
+/// everywhere, as a password reset does: the sessions those accounts made
+/// may be someone else's, where the address went to someone new. How many
+/// accounts it unlinked; none, and it changes nothing.
+pub async fn unlink(db: &D1Database, user_id: &str, provider: &str) -> AppResult<i64> {
+    let linked: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM identities WHERE user_id = ? AND provider = ?",
+        &[s(user_id), s(provider)],
+    )?
+    .first()
+    .await?;
+    let n = linked.map_or(0, |c| c.n);
+    if n == 0 {
+        return Ok(0);
+    }
+    let mut statements = vec![q(
+        db,
+        "DELETE FROM identities WHERE user_id = ? AND provider = ?",
+        &[s(user_id), s(provider)],
+    )?];
+    statements.extend(crate::auth::sign_out_everywhere(db, user_id, None)?);
+    crate::db::batch(db, statements).await?;
+    Ok(n)
+}
+
 /// What deletes, once `rules` are saved, the sign-ins of the accounts they
 /// cover that they don't meet: browser sessions, CLI sign-ins, access
 /// tokens and admin tokens made another way, those from before fctl kept
@@ -407,6 +433,52 @@ mod d1_tests {
             .all()
             .await?;
         Ok(rows.into_iter().map(|r| r.id).collect())
+    }
+
+    #[wasm_bindgen_test]
+    async fn unlinking_signs_its_person_out_everywhere() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, role, status, created_at, updated_at) VALUES \
+             ('usr_bob', 'bob@acme.dev', 'Bob', 'admin', 'active', 0, 0), \
+             ('usr_cy', 'cy@acme.dev', 'Cy', 'member', 'active', 0, 0)",
+            "INSERT INTO identities (id, user_id, provider, subject, email, created_at, vouched_domain) VALUES \
+             ('idn_bob_old', 'usr_bob', 'google', 'g-bob-old', 'bob@acme.dev', 0, 'acme.dev'), \
+             ('idn_bob_gmail', 'usr_bob', 'google', 'g-bob-gmail', 'bob@gmail.com', 0, 'gmail.com'), \
+             ('idn_cy', 'usr_cy', 'google', 'g-cy', 'cy@acme.dev', 0, 'acme.dev')",
+            "INSERT INTO tokens (id, hash, kind, user_id, created_at, auth_method, auth_domain) VALUES \
+             ('tok_bob_web', 'h1', 'web', 'usr_bob', 0, 'google', 'acme.dev'), \
+             ('tok_bob_pat', 'h2', 'pat', 'usr_bob', 0, 'google', 'acme.dev'), \
+             ('tok_cy', 'h3', 'web', 'usr_cy', 0, 'google', 'acme.dev')",
+            "INSERT INTO admin_tokens (id, hash, name, user_id, created_at, auth_method, auth_domain) VALUES \
+             ('adt_bob', 'h4', 'Sync', 'usr_bob', 0, 'google', 'acme.dev')",
+            "INSERT INTO device_codes (device_hash, user_code, client_name, status, user_id, created_at, expires_at) VALUES \
+             ('dev_bob', 'BCDF-GHJK', 'laptop', 'approved', 'usr_bob', 0, 9000000000000)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        assert_eq!(unlink(&db, "usr_bob", GOOGLE).await?, 2);
+        assert_eq!(left(&db, "identities").await?, ["idn_cy"]);
+        // His sessions, access and admin tokens go, and the CLI sign-in he
+        // approved signs no CLI in; Cy's stay.
+        assert_eq!(left(&db, "tokens").await?, ["tok_cy"]);
+        assert!(left(&db, "admin_tokens").await?.is_empty());
+        #[derive(Deserialize)]
+        struct Status {
+            status: String,
+        }
+        let code: Option<Status> = q(
+            &db,
+            "SELECT status FROM device_codes WHERE device_hash = 'dev_bob'",
+            &[],
+        )?
+        .first()
+        .await?;
+        assert_eq!(code.map(|c| c.status).as_deref(), Some("denied"));
+        // Nothing left to unlink: nothing changes.
+        assert_eq!(unlink(&db, "usr_bob", GOOGLE).await?, 0);
+        assert_eq!(left(&db, "tokens").await?, ["tok_cy"]);
+        Ok(())
     }
 
     #[wasm_bindgen_test]

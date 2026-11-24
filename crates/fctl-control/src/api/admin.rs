@@ -337,40 +337,22 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 /// `DELETE /api/v1/admin/users/{user}/identities/{provider}`: unlinks
-/// someone's accounts of `provider`, for when theirs was recreated or its
-/// address handed to someone else. Where their domain signs in with the
-/// provider, the one that blocked the new account from linking goes, and
-/// their next sign-in with it links the account they sign in with. Only
-/// the primary instance owner unlinks an admin's, and nobody theirs, which
-/// they unlink in Settings.
+/// someone's accounts of `provider`, for when theirs was recreated at the
+/// same address. Where their domain signs in with the provider, the one
+/// that blocked the new account from linking goes, and their next sign-in
+/// with it links the account they sign in with. It signs them out
+/// everywhere, as the sessions the old account made may be someone else's.
+/// Only the primary instance owner unlinks an admin's, and nobody theirs,
+/// which they unlink in Settings (`fctl_domain::sign_in::check_unlink`).
 pub async fn unlink(ctx: &mut Ctx, id: &str, provider: &str) -> AppResult<Response> {
     let actor = ctx.admin()?.clone();
     let target = user(ctx, id).await?;
-    if target.id == actor.id {
-        return Err(conflict(
-            "Unlink your own in Settings → Security, where you keep another way in.",
-        ));
-    }
-    if target.is_owner() {
-        return Err(forbidden(
-            "Only the primary instance owner unlinks their own, in Settings",
-        ));
-    }
-    if target.role() != InstanceRole::Member && actor.role() != InstanceRole::Owner {
-        return Err(forbidden(
-            "Only the primary instance owner can unlink an admin's sign-in",
-        ));
-    }
+    fctl_domain::sign_in::check_unlink(actor.role(), target.role(), target.id == actor.id)
+        .map_err(crate::error::AppError)?;
     // Their next sign-in with the provider, as anyone with the address
     // there, links to their account where a rule makes it the way in.
     ctx.verified(Sensitive::UnlinkSignIn)?;
-    let changed = q(
-        &ctx.db,
-        "DELETE FROM identities WHERE user_id = ? AND provider = ?",
-        &[s(&target.id), s(provider)],
-    )?
-    .run()
-    .await?;
+    let changed = crate::sign_in::unlink(&ctx.db, &target.id, provider).await?;
     if changed == 0 {
         return Err(not_found("Linked account"));
     }
@@ -378,7 +360,9 @@ pub async fn unlink(ctx: &mut Ctx, id: &str, provider: &str) -> AppResult<Respon
     ctx.audit(
         "identity.unlinked",
         Some(&target.id),
-        Some(serde_json::json!({ "provider": provider, "by_admin": true, "count": changed })),
+        Some(serde_json::json!({
+            "provider": provider, "by_admin": true, "count": changed, "signed_out": true,
+        })),
     );
     let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     crate::email::notice(
@@ -386,7 +370,7 @@ pub async fn unlink(ctx: &mut Ctx, id: &str, provider: &str) -> AppResult<Respon
         &target,
         &format!("Your {name} account was unlinked"),
         format!(
-            "{} unlinked the {name} account that signed in to your {instance} account ({}). Where your organization requires {name}, your next sign-in with it links the account you sign in with.\n\nIf you didn't ask for this, tell an admin of {instance}: {}",
+            "{} unlinked the {name} account that signed in to your {instance} account ({}), and signed you out everywhere. Where your organization requires {name}, your next sign-in with it links the account you sign in with; make new access tokens after it.\n\nIf you didn't ask for this, tell an admin of {instance}: {}",
             actor.name,
             target.email,
             ctx.cfg.url("/login")

@@ -2261,7 +2261,8 @@ impl Api {
     }
 
     /// Unlinks someone's accounts of `provider` (`google`), for when theirs
-    /// was recreated or its address handed to someone else (admins).
+    /// was recreated at the same address, and signs them out everywhere
+    /// (admins).
     pub async fn admin_unlink(&self, user_id: &str, provider: &str) -> Result<User> {
         self.delete(&format!(
             "/admin/users/{}/identities/{}",

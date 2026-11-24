@@ -618,7 +618,9 @@ function Users() {
     onSuccess: (u) => {
       setUnlinking(null);
       void users.refetch();
-      toast(`Unlinked ${u.name}'s Google account: their next Google sign-in links the one they sign in with`);
+      toast(
+        `Unlinked ${u.name}'s Google account and signed them out: their next Google sign-in links the one they sign in with`,
+      );
     },
     onError: (e) => toast(e.message, "error"),
   });
@@ -835,13 +837,14 @@ function Users() {
         open={!!unlinking}
         onClose={() => setUnlinking(null)}
         title={unlinking ? `Unlink ${unlinking.name}'s Google account?` : "Unlink their Google account?"}
-        description="For when their Google account was recreated, or its address handed to someone else: an account of theirs that is gone keeps the new one from linking where their domain signs in with Google."
+        description="For when their Google account was recreated at the same address: the old one, still linked, keeps the new one from linking where their domain signs in with Google."
       >
         <div className="flex flex-col gap-5">
           <p className="text-[13.5px] leading-relaxed text-ink-2">
-            Google stops signing them in, and they are emailed about it when email is set up. Where their
-            domain signs in with Google, whoever next signs in with Google as their address there links to
-            their account: make sure that will be them.
+            It signs them out everywhere: their browsers, CLIs, access tokens and admin tokens stop working,
+            and they are emailed about it when email is set up. Where their domain signs in with Google,
+            whoever next signs in with Google as their address there links to their account. If the address
+            went to someone else, disable the account instead.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setUnlinking(null)}>
