@@ -159,7 +159,9 @@ impl Store {
             .map_err(|e| format!("reading the snapshot: {e}"))?
             .len();
         if size <= SINGLE_PUT_MAX {
-            let body = std::fs::read(path).map_err(|e| format!("reading the snapshot: {e}"))?;
+            let body = tokio::fs::read(path)
+                .await
+                .map_err(|e| format!("reading the snapshot: {e}"))?;
             let (status, _, answer) = self
                 .request(Method::PUT, key, &[], Some(body), sha256)
                 .await?;
@@ -183,7 +185,7 @@ impl Store {
             Ok(etags) => {
                 let body = complete_body(&etags);
                 let hash = sigv4::sha256_hex(body.as_bytes());
-                let (status, _, answer) = self
+                let completed = self
                     .request(
                         Method::POST,
                         key,
@@ -191,19 +193,22 @@ impl Store {
                         Some(body.into_bytes()),
                         &hash,
                     )
-                    .await?;
-                // S3 can answer a failed completion with 200 and an error.
-                if answer.windows(7).any(|w| w == b"<Error>") {
-                    Err(format!(
-                        "finishing its upload failed: {}",
-                        xml_text(&answer, "Message").unwrap_or_default()
-                    ))
-                } else {
-                    expect_ok(status, &answer, "finishing its upload")
+                    .await;
+                match completed {
+                    // S3 can answer a failed completion with 200 and an error.
+                    Ok((_, _, answer)) if answer.windows(7).any(|w| w == b"<Error>") => {
+                        Err(format!(
+                            "finishing its upload failed: {}",
+                            xml_text(&answer, "Message").unwrap_or_default()
+                        ))
+                    }
+                    Ok((status, _, answer)) => expect_ok(status, &answer, "finishing its upload"),
+                    Err(e) => Err(e),
                 }
             }
             Err(e) => Err(e),
         };
+        // Its parts would stay, and cost, until a lifecycle rule took them.
         if done.is_err() {
             let _ = self
                 .request(
@@ -219,15 +224,16 @@ impl Store {
     }
 
     async fn put_parts(&self, key: &str, path: &Path, upload: &str) -> Result<Vec<String>, String> {
-        use std::io::Read;
-        let mut file =
-            std::fs::File::open(path).map_err(|e| format!("reading the snapshot: {e}"))?;
+        use tokio::io::AsyncReadExt;
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| format!("reading the snapshot: {e}"))?;
         let mut etags = Vec::new();
         let mut buf = vec![0u8; PART_BYTES];
         loop {
             let mut len = 0;
             while len < buf.len() {
-                match file.read(buf.get_mut(len..).unwrap_or_default()) {
+                match file.read(buf.get_mut(len..).unwrap_or_default()).await {
                     Ok(0) => break,
                     Ok(n) => len += n,
                     Err(e) => return Err(format!("reading the snapshot: {e}")),
@@ -487,7 +493,9 @@ async fn machine_credentials(http: &HttpClient, region: &str) -> Result<Credenti
     if let (Some(role), Some(file)) = (var("AWS_ROLE_ARN"), var("AWS_WEB_IDENTITY_TOKEN_FILE")) {
         let token = std::fs::read_to_string(&file).map_err(|e| format!("reading {file}: {e}"))?;
         let sts = format!("https://sts.{region}.amazonaws.com/");
-        let query = [
+        // In the body, not the URL, which errors and logs may show: the
+        // token is worth the role's keys until it expires.
+        let form = [
             ("Action", "AssumeRoleWithWebIdentity"),
             ("DurationSeconds", "3600"),
             ("RoleArn", role.as_str()),
@@ -500,7 +508,16 @@ async fn machine_credentials(http: &HttpClient, region: &str) -> Result<Credenti
         .collect::<Vec<_>>()
         .join("&");
         let (status, _, body) = http
-            .send_with(Method::GET, &format!("{sts}?{query}"), &[], None)
+            .send_with(
+                Method::POST,
+                &sts,
+                // STS answers in JSON to the client's usual Accept.
+                &[
+                    ("content-type", "application/x-www-form-urlencoded"),
+                    ("accept", "text/xml"),
+                ],
+                Some(form.into_bytes()),
+            )
             .await
             .map_err(|e| format!("asking STS for the role's keys: {e}"))?;
         expect_ok(status, &body, "asking STS for the role's keys")?;
@@ -601,8 +618,10 @@ mod tests {
     use super::*;
 
     /// A stand-in for S3: keeps objects by path, takes uploads in parts,
-    /// and refuses requests that aren't signed with `AKID`'s key.
-    async fn stand_in() -> anyhow::Result<String> {
+    /// and refuses requests that aren't signed with `AKID`'s key. It drops
+    /// the connection that would complete an upload to a key with `drop`
+    /// in it. Its URL, and the requests it had (`METHOD target`).
+    async fn stand_in() -> anyhow::Result<(String, std::sync::Arc<Mutex<Vec<String>>>)> {
         use std::collections::HashMap;
         use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -610,9 +629,11 @@ mod tests {
         let addr = listener.local_addr()?;
         let objects: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::default();
         let parts: Arc<Mutex<HashMap<u32, Vec<u8>>>> = Arc::default();
+        let had: Arc<Mutex<Vec<String>>> = Arc::default();
+        let log = had.clone();
         tokio::spawn(async move {
             while let Ok((mut conn, _)) = listener.accept().await {
-                let (objects, parts) = (objects.clone(), parts.clone());
+                let (objects, parts, log) = (objects.clone(), parts.clone(), log.clone());
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut chunk = vec![0u8; 1 << 16];
@@ -652,6 +673,9 @@ mod tests {
                         first.next().unwrap_or_default(),
                     );
                     let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                    if let Ok(mut log) = log.lock() {
+                        log.push(format!("{method} {target}"));
+                    }
                     let signed = header("authorization")
                         .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256 Credential=AKID/"));
                     let (status, etag, answer): (&str, Option<String>, Vec<u8>) = if !signed {
@@ -676,6 +700,7 @@ mod tests {
                                 parts.insert(n, body);
                                 ("200 OK", Some(format!("\"p{n}\"")), Vec::new())
                             }
+                            ("POST", "uploadId=u1") if path.contains("drop") => return,
                             ("POST", "uploadId=u1") => {
                                 let mut whole = Vec::new();
                                 for n in 1..=parts.len() as u32 {
@@ -709,7 +734,7 @@ mod tests {
                 });
             }
         });
-        Ok(format!("http://{addr}"))
+        Ok((format!("http://{addr}"), had))
     }
 
     /// A snapshot goes into a bucket of the host's own, in one PUT or in
@@ -728,7 +753,7 @@ mod tests {
             secret_access_key_file: Some(secret.clone()),
             max_mb: None,
         };
-        let endpoint = stand_in().await?;
+        let (endpoint, had) = stand_in().await?;
         let open = |id: &str| {
             let mut c = cfg(id);
             c.endpoint = Some(endpoint.clone());
@@ -761,6 +786,17 @@ mod tests {
             assert!(store.get(&key, &back, size as u64).await.is_err());
         }
         assert_eq!(store.report().error, None);
+        // An upload in parts whose completion gets no answer is let go of,
+        // so that its parts don't stay in the bucket.
+        let large = dir.path().join("large");
+        let dropped = store
+            .put("sessions/ses_1/drop", &large, sigv4::EMPTY_SHA256)
+            .await;
+        assert!(dropped.is_err_and(|e| e.contains("didn't answer")));
+        assert!(had.lock().is_ok_and(|h| {
+            h.iter()
+                .any(|r| r == "DELETE /acme-fctl/sessions/ses_1/drop?uploadId=u1")
+        }));
         // Another key: refused, and said.
         let wrong = Store::open(&open("OTHER"))
             .await?

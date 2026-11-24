@@ -370,9 +370,12 @@ impl HttpClient {
         url: &str,
         req: Request<Full<Bytes>>,
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
+        // A query can carry a token or a signature: errors, which reach
+        // logs and the control plane, show none.
+        let shown = without_query(url);
         let fut = async {
             let res = self.client.request(req).await.map_err(|e| Error::Network {
-                url: url.to_owned(),
+                url: shown.clone(),
                 message: error_chain(&e),
             })?;
             let (parts, body) = res.into_parts();
@@ -380,7 +383,7 @@ impl HttpClient {
                 .collect()
                 .await
                 .map_err(|e| Error::Network {
-                    url: url.to_owned(),
+                    url: shown.clone(),
                     message: e.to_string(),
                 })?
                 .to_bytes();
@@ -542,6 +545,26 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A request that reaches nothing says where it went, but not its
+    /// query, which can carry a token.
+    #[tokio::test]
+    async fn errors_show_no_query() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0");
+        let Ok(port) = listener.and_then(|l| l.local_addr()).map(|a| a.port()) else {
+            return;
+        };
+        // Its listener is gone: nothing answers there.
+        let url = format!("http://127.0.0.1:{port}/sts?WebIdentityToken=secret");
+        let err = HttpClient::new(Duration::from_secs(5))
+            .send_with(Method::GET, &url, &[], None)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains(&format!("127.0.0.1:{port}/sts")), "{err}");
+        assert!(!err.contains("secret"), "{err}");
+    }
 
     #[test]
     fn sign_in_links_stay_on_the_server() {

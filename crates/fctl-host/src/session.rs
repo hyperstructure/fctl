@@ -371,7 +371,9 @@ pub fn spawn(
 /// A framed connection to fctl-agent. Dropping it kills the exec that
 /// carries it.
 struct AgentLink {
-    tx: mpsc::UnboundedSender<HostToAgent>,
+    /// Frames for the agent, each with what hears once it is written, if
+    /// anything waits for that ([`crate::snapshots::Paced`]).
+    tx: mpsc::UnboundedSender<(HostToAgent, Option<tokio::sync::oneshot::Sender<()>>)>,
     rx: mpsc::UnboundedReceiver<AgentToHost>,
     health: Health,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -390,7 +392,8 @@ impl AgentLink {
     /// Frames from the agent go without `secrets`: Claude tokens, which
     /// must not reach the control plane in what it sends there.
     fn open(io: AgentIo, sandbox: &str, secrets: Secrets) -> Self {
-        let (tx, mut out_rx) = mpsc::unbounded_channel::<HostToAgent>();
+        let (tx, mut out_rx) =
+            mpsc::unbounded_channel::<(HostToAgent, Option<tokio::sync::oneshot::Sender<()>>)>();
         let (in_tx, rx) = mpsc::unbounded_channel::<AgentToHost>();
         let mut tasks = Vec::new();
         let mut child = io.child;
@@ -408,7 +411,7 @@ impl AgentLink {
         }
         let mut writer = io.writer;
         tasks.push(tokio::spawn(async move {
-            while let Some(msg) = out_rx.recv().await {
+            while let Some((msg, written)) = out_rx.recv().await {
                 let Ok(mut line) = serde_json::to_string(&msg) else {
                     continue;
                 };
@@ -416,6 +419,9 @@ impl AgentLink {
                 if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err()
                 {
                     break;
+                }
+                if let Some(w) = written {
+                    let _ = w.send(());
                 }
             }
         }));
@@ -458,7 +464,12 @@ impl AgentLink {
     }
 
     fn send(&self, msg: HostToAgent) {
-        let _ = self.tx.send(msg);
+        let _ = self.tx.send((msg, None));
+    }
+
+    /// Sends a frame whose sender waits until it is written.
+    fn send_paced(&self, p: crate::snapshots::Paced) {
+        let _ = self.tx.send((p.frame, p.written));
     }
 }
 
@@ -1244,7 +1255,10 @@ async fn run(
     // When the stop began, which bounds how long parts may keep it waiting.
     let mut stop_since: Option<Instant> = None;
     let mut upload: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
-    let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<HostToAgent>();
+    // A snapshot's parts on their way to the agent, one at a time, and one
+    // that waits for a link while there is none.
+    let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<crate::snapshots::Paced>();
+    let mut paced_waiting: Vec<crate::snapshots::Paced> = Vec::new();
     // Screenshots and calls under way (`MAX_IN_FLIGHT`).
     let mut in_flight: usize = 0;
     let set_report = |status: SessionStatus, seq: Option<u64>| {
@@ -1606,6 +1620,9 @@ async fn run(
                             for frame in queued.drain(..) {
                                 to_agent(l, frame, agent_files, &uplink);
                             }
+                            for p in paced_waiting.drain(..) {
+                                l.send_paced(p);
+                            }
                         }
                         said_hello = true;
                     }
@@ -1679,12 +1696,7 @@ async fn run(
                                     }
                                     match saved {
                                         Some(saved) => {
-                                            let previous = spec
-                                                .as_ref()
-                                                .and_then(|s| s.snapshot.as_ref())
-                                                .and_then(|s| s.restore.as_ref())
-                                                .and_then(|r| r.location.clone());
-                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved, ctx.snapshot_store.clone(), previous));
+                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved, ctx.snapshot_store.clone()));
                                         }
                                         None => spool = Some(s),
                                     }
@@ -1819,9 +1831,9 @@ async fn run(
                     None => queued.push(HostToAgent::Deliver { delivery }),
                 },
             },
-            Some(frame) = snapshot_rx.recv() => match &link {
-                Some(l) => l.send(frame),
-                None => queued.push(frame),
+            Some(p) = snapshot_rx.recv() => match &link {
+                Some(l) => l.send_paced(p),
+                None => paced_waiting.push(p),
             },
             Some((request_id, result)) = published_rx.recv() => {
                 in_flight = in_flight.saturating_sub(1);

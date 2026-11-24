@@ -1331,9 +1331,11 @@ these, on the prefix alone:
   "Resource": "arn:aws:s3:::acme-fctl/sessions/*" }
 ```
 
-A session's snapshot is at `sessions/<session>/<snapshot>`, and the
-host deletes the one before as it saves a new one. A session resumes
-with its snapshot only on a runner whose host has the same bucket.
+A session's snapshot is at `sessions/<session>/<snapshot>`, and a
+host that saves a new one deletes the one before, when that one is in its
+bucket too. A session resumes with its snapshot only on a runner whose
+host has the same bucket, and waits up to ten minutes for one that is
+busy before it starts on another from its branch.
 The control plane forgets a snapshot once its workspace's days have
 passed, but it can't delete it from your bucket: give the prefix a
 lifecycle rule that expires objects after as many days (30 unless the
@@ -1345,9 +1347,11 @@ endpoints as they are.
 
 A host that can't read its `[snapshots] url` doesn't start, so that
 snapshots meant for your bucket never go to the control plane by
-mistake. One that can't write to its bucket says why on the workspace's
-Runners tab and in `fctl runners`, and saves the snapshot nowhere: the
-session resumes elsewhere from its branch, as without snapshots.
+mistake. One whose bucket fails it (no credentials, a policy that
+refuses it, a bucket that doesn't answer) says why on the workspace's
+Runners tab and in `fctl runners` until a snapshot goes through again. A
+snapshot the bucket didn't take is saved nowhere: the session resumes
+elsewhere from its branch, as without snapshots.
 
 ## Notifications, published screenshots and identity tokens
 

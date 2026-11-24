@@ -2783,6 +2783,18 @@ pub struct SnapshotCommit {
     pub location: Option<String>,
 }
 
+/// What committing a snapshot answers
+/// (`POST /api/v1/runner/sessions/{id}/snapshots/{snapshot}`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotCommitted {
+    pub ok: bool,
+    /// Where the session's snapshot before it is, when a host kept that one
+    /// in a bucket of its own: the host deletes it when the bucket is its
+    /// own too. Absent from older control planes.
+    pub replaced: Option<String>,
+}
+
 /// A runner that drains.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

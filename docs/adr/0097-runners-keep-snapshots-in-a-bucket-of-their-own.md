@@ -31,16 +31,21 @@ that cloud already, with its credentials (#615).
   (`max_mb`, 2048 MiB by default): the instance's protects its own
   storage.
 - **A resume goes to a runner with the same bucket.** Other runners can't
-  read it, so FleetDO prefers those; where none can take the session,
-  it starts from its branch, as without snapshots.
-- **Deleting is the host's and the bucket's.** The host deletes a
-  session's snapshot before as it saves a new one. The control plane
-  forgets one past its workspace's days but can't delete it: the
-  bucket's lifecycle rules do, which the docs set up.
+  read it, so FleetDO prefers those, and waits for one that is busy as
+  long as a resume waits for its sandbox's runner (ten minutes); where
+  none can take the session, it starts from its branch, as without
+  snapshots.
+- **Deleting is the host's and the bucket's.** A host that saves a
+  session's snapshot deletes the one before, which the commit's answer
+  names, when it is in its own bucket. A location names only the
+  session's own key, so that no runner points one session at another's
+  object. The control plane forgets one past its workspace's days but
+  can't delete it: the bucket's lifecycle rules do, which the docs set
+  up.
 - **A URL the host can't read stops it**, so that snapshots meant for the
-  bucket never go to the control plane by mistake. A bucket that refuses
-  an upload is said on the Runners tab and in `fctl runners`, and that
-  snapshot is lost, not sent elsewhere.
+  bucket never go to the control plane by mistake. A bucket that fails
+  is said on the Runners tab and in `fctl runners`, and a snapshot it
+  didn't take is lost, not sent elsewhere.
 
 ## Consequences
 

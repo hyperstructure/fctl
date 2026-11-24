@@ -348,16 +348,24 @@ impl Bucket {
         format!("s3://{}/{key}", self.name)
     }
 
-    /// The key of `location` when it is in this bucket, under its prefix:
-    /// what this host can read and delete.
-    pub fn key_of(&self, location: &str) -> Option<String> {
+    /// The key of `location` when it is a snapshot of session `session` in
+    /// this bucket, under its prefix (`<prefix>/<session>/<snapshot>`, as
+    /// [`key`](Self::key) makes them): the only objects this host reads
+    /// and deletes for the session.
+    pub fn key_of(&self, location: &str, session: &str) -> Option<String> {
         let key = location.strip_prefix(&format!("s3://{}/", self.name))?;
-        let under = self.prefix.is_empty()
-            || key
-                .strip_prefix(&self.prefix)
-                .is_some_and(|rest| rest.starts_with('/'));
-        (under && !key.split('/').any(|p| p == ".." || p.is_empty())).then(|| key.to_owned())
+        let snapshot = key.strip_prefix(&self.key(session, ""))?;
+        valid_id(snapshot).then(|| key.to_owned())
     }
+}
+
+/// A snapshot's id as agents make them: `snp_` and letters and digits, at
+/// most 64 characters in all. It names files and keys.
+pub fn valid_id(id: &str) -> bool {
+    id.len() <= 64
+        && id
+            .strip_prefix("snp_")
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 /// The bucket `location` (`s3://bucket/key`) is in.
@@ -368,21 +376,16 @@ pub fn bucket_of(location: &str) -> Option<&str> {
         .map(|(name, _)| name)
 }
 
-/// Whether `location` is one the control plane keeps for a snapshot in a
-/// bucket: `s3://bucket/key`, at most 1,024 characters.
-pub fn valid_location(location: &str) -> bool {
+/// Whether `location` is one the control plane keeps for snapshot
+/// `snapshot` of session `session` in a bucket: `s3://bucket/key`, its key
+/// `<prefix>/<session>/<snapshot>` as [`Bucket::key`] makes them, at most
+/// 1,024 characters. A runner names no other session's object.
+pub fn valid_location(location: &str, session: &str, snapshot: &str) -> bool {
     location.len() <= 1024
+        && valid_id(snapshot)
         && location
-            .strip_prefix("s3://")
-            .and_then(|rest| rest.split_once('/'))
-            .is_some_and(|(name, key)| {
-                Bucket::parse(&format!("s3://{name}")).is_ok()
-                    && !key.is_empty()
-                    && !key.split('/').any(|p| p == ".." || p.is_empty())
-                    && key
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
-            })
+            .strip_suffix(&format!("/{session}/{snapshot}"))
+            .is_some_and(|bucket| Bucket::parse(bucket).is_ok_and(|b| b.url() == bucket))
 }
 
 // ───────────────────────────── what the transcript says ─────────────────────────────
@@ -432,8 +435,6 @@ mod tests {
 
     const KEY: [u8; 32] = [7; 32];
 
-    /// A host's bucket, the keys its snapshots go under, and the
-    /// locations the control plane keeps.
     #[test]
     fn buckets_name_where_snapshots_go() {
         let b = Bucket::parse("s3://acme-fctl/sessions/").unwrap_or_else(|e| panic!("{e}"));
@@ -446,20 +447,42 @@ mod tests {
         assert_eq!(key, "sessions/ses_1/snp_2");
         let at = b.location(&key);
         assert_eq!(at, "s3://acme-fctl/sessions/ses_1/snp_2");
-        assert!(valid_location(&at));
+        assert!(valid_location(&at, "ses_1", "snp_2"));
         assert_eq!(bucket_of(&at), Some("acme-fctl"));
         assert_eq!(bucket_of("acme-fctl"), None);
-        assert_eq!(b.key_of(&at).as_deref(), Some("sessions/ses_1/snp_2"));
-        // Another bucket's, or outside the prefix: not this host's.
-        assert_eq!(b.key_of("s3://acme-other/sessions/ses_1/snp_2"), None);
-        assert_eq!(b.key_of("s3://acme-fctl/sessionsx/ses_1/snp_2"), None);
-        assert_eq!(b.key_of("s3://acme-fctl/sessions/../x"), None);
+        assert_eq!(
+            b.key_of(&at, "ses_1").as_deref(),
+            Some("sessions/ses_1/snp_2")
+        );
+        // Another session's, another bucket's, or outside the prefix: not
+        // this session's on this host.
+        assert_eq!(b.key_of(&at, "ses_9"), None);
+        assert_eq!(
+            b.key_of("s3://acme-other/sessions/ses_1/snp_2", "ses_1"),
+            None
+        );
+        assert_eq!(
+            b.key_of("s3://acme-fctl/sessionsx/ses_1/snp_2", "ses_1"),
+            None
+        );
+        assert_eq!(
+            b.key_of("s3://acme-fctl/sessions/ses_1/../x", "ses_1"),
+            None
+        );
+        assert_eq!(
+            b.key_of("s3://acme-fctl/sessions/ses_1/snp_2/x", "ses_1"),
+            None
+        );
         let top = Bucket::parse("s3://acme-fctl").unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(
-            (top.url(), top.key("s", "n")),
-            ("s3://acme-fctl".to_owned(), "s/n".to_owned())
+            (top.url(), top.key("s", "snp_1")),
+            ("s3://acme-fctl".to_owned(), "s/snp_1".to_owned())
         );
-        assert_eq!(top.key_of("s3://acme-fctl/s/n").as_deref(), Some("s/n"));
+        assert_eq!(
+            top.key_of("s3://acme-fctl/s/snp_1", "s").as_deref(),
+            Some("s/snp_1")
+        );
+        assert!(valid_location("s3://acme-fctl/s/snp_1", "s", "snp_1"));
         for bad in [
             "acme-fctl",
             "s3://",
@@ -476,12 +499,33 @@ mod tests {
         for bad in [
             "s3://acme-fctl",
             "s3://acme-fctl/",
-            "https://acme-fctl/k",
-            "s3://acme-fctl/a/../b",
-            "s3://acme-fctl/a?b",
+            "s3://acme-fctl/ses_1/snp_2/",
+            "s3://acme-fctl//ses_1/snp_2",
+            "s3://acme-fctl/a/../ses_1/snp_2",
+            "s3://acme-fctl/a b/ses_1/snp_2",
+            "s3://Acme/ses_1/snp_2",
+            "https://acme-fctl/ses_1/snp_2",
+            // Another session's object, or another snapshot's.
+            "s3://acme-fctl/ses_9/snp_2",
+            "s3://acme-fctl/ses_1/snp_3",
         ] {
-            assert!(!valid_location(bad), "{bad}");
+            assert!(!valid_location(bad, "ses_1", "snp_2"), "{bad}");
         }
+        assert!(valid_location(
+            "s3://acme-fctl/ses_1/snp_2",
+            "ses_1",
+            "snp_2"
+        ));
+        assert!(!valid_location(
+            "s3://acme-fctl/ses_1/snp_../x",
+            "ses_1",
+            "snp_../x"
+        ));
+        assert!(valid_id("snp_01M84ABCDEF"));
+        for bad in ["snp_", "snp_../x", "ses_1", "snp_a b", "snp_a/b"] {
+            assert!(!valid_id(bad), "{bad}");
+        }
+        assert!(!valid_id(&format!("snp_{}", "a".repeat(80))));
     }
 
     #[test]

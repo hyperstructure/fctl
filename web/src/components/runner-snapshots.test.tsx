@@ -53,7 +53,7 @@ describe("SnapshotStoreLine", () => {
     expect(l.amber).toBe(false);
   });
 
-  it("says in amber why the bucket refused the last one, and what follows", () => {
+  it("says in amber why the last one failed, and what follows", () => {
     const l = line(
       runner({
         snapshot_store: {
@@ -64,10 +64,19 @@ describe("SnapshotStoreLine", () => {
       }),
     );
     expect(l.amber).toBe(true);
-    expect(l.text).toContain("Its bucket s3://acme-fctl/sessions refused the last snapshot");
+    expect(l.text).toContain(
+      "Keeps sessions' snapshots in s3://acme-fctl/sessions, but the last one failed 2 minutes ago",
+    );
     expect(l.text).toContain(": putting it in the bucket failed: AccessDenied.");
     expect(l.text).toContain(
-      "Sessions it stops resume elsewhere from their branch until it takes them again.",
+      "Until the bucket works again, sessions may resume without their latest conversation and work.",
     );
+  });
+
+  it("says no time it doesn't have, and ends the error's sentence once", () => {
+    const l = line(
+      runner({ snapshot_store: { url: "s3://acme-fctl", error: "no keys: the instance has no role." } }),
+    );
+    expect(l.text).toContain("but the last one failed: no keys: the instance has no role. Until");
   });
 });

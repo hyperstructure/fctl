@@ -1722,23 +1722,29 @@ keeps its sessions' snapshots there instead. It puts the sealed file at
 (`fctl_domain::sigv4`) with the machine's own credentials (the
 instance's role on EC2, a web identity or the container's credentials on
 EKS and ECS, the `AWS_*` variables, or keys of its own in host.toml), and
-the commit tells the control plane only where it is (`location`), its
-size and its checksum. The instance's size limit doesn't hold there; the
-host's own does (`max_mb`, 2048 MiB unless set). The host deletes the
-session's snapshot before once the new one is the session's; past its
-workspace's days, the control plane forgets one, and the bucket's
-lifecycle rules delete it. Hosts say their bucket in their hello and
-heartbeats, with why the last upload or download failed while it does
-(`SnapshotStore`, which `Runner.snapshot_store` shows), and a host that
-can't read its `url` doesn't start.
+the commit tells the control plane only where it is (`location`, which
+must be that key: a runner names no other session's object), its size
+and its checksum. The instance's size limit doesn't hold there; the
+host's own does (`max_mb`, 2048 MiB unless set), also for what it
+downloads, which it hands to the agent a part at a time, as the link
+writes them. The commit's answer says where the session's snapshot
+before was (`SnapshotCommitted.replaced`), which the host deletes when it
+is in its own bucket; past its workspace's days, the control plane
+forgets one, and the bucket's lifecycle rules delete it. Hosts say their
+bucket in their hello and heartbeats, with why the last upload or
+download failed while it does (`SnapshotStore`, which
+`Runner.snapshot_store` shows), and a host that can't read its `url`
+doesn't start.
 
 FleetDO still sends a resume to the runner that has the session's
 sandbox, which has everything, but doesn't wait for it: where that runner
 is busy or away, a session with a snapshot to restore starts on another
 at once, rather than after ten minutes (`SessionWants.snapshot`), on a
 runner whose host restores snapshots, and has the snapshot's bucket for
-one in a bucket; where none can take it, it waits, or starts, as any
-other session does. The hourly job deletes the snapshots past their workspace's
+one in a bucket. While those are busy, it waits for one as long as it
+would for its sandbox's runner, rather than start elsewhere without its
+conversation; after that, and where none could take it, it waits, or
+starts, as any other session does. The hourly job deletes the snapshots past their workspace's
 days, and those of workspaces, or an instance, that stopped keeping them,
 the oldest first and one whose deletion failed after the others, and the
 parts of an upload that never committed a day after it started;

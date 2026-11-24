@@ -10,7 +10,7 @@ use crate::ctx::Ctx;
 use crate::error::{AppError, AppResult, not_found};
 use crate::{http, internal};
 use fctl_proto::ApiError;
-use fctl_proto::api::{Ok as Done, SnapshotCommit};
+use fctl_proto::api::{Ok as Done, SnapshotCommit, SnapshotCommitted};
 use fctl_proto::runner::SNAPSHOT_PART_BYTES;
 use worker::{Request, Response};
 
@@ -25,11 +25,7 @@ fn enc(s: &str) -> String {
 
 /// A snapshot's id as agents make them: `snp_` and letters and digits.
 fn check_id(id: &str) -> AppResult<()> {
-    let ok = id.len() <= 64
-        && id.strip_prefix("snp_").is_some_and(|rest| {
-            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())
-        });
-    if ok {
+    if fctl_domain::snapshots::valid_id(id) {
         Ok(())
     } else {
         Err(AppError(ApiError::bad_request(
@@ -112,7 +108,12 @@ pub async fn commit(
     check_id(snapshot)?;
     // In a bucket of the runner's own, with no part here; else in parts.
     let in_bucket = match &body.location {
-        Some(at) if body.parts == 0 && fctl_domain::snapshots::valid_location(at) => true,
+        Some(at)
+            if body.parts == 0
+                && fctl_domain::snapshots::valid_location(at, session_id, snapshot) =>
+        {
+            true
+        }
         Some(_) => {
             return Err(AppError(ApiError::bad_request(
                 "That isn't where a snapshot is in a bucket",
@@ -133,7 +134,8 @@ pub async fn commit(
     };
     let settings = crate::instance::settings(&ctx.db).await?;
     // Only a session whose spec let it save one has a key, and a row.
-    let refused = match crate::snapshots::row(&ctx.db, session_id).await? {
+    let before = crate::snapshots::row(&ctx.db, session_id).await?;
+    let refused = match &before {
         None => Some("This session saves no snapshots".to_owned()),
         // The instance's limit is for what it keeps itself.
         Some(_) => {
@@ -171,7 +173,13 @@ pub async fn commit(
             e.0.message
         );
     }
-    http::ok(&Done { ok: true })
+    // The one before, in a bucket: its host deletes it there, when the
+    // bucket is its own (the control plane can't).
+    let replaced = before.and_then(|b| {
+        b.location
+            .filter(|_| b.snapshot_id.as_deref().is_some_and(|id| id != snapshot))
+    });
+    http::ok(&SnapshotCommitted { ok: true, replaced })
 }
 
 /// `GET /api/v1/runner/sessions/{id}/snapshots/{snapshot}/parts/{n}`: part
@@ -199,11 +207,12 @@ pub async fn get_part(
     internal::fetch(&stub, &format!("/snapshot/part?id={}&n={n}", enc(snapshot))).await
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
-    #[test]
+    #[wasm_bindgen_test]
     fn ids_and_parts_are_what_agents_make() {
         assert!(check_id("snp_01M84ABCDEF").is_ok());
         for bad in [

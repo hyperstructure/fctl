@@ -1198,7 +1198,7 @@ fn print_runner(r: &Runner) {
             Some(e) => println!(
                 "  {}",
                 style::amber(&format!(
-                    "keeps snapshots in {}, which refused its last: {e}{}",
+                    "keeps sessions' snapshots in {}, but the last one failed{}: {e}",
                     store.url,
                     store
                         .failed_at

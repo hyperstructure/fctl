@@ -366,12 +366,15 @@ pub async fn due(
 }
 
 /// Forgets snapshot `snapshot_id` as the session's, unless another is
-/// the session's by now.
+/// the session's by now: all D1 said of it. The session's key stays, for
+/// its next one.
 pub async fn forget(db: &D1Database, session_id: &str, snapshot_id: &str) -> AppResult<()> {
     q(
         db,
         "UPDATE session_snapshots SET snapshot_id = NULL, size = NULL, sha256 = NULL, parts = NULL, \
-         left_out = NULL, location = NULL, expire_tried_at = NULL WHERE session_id = ? AND snapshot_id = ?",
+         claude_version = NULL, agent_seq = NULL, conversation = NULL, changes = NULL, left_out = NULL, \
+         saved_at = NULL, runner_id = NULL, runner_name = NULL, location = NULL, expire_tried_at = NULL \
+         WHERE session_id = ? AND snapshot_id = ?",
         &[s(session_id), s(snapshot_id)],
     )?
     .run()
@@ -658,6 +661,38 @@ mod tests {
         );
         forget(&db, "ses_1", "snp_three").await?;
         assert!(info(&db, "ses_1", NOW + DAY).await?.is_none());
+        // Of a snapshot forgotten, D1 keeps nothing but the session's key.
+        let left = row(&db, "ses_1")
+            .await?
+            .ok_or_else(|| internal("the session's key went too"))?;
+        assert!(!left.key_enc.is_empty());
+        assert_eq!(
+            (
+                left.snapshot_id,
+                left.size,
+                left.sha256,
+                left.parts,
+                left.claude_version,
+                left.agent_seq,
+                left.conversation,
+                left.changes,
+                left.left_out,
+                left.saved_at,
+                left.runner_name,
+                left.location,
+            ),
+            (
+                None, None, None, None, None, None, false, false, None, None, None, None
+            )
+        );
+        let runner: Option<serde_json::Value> = q(
+            &db,
+            "SELECT runner_id FROM session_snapshots WHERE session_id = 'ses_1' AND runner_id IS NOT NULL",
+            &[],
+        )?
+        .first()
+        .await?;
+        assert!(runner.is_none());
         Ok(())
     }
 }

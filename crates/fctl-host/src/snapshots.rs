@@ -10,10 +10,10 @@ use fctl_proto::SessionId;
 use fctl_proto::agent::{HostToAgent, SnapshotSaved};
 use fctl_proto::api::SnapshotCommit;
 use fctl_proto::runner::{SNAPSHOT_PART_BYTES, SnapshotRef};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// How long the host waits for a snapshot's upload before it says the run
 /// ended anyway.
@@ -51,6 +51,13 @@ impl Spool {
         id: &str,
         max_bytes: u64,
     ) -> std::io::Result<Self> {
+        // The agent names it, and the name goes in a path and a key.
+        if !fctl_domain::snapshots::valid_id(id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{id:?} isn't a snapshot's id"),
+            ));
+        }
         let dir = data_dir.join("snapshots");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}-{id}", session.as_str()));
@@ -104,15 +111,14 @@ impl Spool {
 /// done when the task ends, the spool's file gone either way.
 ///
 /// With a bucket of the host's own (`store`), it goes there, and the
-/// control plane hears only where; the one before (`previous`, the
-/// session's last), when this host's bucket has it, goes once it has.
+/// control plane hears only where; the one it replaced, when the control
+/// plane says it was in this host's bucket, goes once it has.
 pub fn upload(
     api: Api,
     session: SessionId,
     spool: Spool,
     saved: SnapshotSaved,
     store: Option<std::sync::Arc<crate::s3::Store>>,
-    previous: Option<String>,
 ) -> tokio::task::JoinHandle<Result<(), String>> {
     tokio::spawn(async move {
         let Spool { id, path, file, .. } = spool;
@@ -120,20 +126,20 @@ pub fn upload(
         let saved_to = match &store {
             Some(store) => upload_to_bucket(&api, &session, &id, &path, &saved, store)
                 .await
-                .map(|at| format!("in {at}")),
+                .map(|(at, replaced)| (format!("in {at}"), replaced)),
             None => upload_parts(&api, &session, &id, &path, &saved)
                 .await
-                .map(|parts| format!("{parts} parts")),
+                .map(|parts| (format!("{parts} parts"), None)),
         };
         let done = match saved_to {
-            Ok(where_) => {
+            Ok((where_, replaced)) => {
                 tracing::info!(
                     "saved {session}'s snapshot ({} bytes, {where_})",
                     saved.size
                 );
                 // The one before, in this host's bucket, is the session's no more.
-                if let (Some(store), Some(previous)) = (&store, previous)
-                    && let Some(key) = store.bucket.key_of(&previous)
+                if let (Some(store), Some(replaced)) = (&store, replaced)
+                    && let Some(key) = store.bucket.key_of(&replaced, session.as_str())
                     && let Err(e) = store.delete(&key).await
                 {
                     tracing::warn!("deleting {session}'s snapshot before: {e}");
@@ -151,7 +157,8 @@ pub fn upload(
 }
 
 /// Puts the snapshot at `path` in the host's bucket and tells the control
-/// plane where: that location.
+/// plane where: that location, and where the snapshot it replaced is when
+/// that one was in a bucket.
 async fn upload_to_bucket(
     api: &Api,
     session: &SessionId,
@@ -159,7 +166,7 @@ async fn upload_to_bucket(
     path: &Path,
     saved: &SnapshotSaved,
     store: &crate::s3::Store,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     if size != saved.size {
         return Err(format!(
@@ -175,12 +182,14 @@ async fn upload_to_bucket(
         parts: 0,
         location: Some(location.clone()),
     };
-    if let Err(e) = retry(|| api.runner_snapshot_commit(session.as_str(), id, &commit)).await {
-        // Not the session's: it would only take room.
-        let _ = store.delete(&key).await;
-        return Err(format!("keeping it: {e}"));
+    match retry(|| api.runner_snapshot_commit(session.as_str(), id, &commit)).await {
+        Ok(committed) => Ok((location, committed.replaced)),
+        Err(e) => {
+            // Not the session's: it would only take room.
+            let _ = store.delete(&key).await;
+            Err(format!("keeping it: {e}"))
+        }
     }
-    Ok(location)
 }
 
 async fn upload_parts(
@@ -197,11 +206,15 @@ async fn upload_parts(
             saved.size
         ));
     }
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut n = 0u32;
     loop {
         let mut buf = vec![0u8; SNAPSHOT_PART_BYTES];
-        let len = read_full(&mut file, &mut buf).map_err(|e| e.to_string())?;
+        let len = read_full(&mut file, &mut buf)
+            .await
+            .map_err(|e| e.to_string())?;
         if len == 0 && n > 0 {
             break;
         }
@@ -225,55 +238,101 @@ async fn upload_parts(
     Ok(n)
 }
 
+/// A frame for the agent from [`fetch`], with what hears once the agent
+/// link has written it (`written`): a snapshot goes at the link's pace,
+/// rather than into the host's memory whole.
+pub struct Paced {
+    pub frame: HostToAgent,
+    pub written: Option<oneshot::Sender<()>>,
+}
+
+/// Sends `frame` on `to` once the frame before it is written (`before`):
+/// what hears when this one is, or `None` once the link that would have
+/// written the one before is gone.
+async fn paced(
+    to: &mpsc::UnboundedSender<Paced>,
+    before: Option<oneshot::Receiver<()>>,
+    frame: HostToAgent,
+) -> Option<oneshot::Receiver<()>> {
+    if let Some(before) = before {
+        before.await.ok()?;
+    }
+    let (written, heard) = oneshot::channel();
+    to.send(Paced {
+        frame,
+        written: Some(written),
+    })
+    .ok()?;
+    Some(heard)
+}
+
 /// Fetches a snapshot's parts for the agent that asked for it, as
-/// `SnapshotPart` frames on `to`, or why not, as `SnapshotMissing`: from
-/// the control plane, or, for one kept in a bucket, from the host's bucket
-/// when it is the same.
+/// `SnapshotPart` frames on `to`, at the agent link's pace, or why not, as
+/// `SnapshotMissing`: from the control plane, or, for one kept in a
+/// bucket, from the host's bucket when it is the same.
 pub fn fetch(
     api: Api,
     session: SessionId,
     snapshot: SnapshotRef,
     store: Option<std::sync::Arc<crate::s3::Store>>,
     data_dir: PathBuf,
-    to: mpsc::UnboundedSender<HostToAgent>,
+    to: mpsc::UnboundedSender<Paced>,
 ) {
     tokio::spawn(async move {
         let id = snapshot.id.clone();
+        let missing = |why: String| {
+            let _ = to.send(Paced {
+                frame: HostToAgent::SnapshotMissing {
+                    id: id.clone(),
+                    why,
+                },
+                written: None,
+            });
+        };
+        // The link broke while parts went: the agent hears it when it is
+        // back, rather than wait for parts that went with it.
+        let broke =
+            || missing("the host's link to the sandbox broke while it handed it over".into());
         if let Some(location) = &snapshot.location {
-            let missing = |why: String| HostToAgent::SnapshotMissing {
-                id: id.clone(),
-                why,
-            };
-            let Some((store, key)) = store
+            let Some(store) = store
                 .as_ref()
-                .and_then(|s| s.bucket.key_of(location).map(|k| (s, k)))
+                .filter(|s| *location == s.bucket.location(&s.bucket.key(session.as_str(), &id)))
             else {
-                let bucket = fctl_domain::snapshots::bucket_of(location).unwrap_or(location);
-                let _ = to.send(missing(format!(
-                    "it is in the bucket {bucket}, which this runner doesn't keep snapshots in"
-                )));
+                missing(format!(
+                    "it is at {location}, where this runner doesn't keep snapshots"
+                ));
                 return;
             };
+            if snapshot.size > store.max_bytes {
+                missing(format!(
+                    "it is {}, more than the {} MiB this runner takes",
+                    fctl_domain::snapshots::size_words(snapshot.size),
+                    store.max_bytes / 1024 / 1024
+                ));
+                return;
+            }
             let dir = data_dir.join("snapshots");
             let _ = std::fs::create_dir_all(&dir);
             let file = dir.join(format!("{}-{id}.in", session.as_str()));
-            let got = store.get(&key, &file, snapshot.size.max(1)).await;
-            let sent = match got {
-                Ok(_) => send_file(&file, &id, &to),
+            let key = store.bucket.key(session.as_str(), &id);
+            match store.get(&key, &file, snapshot.size.max(1)).await {
+                Ok(_) => match send_file(&file, &id, &to).await {
+                    Ok(true) => {}
+                    Ok(false) => broke(),
+                    Err(e) => missing(format!("reading it here failed: {e}")),
+                },
                 Err(e) => {
                     tracing::warn!("fetching {session}'s snapshot: {e}");
-                    let _ = to.send(missing(e));
-                    Ok(())
+                    missing(e);
                 }
-            };
-            if let Err(e) = sent {
-                let _ = to.send(missing(format!("reading it here failed: {e}")));
             }
-            let _ = std::fs::remove_file(&file);
+            let _ = tokio::fs::remove_file(&file).await;
             return;
         }
         let parts = snapshot.parts.max(1);
+        let mut before = None;
         for n in 0..parts {
+            // The next part comes while the link writes the one before.
             match retry(|| api.runner_snapshot_part(session.as_str(), &id, n)).await {
                 Ok(bytes) => {
                     let frame = HostToAgent::SnapshotPart {
@@ -282,44 +341,47 @@ pub fn fetch(
                         data: STANDARD.encode(bytes),
                         last: n + 1 == parts,
                     };
-                    if to.send(frame).is_err() {
-                        return;
+                    match paced(&to, before.take(), frame).await {
+                        Some(heard) => before = Some(heard),
+                        None => return broke(),
                     }
                 }
                 Err(e) => {
                     tracing::warn!("fetching {session}'s snapshot: {e}");
-                    let _ = to.send(HostToAgent::SnapshotMissing {
-                        id,
-                        why: format!("fetching it from the control plane failed: {e}"),
-                    });
-                    return;
+                    return missing(format!("fetching it from the control plane failed: {e}"));
                 }
             }
         }
     });
 }
 
-/// Hands the snapshot in the file at `path` to the agent in parts.
-fn send_file(
+/// Hands the snapshot in the file at `path` to the agent in parts, at the
+/// link's pace: whether the link took them all.
+async fn send_file(
     path: &Path,
     id: &str,
-    to: &mpsc::UnboundedSender<HostToAgent>,
-) -> std::io::Result<()> {
-    let mut file = std::fs::File::open(path)?;
+    to: &mpsc::UnboundedSender<Paced>,
+) -> std::io::Result<bool> {
+    let mut file = tokio::fs::File::open(path).await?;
     let mut buf = vec![0u8; SNAPSHOT_PART_BYTES];
-    let mut len = read_full(&mut file, &mut buf)?;
+    let mut len = read_full(&mut file, &mut buf).await?;
     let mut n = 0;
+    let mut before = None;
     loop {
         let mut next = vec![0u8; SNAPSHOT_PART_BYTES];
-        let next_len = read_full(&mut file, &mut next)?;
+        let next_len = read_full(&mut file, &mut next).await?;
         let frame = HostToAgent::SnapshotPart {
             id: id.to_owned(),
             n,
             data: STANDARD.encode(buf.get(..len).unwrap_or_default()),
             last: next_len == 0,
         };
-        if to.send(frame).is_err() || next_len == 0 {
-            return Ok(());
+        match paced(to, before.take(), frame).await {
+            Some(heard) => before = Some(heard),
+            None => return Ok(false),
+        }
+        if next_len == 0 {
+            return Ok(true);
         }
         buf = next;
         len = next_len;
@@ -349,10 +411,14 @@ where
 }
 
 /// Reads until `buf` is full or the input ends: how much it read.
-fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+async fn read_full(
+    r: &mut (impl tokio::io::AsyncRead + Unpin),
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    use tokio::io::AsyncReadExt;
     let mut n = 0;
     while n < buf.len() {
-        match r.read(buf.get_mut(n..).unwrap_or_default())? {
+        match r.read(buf.get_mut(n..).unwrap_or_default()).await? {
             0 => break,
             m => n += m,
         }
@@ -363,6 +429,70 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A snapshot from a file goes to the agent a part at a time: the next
+    /// waits until the link has written the one before, and none goes once
+    /// the link is gone.
+    #[tokio::test]
+    async fn a_snapshot_goes_to_the_agent_at_the_links_pace() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("snap");
+        std::fs::write(&path, vec![1u8; SNAPSHOT_PART_BYTES * 2 + 10])?;
+        let part = |p: &Paced| match &p.frame {
+            HostToAgent::SnapshotPart { n, last, .. } => Some((*n, *last)),
+            _ => None,
+        };
+        let (to, mut rx) = mpsc::unbounded_channel();
+        let sending = {
+            let path = path.clone();
+            tokio::spawn(async move { send_file(&path, "snp_1", &to).await })
+        };
+        let first = rx.recv().await.ok_or_else(|| anyhow::anyhow!("no part"))?;
+        assert_eq!(part(&first), Some((0, false)));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "the second came before the first was written"
+        );
+        if let Some(w) = first.written {
+            let _ = w.send(());
+        }
+        let second = rx.recv().await.ok_or_else(|| anyhow::anyhow!("no part"))?;
+        assert_eq!(part(&second), Some((1, false)));
+        // The link went before it wrote that one.
+        drop(second);
+        assert!(!sending.await??);
+        assert!(rx.recv().await.is_none());
+
+        // Written as they go, all of it goes, the last said.
+        let (to, mut rx) = mpsc::unbounded_channel();
+        let sending = tokio::spawn(async move { send_file(&path, "snp_1", &to).await });
+        let mut got = Vec::new();
+        while let Some(p) = rx.recv().await {
+            got.extend(part(&p));
+            if let Some(w) = p.written {
+                let _ = w.send(());
+            }
+        }
+        assert_eq!(got, [(0, false), (1, false), (2, true)]);
+        assert!(sending.await??);
+        Ok(())
+    }
+
+    /// An agent names its snapshot, and the name goes in a path and a key:
+    /// only a snapshot's id is taken.
+    #[test]
+    fn a_spool_takes_only_a_snapshots_id() {
+        let dir = tempfile::tempdir().ok();
+        let dir = dir
+            .as_ref()
+            .map(|d| d.path())
+            .unwrap_or(Path::new("/nonexistent"));
+        let session = SessionId("ses_1".into());
+        for bad in ["../snp_1", "snp_1/../../x", "snp_", "x"] {
+            assert!(Spool::start(dir, &session, bad, 10).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn parts_spool_in_order_only() -> anyhow::Result<()> {
