@@ -1,4 +1,4 @@
-# 0097: Admins see facts about members' Claude connections
+# 0098: Admins see facts about members' Claude connections
 
 2026-11-23 · accepted
 

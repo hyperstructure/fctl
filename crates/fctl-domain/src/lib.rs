@@ -49,6 +49,7 @@ pub mod private_key;
 pub mod published;
 pub mod pulls;
 pub mod qr;
+pub mod reach;
 pub mod reconcile;
 pub mod remote_control;
 pub mod repos;

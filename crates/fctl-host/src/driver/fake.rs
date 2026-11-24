@@ -471,6 +471,16 @@ fn key(name: &str) -> String {
 /// waits for meanwhile. `list`, `inspect` and the others' `stats` answer
 /// as ever. `exec` says `1000` to `id -u`. With `refuse-start` there,
 /// `start` fails.
+///
+/// `fctl-agent reach`, in a sandbox (`exec`) or a fresh one (`run --rm`),
+/// says that it reaches the network, unless `offline` is there, or
+/// `offline-NAME` for the sandbox NAME alone; with `old-agent` there, the
+/// sandboxes' fctl-agent knows no `reach`, and with `fresh-fails` fresh
+/// sandboxes don't start. `system stop` stops every sandbox, taking a
+/// second with `slow-stop` there, and fails with `stop-fails` there;
+/// `system start` brings the network back with `mends` there, and fails
+/// with `start-fails` there, after which `start` fails too until it
+/// succeeds. With `no-images` there, no image is here.
 const STUCK_APPLE: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -510,13 +520,33 @@ case "$1" in
     runs "$1" || { echo "Error: container $1 is not running" >&2; exit 1; }
     if frozen "$1"; then cp "$d/vm-$1" "$d/lock"; hang; fi
     wait_lock
-    case "$*" in *"id -u"*) echo 1000 ;; esac ;;
+    case "$*" in
+      *" reach "*)
+        [ ! -e "$d/old-agent" ] || { echo "error: unrecognized subcommand 'reach'" >&2; exit 2; }
+        if [ -e "$d/offline" ] || [ -e "$d/offline-$1" ]; then
+          echo "unreachable: github.com didn't resolve: Try again"
+        else
+          echo "reached github.com:443"
+        fi ;;
+      *"id -u"*) echo 1000 ;;
+    esac ;;
   cp)
     n=${last%%:*}
     runs "$n" || { echo "Error: container $n is not running" >&2; exit 1; }
     frozen "$n" && hang
     wait_lock ;;
   run)
+    case " $* " in
+      *" --rm "*" reach "*)
+        wait_lock
+        [ ! -e "$d/fresh-fails" ] || { echo "Error: failed to bootstrap container" >&2; exit 1; }
+        if [ -e "$d/offline" ]; then
+          echo "unreachable: github.com didn't resolve: Try again"
+        else
+          echo "reached github.com:443"
+        fi
+        exit 0 ;;
+    esac
     n=; prev=
     for a in "$@"; do [ "$prev" = --name ] && n=$a; prev=$a; done
     wait_lock
@@ -524,6 +554,7 @@ case "$1" in
     echo "$n" ;;
   start)
     wait_lock
+    [ ! -e "$d/service-down" ] || { echo "Error: XPC connection error: Connection invalid" >&2; exit 1; }
     [ ! -e "$d/refuse-start" ] || { echo "Error: failed to bootstrap container" >&2; exit 1; }
     runs "$last" || vm "$last"
     echo "$last" ;;
@@ -538,8 +569,22 @@ case "$1" in
     [ ! -e "$d/vm-$last" ] || kill -9 "$(cat "$d/vm-$last")" 2>/dev/null
     rm -f "$d/vm-$last" ;;
   clean) wait_lock ;;
-  image) echo '[{"name": "image"}]' ;;
-  system) echo '{"version": "1.5.0"}' ;;
+  image)
+    [ ! -e "$d/no-images" ] || { echo "Error: image not found" >&2; exit 1; }
+    echo '[{"name": "image"}]' ;;
+  system)
+    case "$2" in
+      stop)
+        [ ! -e "$d/slow-stop" ] || sleep 1
+        [ ! -e "$d/stop-fails" ] || { echo "Error: XPC connection error: Connection invalid" >&2; exit 1; }
+        for f in "$d"/vm-*; do [ -e "$f" ] && kill -9 "$(cat "$f")" 2>/dev/null; done
+        [ ! -e "$d/start-fails" ] || touch "$d/service-down" ;;
+      start)
+        [ ! -e "$d/start-fails" ] || { echo "Error: failed to start the API server" >&2; exit 1; }
+        rm -f "$d/service-down"
+        [ ! -e "$d/mends" ] || rm -f "$d/offline" ;;
+      *) echo '{"version": "1.5.0"}' ;;
+    esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "##;
@@ -598,6 +643,106 @@ impl StuckApple {
     /// Its `start`s fail from now on, as for a reason of their own.
     pub fn refuse_starts(&self) -> Result<()> {
         Ok(std::fs::write(self.dir.path().join("refuse-start"), "")?)
+    }
+
+    /// Its `start`s succeed again.
+    pub fn accept_starts(&self) -> Result<()> {
+        let _ = std::fs::remove_file(self.dir.path().join("refuse-start"));
+        Ok(())
+    }
+
+    /// A driver that plays it ([`Self::driver`]), whose sandboxes should
+    /// reach `target` (this Mac reaches what answers there), and which
+    /// looks at their network every `look_every` and restarts Apple's
+    /// `container` at most every `restart_every`.
+    pub fn networked(
+        &self,
+        target: &str,
+        look_every: Duration,
+        restart_every: Duration,
+    ) -> ContainerDriver {
+        self.driver()
+            .networked(target, look_every, restart_every)
+            .reach_dir(self.reach_dir())
+    }
+
+    /// Where its fresh sandboxes find the host's fctl-agent.
+    pub fn reach_dir(&self) -> std::path::PathBuf {
+        self.dir.path().join("data/reach")
+    }
+
+    /// The host's fctl-agent for sandboxes, beside what else it keeps.
+    pub fn agent(&self) -> Result<std::path::PathBuf> {
+        let agent = self.dir.path().join("fctl-agent-aarch64-linux");
+        std::fs::write(&agent, "fctl-agent")?;
+        Ok(agent)
+    }
+
+    /// `system start` fails from now on, and `start` with it.
+    pub fn fail_starts(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("start-fails"), "")?)
+    }
+
+    /// Apple's `container` starts again.
+    pub fn serve_again(&self) -> Result<()> {
+        let _ = std::fs::remove_file(self.dir.path().join("start-fails"));
+        let _ = std::fs::remove_file(self.dir.path().join("service-down"));
+        Ok(())
+    }
+
+    /// Fresh sandboxes don't start from now on.
+    pub fn fail_fresh(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("fresh-fails"), "")?)
+    }
+
+    /// No image is here from now on.
+    pub fn no_images(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("no-images"), "")?)
+    }
+
+    /// Its images are back.
+    pub fn images_back(&self) -> Result<()> {
+        let _ = std::fs::remove_file(self.dir.path().join("no-images"));
+        Ok(())
+    }
+
+    /// `system stop` takes a second from now on.
+    pub fn slow_stops(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("slow-stop"), "")?)
+    }
+
+    /// Its sandboxes, and fresh ones, stop reaching the network.
+    pub fn lose_network(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("offline"), "")?)
+    }
+
+    /// The network comes back.
+    pub fn mend_network(&self) -> Result<()> {
+        let _ = std::fs::remove_file(self.dir.path().join("offline"));
+        Ok(())
+    }
+
+    /// Restarting it brings the network back.
+    pub fn mends_on_restart(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("mends"), "")?)
+    }
+
+    /// The sandbox `name` alone doesn't reach the network.
+    pub fn keep_off(&self, name: &str) -> Result<()> {
+        Ok(std::fs::write(
+            self.dir.path().join(format!("offline-{name}")),
+            "",
+        )?)
+    }
+
+    /// Its sandboxes' fctl-agent knows no `reach`.
+    pub fn old_agents(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("old-agent"), "")?)
+    }
+
+    /// `system stop` fails from now on.
+    pub fn fail_stops(&self) -> Result<()> {
+        Ok(std::fs::write(self.dir.path().join("stop-fails"), "")?)
     }
 
     /// As if an `exec` had waited on the frozen VM of `name`, and held
