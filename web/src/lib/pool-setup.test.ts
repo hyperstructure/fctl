@@ -35,7 +35,8 @@ describe("a pool's setup", () => {
     expect(own).toContain(
       "FCTL_SERVER=https://fctl.acme.dev \\\nFCTL_ENROLL_TOKEN=fctl_et_secret \\\nfctl host install --capacity 4",
     );
-    expect(code("own", { ...v, capacity: 3 })).toMatch(/fctl host install$/m);
+    // fctl host install's own default is 4, not the form's 3: the command always says it.
+    expect(code("own", { ...v, capacity: 3 })).toMatch(/fctl host install --capacity 3$/m);
   });
 
   it("fills in fctl's AWS module with every value it knows", () => {
@@ -111,6 +112,8 @@ describe("a pool's setup", () => {
     expect(k8s).toContain("authMode: bearer");
     expect(k8s).toContain("scaleTargetRef: { name: fctl-aws-large }");
     expect(k8s).toContain("maxReplicaCount: 18");
+    // Each pod runs as many sessions as the form says.
+    expect(setupSteps("kubernetes", v).some((s) => s.body?.includes("--capacity 4"))).toBe(true);
     // Every step that leaves something to the guide links to it.
     for (const place of ["aws", "google", "azure", "kubernetes"] as const)
       expect(setupSteps(place, v).some((s) => s.link?.href.startsWith("https://fctl.sh/docs/"))).toBe(true);
