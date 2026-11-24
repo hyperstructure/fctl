@@ -6,7 +6,9 @@ import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
 import { EnrollmentTokens, WaitingRunners } from "./runners";
 
-// No request is answered but making a pool: the sections show what the cache holds.
+// No request is answered but making a pool: the sections show what the cache holds. Edits to a
+// pool are noted.
+const edits = vi.hoisted(() => [] as G.UpdateEnrollmentTokenRequest[]);
 vi.mock("@/lib/api", () => {
   const pending = new Proxy({}, { get: () => () => new Promise(() => {}) });
   const workspaces = new Proxy(
@@ -31,7 +33,12 @@ vi.mock("@/lib/api", () => {
                 },
                 secret: "fctl_et_shown_once",
               })
-          : () => new Promise(() => {}),
+          : name === "updateEnrollmentToken"
+            ? (_id: string, _token: string, b: G.UpdateEnrollmentTokenRequest) => {
+                edits.push(b);
+                return new Promise(() => {});
+              }
+            : () => new Promise(() => {}),
     },
   );
   return { api: pending, workspaces, ApiFailure: class extends Error {} };
@@ -273,7 +280,7 @@ describe("pools", () => {
     expect(text).not.toContain("runner studio-mac");
   });
 
-  it("are edited as they run: labels, placement and limit", () => {
+  it("are edited as they run: labels, placement and limit", async () => {
     show(<EnrollmentTokens w={acme} admin onRunners={false} />, [
       token({ id: "enr_1", name: "AWS large", labels: ["aws"], placement: "spread" }),
     ]);
@@ -282,7 +289,16 @@ describe("pools", () => {
     act(() => (edit as HTMLElement).click());
     const dialog = document.querySelector("dialog[open]");
     expect(dialog?.textContent).toContain("Edit AWS large");
-    expect(dialog?.querySelector<HTMLInputElement>("input.font-mono")?.value).toBe("aws");
+    const labels = dialog?.querySelector<HTMLInputElement>("input.font-mono");
+    expect(labels?.value).toBe("aws");
+    // Cancel lets go of what changed, rather than save it.
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(labels, "aws, large");
+      labels?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const cancel = [...(dialog?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "Cancel");
+    await act(async () => cancel?.click());
+    expect(edits).toEqual([]);
   });
 
   it("ask for labels and a placement when made, packing one that removes offline runners", () => {
