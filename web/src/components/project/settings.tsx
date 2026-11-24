@@ -15,6 +15,7 @@ import {
   GitPullRequest,
   KeyRound,
   type LucideIcon,
+  Server,
   SlidersHorizontal,
   Ticket,
   Webhook,
@@ -46,7 +47,7 @@ import {
 } from "@/components/ui";
 import { WebhooksPanel, webhooksLead } from "@/components/webhooks/panel";
 import type * as G from "@/gen";
-import { ApiFailure, api } from "@/lib/api";
+import { ApiFailure, api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { showHex } from "@/lib/color";
 import {
@@ -70,6 +71,16 @@ import {
   withSource,
 } from "@/lib/images";
 import { ALIASES, chosenModel, EFFORTS, type ModelChoice, modelChoice } from "@/lib/models";
+import {
+  FALLBACKS,
+  fallbackOf,
+  labelProblem,
+  labelsWords,
+  parseLabels,
+  poolChoices,
+  poolFor,
+  sameLabels,
+} from "@/lib/pools";
 import { areDefaults, shownInstructions } from "@/lib/pr-instructions";
 import { ICON_COLORS, iconDef, iconOf } from "@/lib/project-icons";
 import {
@@ -84,7 +95,7 @@ import {
   settingsPagesFor,
 } from "@/lib/project-page";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
-import { keys, queryClient, useInstance, useMe, useRunners } from "@/lib/queries";
+import { keys, queryClient, useInstance, useMe, useRunners, useWorkspace } from "@/lib/queries";
 import type { Gist } from "@/lib/settings";
 import type { LinearOutcome } from "@/lib/tickets";
 
@@ -94,6 +105,7 @@ const ICONS: Record<ProjectSettingsPage, LucideIcon> = {
   agents: Bot,
   "pull-requests": GitPullRequest,
   tickets: Ticket,
+  runners: Server,
   sandbox: Box,
   secrets: KeyRound,
   identity: Fingerprint,
@@ -254,6 +266,8 @@ function SettingsBody({
       return <PullRequests project={project} />;
     case "tickets":
       return <TicketsSettings project={project} returned={linear} />;
+    case "runners":
+      return <Runners project={project} />;
     case "sandbox":
       return <Sandbox project={project} />;
     case "secrets":
@@ -954,6 +968,201 @@ function PullRequests({ project }: { project: G.Project }) {
 
 const sameFollowUps = (a: G.FollowUps, b: G.FollowUps) =>
   a.comments === b.comments && a.checks === b.checks && a.conflicts === b.conflicts && a.closed === b.closed;
+
+// ───────────────────────────── runners ─────────────────────────────
+
+/**
+ * Which of its workspace's runners take its sessions: any, a pool's, chosen by name, or runners with
+ * labels of its own choosing; and whether its sessions wait for those however long, or go to any
+ * runner after a while. A project whose labels no runner has says so, and who adds one.
+ */
+function Runners({ project }: { project: G.Project }) {
+  const wid = project.workspace?.id ?? "";
+  const w = useWorkspace(wid || undefined).data;
+  const runners = useQuery({
+    queryKey: keys.workspaceRunners(wid),
+    queryFn: () => workspaces.runners(wid),
+    enabled: !!wid,
+  });
+  // The pools its admins manage say what each gives; others see them through their runners.
+  const demand = useQuery({
+    queryKey: keys.workspaceDemand(wid),
+    queryFn: () => workspaces.demand(wid),
+    enabled: !!wid,
+    retry: false,
+  });
+  const choices = poolChoices(demand.data?.pools, runners.data?.runners ?? []);
+  const saved = {
+    typed: (project.settings.runner_labels ?? []).join(", "),
+    fallback: project.settings.runner_fallback_minutes ?? null,
+  };
+  const { draft: d, set, setDraft, dirty, reset } = useDraft(saved);
+  const [custom, setCustom] = useState(false);
+  const labels = parseLabels(d.typed);
+  const problem = labelProblem(labels);
+  const pool = choices.find((c) => c.labels.length > 0 && sameLabels(c.labels, labels));
+  const choice = custom ? "labels" : labels.length === 0 ? "any" : (pool?.id ?? "labels");
+  const where = (p: G.Project) => {
+    const l = p.settings.runner_labels ?? [];
+    const named = choices.find((c) => c.labels.length > 0 && sameLabels(c.labels, l));
+    return l.length === 0 ? "any runner" : named ? named.name : `runners with ${l.join(", ")}`;
+  };
+  const save = useSave(
+    project,
+    "Saved",
+    () => {
+      if (problem)
+        throw new ApiFailure(400, { code: "validation", field: "settings.runner_labels", message: problem });
+      return {
+        settings: {
+          ...project.settings,
+          runner_labels: labels,
+          runner_fallback_minutes: labels.length ? d.fallback : null,
+        },
+      };
+    },
+    (p) => {
+      setCustom(false);
+      setDraft({
+        typed: (p.settings.runner_labels ?? []).join(", "),
+        fallback: p.settings.runner_fallback_minutes ?? null,
+      });
+      toast(`Sessions that start from now on run on ${where(p)}`);
+    },
+  );
+  const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
+  const workspaceName = w?.name ?? project.workspace?.name ?? "the workspace";
+  // Nothing has them: its sessions wait for nothing that comes.
+  const has = (r: G.Runner) => labels.every((l) => r.labels.includes(l));
+  const none =
+    labels.length > 0 &&
+    !problem &&
+    runners.data !== undefined &&
+    !runners.data.runners.some(has) &&
+    !poolFor(labels, demand.data?.pools ?? []);
+  const fallback = fallbackOf(d.fallback);
+  const fallbacks = FALLBACKS.some((f) => f.value === fallback.value) ? FALLBACKS : [...FALLBACKS, fallback];
+  return (
+    <Section
+      title="Runners"
+      description={`Which of ${workspaceName}'s runners take its sessions: any of them, a pool's, or those with labels you choose.`}
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (dirty) save.mutate();
+        }}
+      >
+        <div className="flex flex-col gap-5">
+          <Field label="Its sessions run on">
+            {(id) => (
+              <Select
+                id={id}
+                value={choice}
+                onChange={(v) => {
+                  if (v === "labels") return setCustom(true);
+                  setCustom(false);
+                  const c = choices.find((x) => x.id === v);
+                  set({ typed: c ? c.labels.join(", ") : "" });
+                }}
+                options={[
+                  {
+                    value: "any",
+                    label: "Any runner",
+                    description: `Whichever of ${workspaceName}'s runners has room`,
+                  },
+                  ...choices.map((c) => ({
+                    value: c.id,
+                    label: c.name,
+                    description: c.labels.length
+                      ? `${c.facts} · ${c.labels.join(", ")}`
+                      : `${c.facts} · no labels to choose it by: its admins give it some`,
+                    disabled: c.labels.length === 0,
+                  })),
+                  {
+                    value: "labels",
+                    label: "Runners with labels you choose",
+                    description: "A pool's, or those hosts set in host.toml",
+                  },
+                ]}
+                className="w-full"
+              />
+            )}
+          </Field>
+          {choice !== "any" && (
+            <Field
+              label="Labels"
+              hint="Its sessions run only on runners with all of them: their pool's labels, and those their hosts set in host.toml. Commas or spaces between them."
+              error={problem ?? err("settings.runner_labels")}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  value={d.typed}
+                  onChange={(e) => set({ typed: e.target.value })}
+                  placeholder="aws, large"
+                  className="font-mono"
+                />
+              )}
+            </Field>
+          )}
+          {labels.length > 0 && (
+            <Field
+              label="When none of them can take a session"
+              hint={
+                fallback.minutes === null
+                  ? "Its sessions wait for one of those runners, however long that takes."
+                  : `Its sessions wait for one of those runners, then go to any of ${workspaceName}'s.`
+              }
+              error={err("settings.runner_fallback_minutes")}
+            >
+              {(id) => (
+                <Select
+                  id={id}
+                  value={fallback.value}
+                  onChange={(v) => set({ fallback: fallbacks.find((f) => f.value === v)?.minutes ?? null })}
+                  options={fallbacks}
+                  className="w-full"
+                />
+              )}
+            </Field>
+          )}
+          {none && (
+            <p className="text-[12.5px] leading-relaxed text-amber">
+              No runner of {workspaceName} has {labelsWords(labels)}:{" "}
+              {fallback.minutes === null
+                ? "its sessions wait until one does."
+                : `its sessions wait for one, then go to any runner after ${fallback.label.replace(/^After (.*), any runner$/, "$1")}.`}{" "}
+              {w?.primary ? `${w.primary.name} and its other admins add` : "Its admins add"} runners and pools
+              on{" "}
+              <Link
+                to="/w/$slug"
+                params={{ slug: project.workspace?.slug ?? "" }}
+                search={{ tab: "runners" }}
+                className="underline underline-offset-2"
+              >
+                its Runners tab
+              </Link>
+              .
+            </p>
+          )}
+        </div>
+        <PageFoot
+          project={project}
+          page="runners"
+          dirty={dirty || (custom && labels.length === 0 && saved.typed !== "")}
+          save={save}
+          hint="Sessions that start from now on follow it; those running stay where they are."
+          fields={["settings.runner_labels", "settings.runner_fallback_minutes"]}
+          onReset={() => {
+            setCustom(false);
+            reset();
+          }}
+        />
+      </form>
+    </Section>
+  );
+}
 
 // ───────────────────────────── sandbox ─────────────────────────────
 

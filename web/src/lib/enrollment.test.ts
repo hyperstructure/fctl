@@ -10,6 +10,7 @@ import {
   machineFacts,
   minutesText,
   NEW_ENROLLMENT,
+  placementOf,
   tokenState,
   waitingByWorkspace,
   whoseToken,
@@ -33,10 +34,19 @@ describe("enrollmentRequest", () => {
       personal: false,
       approval: false,
       expires_in_hours: 90 * 24,
+      placement: "spread",
     });
     expect(
       enrollmentRequest(
-        { name: "CI", personal: true, expires: "never", limit: "20", approval: true, offline: "1h" },
+        {
+          name: "CI",
+          personal: true,
+          expires: "never",
+          limit: "20",
+          approval: true,
+          offline: "1h",
+          labels: "AWS, large",
+        },
         true,
       ),
     ).toEqual({
@@ -45,7 +55,16 @@ describe("enrollmentRequest", () => {
       approval: true,
       max_runners: 20,
       remove_offline_after_minutes: 60,
+      labels: ["aws", "large"],
+      placement: "packed",
     });
+  });
+
+  it("packs a pool that removes offline runners, until someone chooses", () => {
+    expect(placementOf({ ...NEW_ENROLLMENT, offline: "5m" })).toBe("packed");
+    expect(placementOf({ ...NEW_ENROLLMENT, offline: "5m", placement: "spread" })).toBe("spread");
+    expect(placementOf(NEW_ENROLLMENT)).toBe("spread");
+    expect(enrollmentReady({ ...NEW_ENROLLMENT, name: "CI", labels: "a/b" })).toBe(false);
   });
 
   it("makes a member's for their own sessions, whatever the form held", () => {

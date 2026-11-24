@@ -119,6 +119,7 @@ export const keys = {
   workspaceRunners: (id: string) => ["workspace", id, "runners"] as const,
   workspaceSnapshots: (id: string) => ["workspace", id, "snapshots"] as const,
   enrollmentTokens: (id: string) => ["workspace", id, "enrollment-tokens"] as const,
+  workspaceDemand: (id: string) => ["workspace", id, "demand"] as const,
   workspaceGithub: (id: string) => ["workspace", id, "github"] as const,
   /** Under the workspace's GitHub, so that what changes its accounts asks again. */
   workspaceReviewApp: (id: string) => ["workspace", id, "github", "review-app"] as const,

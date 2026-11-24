@@ -685,6 +685,11 @@ export const workspaces = {
   /** Revokes one: it enrolls no more runners, and those it enrolled stay. */
   revokeEnrollmentToken: (id: string, token: string) =>
     request<G.EnrollmentToken>("DELETE", `/workspaces/${enc(id)}/enrollment-tokens/${enc(token)}`),
+  /** Changes a pool as it runs: its name, labels, placement and limit; its runners follow at once. */
+  updateEnrollmentToken: (id: string, token: string, b: G.UpdateEnrollmentTokenRequest) =>
+    request<G.EnrollmentToken>("PATCH", `/workspaces/${enc(id)}/enrollment-tokens/${enc(token)}`, b),
+  /** What the pools the caller manages need now, and every session of the workspace that waits. */
+  demand: (id: string) => request<G.WorkspaceDemand>("GET", `/workspaces/${enc(id)}/runners/demand`),
   github: (id: string) => request<G.WorkspaceGithub>("GET", `/workspaces/${enc(id)}/github`),
   // Which app posts review agents' reviews on each of its GitHub accounts.
   reviewApp: (id: string) => request<G.WorkspaceReviewApp>("GET", `/workspaces/${enc(id)}/github/review-app`),

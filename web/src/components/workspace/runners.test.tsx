@@ -20,9 +20,10 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function show(node: React.ReactNode, tokens?: G.EnrollmentToken[]) {
+function show(node: React.ReactNode, tokens?: G.EnrollmentToken[], demand?: G.WorkspaceDemand) {
   const client = new QueryClient();
   if (tokens) client.setQueryData<G.EnrollmentTokenList>(keys.enrollmentTokens(acme.id), { tokens });
+  if (demand) client.setQueryData<G.WorkspaceDemand>(keys.workspaceDemand(acme.id), demand);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -150,8 +151,8 @@ describe("enrollment tokens", () => {
 
   it("make a token from a form that says what it will do", () => {
     show(<EnrollmentTokens w={acme} admin onRunners={false} />, []);
-    act(() => button("New enrollment token").click());
-    const create = button("Create token");
+    act(() => button("New pool").click());
+    const create = button("Create pool");
     expect(create.disabled).toBe(true);
     const summary = () => document.querySelector("dialog [aria-live]")?.textContent ?? "";
     expect(summary()).toContain("Enrolls any number of runners, which run everyone's sessions at once.");
@@ -174,12 +175,91 @@ describe("enrollment tokens", () => {
     // Whose it is, as someone else (an admin, say) reads it.
     expect(c.textContent).toContain("Only Bo's sessions");
     expect(c.textContent).toContain("which run Bo's sessions at once");
-    act(() => button("New enrollment token").click());
+    act(() => button("New pool").click());
     const summary = () => document.querySelector("dialog [aria-live]")?.textContent ?? "";
     // No choice of whose: a member's are for their own sessions.
     expect(document.body.textContent).not.toContain("Everyone's sessions");
     expect(summary()).toContain("Enrolls any number of runners, which run your sessions at once.");
     act(() => (document.querySelector('[role="switch"]') as HTMLButtonElement).click());
     expect(summary()).toContain("which wait for your approval before they run anything");
+  });
+});
+
+describe("pools", () => {
+  const pool = (p: Partial<G.PoolDemand> & { id: string; name: string }): G.PoolDemand => ({
+    pool: { id: p.id, name: p.name, labels: ["aws", "large"], placement: "packed", max_runners: 20 },
+    runners: { online: 2, busy: 2, draining: 0, pending: 0, starting: 1, offline: 0 },
+    slots: { capacity: 8, busy: 7, free: 1 },
+    waiting: { sessions: 3, since: now - 125_000 },
+    wanted: 3,
+    at: now,
+    ...p,
+  });
+
+  it("show what each needs now, its labels and placement, and the runners it enrolled", () => {
+    const enrolled = waiting({ id: "rnr_7", name: "aws-7", status: "online" });
+    const c = show(
+      <EnrollmentTokens
+        w={acme}
+        admin
+        onRunners={false}
+        runners={[
+          {
+            ...enrolled,
+            pending_until: undefined,
+            enrollment: { token_id: "enr_1", token_name: "AWS large" },
+          },
+          { ...enrolled, id: "rnr_mac", name: "studio-mac", pending_until: undefined },
+        ]}
+        row={(r) => <li key={r.id}>runner {r.name}</li>}
+      />,
+      [
+        token({
+          id: "enr_1",
+          name: "AWS large",
+          labels: ["aws", "large"],
+          placement: "packed",
+          max_runners: 20,
+          runners: 3,
+          remove_offline_after_minutes: 5,
+        }),
+      ],
+      { pools: [pool({ id: "enr_1", name: "AWS large" })], waiting: { sessions: 3 }, unpooled: 0, at: now },
+    );
+    const text = c.textContent ?? "";
+    expect(text).toContain("Pools");
+    expect([...c.querySelectorAll("[aria-label=Labels] li")].map((l) => l.textContent)).toEqual([
+      "aws",
+      "large",
+    ]);
+    expect(text).toContain("Growing: 1 runner is starting for 3 sessions that wait.");
+    expect(text).toContain("2 of 2 runners busy");
+    expect(text).toContain("7 of 8 sessions");
+    expect(text).toContain("longest 2m");
+    expect(text).toContain("Packed: fills one runner before the next, so that idle ones can go.");
+    // Its runners under it; others aren't its.
+    expect(text).toContain("runner aws-7");
+    expect(text).not.toContain("runner studio-mac");
+  });
+
+  it("are edited as they run: labels, placement and limit", () => {
+    show(<EnrollmentTokens w={acme} admin onRunners={false} />, [
+      token({ id: "enr_1", name: "AWS large", labels: ["aws"], placement: "spread" }),
+    ]);
+    act(() => button("").click());
+    const edit = [...document.querySelectorAll("[role=menuitem]")].find((x) => x.textContent === "Edit…");
+    act(() => (edit as HTMLElement).click());
+    const dialog = document.querySelector("dialog[open]");
+    expect(dialog?.textContent).toContain("Edit AWS large");
+    expect(dialog?.querySelector<HTMLInputElement>("input.font-mono")?.value).toBe("aws");
+  });
+
+  it("ask for labels and a placement when made, packing one that removes offline runners", () => {
+    show(<EnrollmentTokens w={acme} admin onRunners={false} />, []);
+    act(() => button("New pool").click());
+    const summary = () => document.querySelector("dialog [aria-live]")?.textContent ?? "";
+    expect(summary()).toContain(
+      "No labels: projects that ask for none run on its runners. Spread: each session goes to the least busy runner.",
+    );
   });
 });

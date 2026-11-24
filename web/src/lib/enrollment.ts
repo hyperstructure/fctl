@@ -6,6 +6,7 @@
 
 import type * as G from "@/gen";
 import { cpus, memory } from "./format";
+import { defaultPlacement, labelProblem, parseLabels } from "./pools";
 
 /** How long a new token works. */
 export const ENROLLMENT_EXPIRIES: readonly { value: string; label: string; hours?: number }[] = [
@@ -69,6 +70,10 @@ export interface EnrollmentForm {
   approval: boolean;
   /** One of `OFFLINE_REMOVAL`'s values. */
   offline: string;
+  /** Its pool's labels, as typed. */
+  labels: string;
+  /** How its runners take sessions, once chosen; until then, as its offline removal suggests. */
+  placement?: G.Placement;
 }
 
 export const NEW_ENROLLMENT: EnrollmentForm = {
@@ -78,6 +83,7 @@ export const NEW_ENROLLMENT: EnrollmentForm = {
   limit: "",
   approval: false,
   offline: "keep",
+  labels: "",
 };
 
 /** The most runners one token keeps at once (`fctl_domain::enrollment::MAX_RUNNERS`). */
@@ -91,8 +97,13 @@ export function limitOf(typed: string): number | undefined {
   return Number.isInteger(n) && n >= 1 && n <= MAX_RUNNERS ? n : Number.NaN;
 }
 
-/** Whether the form makes a token: it has a name, and its limit, if any, is one. */
-export const enrollmentReady = (f: EnrollmentForm) => !!f.name.trim() && !Number.isNaN(limitOf(f.limit));
+/** Whether the form makes a token: it has a name, its limit, if any, is one, and so are its labels. */
+export const enrollmentReady = (f: EnrollmentForm) =>
+  !!f.name.trim() && !Number.isNaN(limitOf(f.limit)) && !labelProblem(parseLabels(f.labels));
+
+/** The placement the form makes: the one chosen, or the one its offline removal suggests. */
+export const placementOf = (f: EnrollmentForm): G.Placement =>
+  f.placement ?? defaultPlacement(OFFLINE_REMOVAL.find((o) => o.value === f.offline)?.minutes);
 
 /** The request that makes the token `f` describes, for an admin of the workspace or not. */
 export function enrollmentRequest(f: EnrollmentForm, admin: boolean): G.CreateEnrollmentTokenRequest {
@@ -107,6 +118,9 @@ export function enrollmentRequest(f: EnrollmentForm, admin: boolean): G.CreateEn
   if (limit !== undefined && !Number.isNaN(limit)) req.max_runners = limit;
   const offline = OFFLINE_REMOVAL.find((o) => o.value === f.offline)?.minutes;
   if (offline) req.remove_offline_after_minutes = offline;
+  const labels = parseLabels(f.labels);
+  if (labels.length) req.labels = labels;
+  req.placement = placementOf(f);
   return req;
 }
 
