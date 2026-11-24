@@ -21,6 +21,17 @@ describe("what the sign-in page says when Google didn't sign someone in", () => 
     );
   });
 
+  it("names the address to choose where the account's domain signs in with Google", () => {
+    expect(googleError("google_wrong_account", true, "acme.com,acme.dev")).toBe(
+      "Your account signs in with Google as your acme.com or acme.dev address. Choose that Google account when Google asks: the one you chose isn't one.",
+    );
+    expect(googleError("google_wrong_account", true)).toContain("your organization's address");
+  });
+
+  it("tells a stranger where accounts come from only from the directory", () => {
+    expect(googleError("sign_up_closed", true)).toContain("Ask an admin of this instance for one.");
+  });
+
   it("says the sign-in did not work for an error it doesn't know", () => {
     expect(googleError("google_new_thing", true)).toBe("The sign-in did not work. Try again.");
     expect(googleError("constructor", true)).toBe("The sign-in did not work. Try again.");

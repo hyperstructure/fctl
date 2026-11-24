@@ -4,9 +4,10 @@
 import { type FoundryHandle, foundry } from "@hyperstructure/design/gl/foundry";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowRight, Fingerprint, Sparkles } from "lucide-react";
+import { ArrowRight, Building2, Fingerprint, Sparkles } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { usePasskeySignIn } from "@/components/passkeys/sign-in";
+import { ProviderButton, ProviderSubmit } from "@/components/sign-in/provider";
 import { challengeCopy, SecondFactorStep } from "@/components/two-factor/challenge";
 import { Avatar, Banner, Button, Field, GLCanvas, Input, Logo, NameFields, Spinner } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
@@ -19,6 +20,7 @@ import { goTo } from "@/lib/history";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { appPath } from "@/lib/paths";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
+import { GOOGLE, providers, ruleFor, says, startHref } from "@/lib/sign-in";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
 
 /** sessionStorage: an invitation's token while its address signs in to connect it. */
@@ -163,67 +165,6 @@ function Address({ email }: { email: string }) {
   );
 }
 
-function GoogleMark({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-      <path
-        fill="#4285F4"
-        d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.7z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 24c3.2 0 6-1.1 8-2.9l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.1 0-5.8-2.1-6.7-5H1.3v3.1A12 12 0 0 0 12 24z"
-      />
-      <path fill="#FBBC05" d="M5.3 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.3a12 12 0 0 0 0 10.8l4-3.1z" />
-      <path
-        fill="#EA4335"
-        d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.3 6.6l4 3.1c.9-2.9 3.6-4.9 6.7-4.9z"
-      />
-    </svg>
-  );
-}
-
-/**
- * Signs in with Google. With `email` (an invitation's address), the address
- * goes on a line of its own under the label, and a long one is cut short,
- * its name sooner than its domain: the button stays one height however long
- * it is.
- */
-function GoogleButton({ next, email }: { next?: string; email?: string }) {
-  const back = appPath(next) !== "/" ? `&return_to=${encodeURIComponent(appPath(next))}` : "";
-  const href = `/api/v1/auth/google/start?intent=login${back}`;
-  const frame =
-    "flex w-full items-center rounded-lg border border-line-strong bg-raised/80 text-ink transition-colors hover:border-ink-4";
-  if (!email) {
-    return (
-      <a href={href} className={cn(frame, "h-10 justify-center gap-2.5 text-[14px] font-medium")}>
-        <GoogleMark className="size-4 shrink-0" />
-        Continue with Google
-      </a>
-    );
-  }
-  const [name, domain] = splitAddress(email);
-  return (
-    <a
-      href={href}
-      title={email}
-      aria-label={`Continue with Google as ${email}`}
-      className={cn(frame, "group h-14 gap-3 pr-3.5 pl-4 text-left")}
-    >
-      <GoogleMark className="size-5 shrink-0" />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-[14px] leading-tight font-medium">Continue with Google</span>
-        {/* The name gives way first, and the domain keeps at most two thirds of the line. */}
-        <span className="flex min-w-0 text-[12.5px] leading-tight text-ink-3">
-          <span className="min-w-0 truncate">{name}</span>
-          <span className="max-w-2/3 shrink-0 truncate">{domain}</span>
-        </span>
-      </span>
-      <ArrowRight className="size-4 shrink-0 text-ink-3 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-ink motion-reduce:transition-none" />
-    </a>
-  );
-}
-
 /** On the sign-in page, where the instance takes requests: the way in for people without an account. */
 function EarlyAccessLink() {
   return (
@@ -241,6 +182,26 @@ function EarlyAccessLink() {
   );
 }
 
+/**
+ * Where domains sign in with a provider only (InstanceSettings.sign_in), what the page says of them under the
+ * providers' buttons: "acme.com and acme.dev sign in with Google."
+ */
+function DomainRules({ instance }: { instance?: G.InstanceInfo }) {
+  const rules = instance?.sign_in?.rules ?? [];
+  if (rules.length === 0) return null;
+  const name = (id: string) => instance?.sign_in?.providers.find((p) => p.id === id)?.name ?? id;
+  return (
+    <ul className="mt-3 flex flex-col gap-1 text-[12.5px] leading-relaxed text-ink-3">
+      {rules.map((r) => (
+        <li key={r.domains.join(",")} className="flex items-start gap-2">
+          <Building2 className="mt-[3px] size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
+          <span>{says(r.domains, name(r.provider))}.</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function LoginPage() {
   const search = useSearch({ from: "/login" });
   const { data: instance } = useInstance();
@@ -248,7 +209,12 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [forgot, setForgot] = useState(false);
   const [sent, setSent] = useState(false);
+  // At a domain that signs in with a provider: the primary instance owner's password, their way in while it's down.
+  const [ownerPassword, setOwnerPassword] = useState(false);
   const [challenge, setChallenge] = useState<G.TwoFactorChallenge | null>(null);
+  const covered = ruleFor(instance, email);
+  // An address at such a domain turns the form into its provider's button.
+  const via = !ownerPassword ? covered?.provider : undefined;
   const { busy, error, submit } = useSubmit(
     () => api.login({ email, password }),
     (r) => {
@@ -256,6 +222,7 @@ export function LoginPage() {
       else if (r.me) signedIn(r.me, search.next);
     },
   );
+  const buttons = providers(instance);
   const reset = useSubmit(
     () => api.forgotPassword({ email }),
     () => {
@@ -264,7 +231,13 @@ export function LoginPage() {
     },
   );
   const passkey = usePasskeySignIn((r) => r.me && signedIn(r.me, search.next, { passkey: true }));
-  const external = search.error ? googleError(search.error, instance?.features.email ?? false) : null;
+  // The provider the account's domain signs in with, where Google came back refused for it.
+  const wanted = instance?.sign_in?.providers.find((p) => p.id === search.provider)?.name;
+  const external = search.error
+    ? googleError(search.error, instance?.features.email ?? false, search.domains, wanted)
+    : null;
+  // Accounts only from the directory: nobody makes one by signing in.
+  const closed = instance?.sign_in?.self_sign_up === false;
   if (challenge) {
     const copy = challengeCopy(challenge, instance?.name);
     return (
@@ -288,11 +261,13 @@ export function LoginPage() {
       footer={
         instance?.features.early_access ? (
           <EarlyAccessLink />
-        ) : instance && !instance.features.email ? (
+        ) : instance && (!instance.features.email || closed) ? (
           // On the page's color frosted, as the early access page's notes are: it lies on the scene's
           // planet, whose pixels a halo alone doesn't quiet at this size.
           <span className="inline-block rounded-xl bg-canvas/60 px-3 py-1.5 backdrop-blur-md">
-            Need an account or a new password? Ask an admin of this instance.
+            {!instance.features.email
+              ? "Need an account or a new password? Ask an admin of this instance."
+              : "Need an account? Your organization makes them here: ask an admin of this instance."}
           </span>
         ) : undefined
       }
@@ -307,10 +282,12 @@ export function LoginPage() {
           {external}
         </Banner>
       )}
-      {(instance?.features.google || passkey.supported) && (
+      {(buttons.length > 0 || passkey.supported) && (
         <>
           <div className="flex flex-col gap-2.5">
-            {instance?.features.google && <GoogleButton next={search.next} />}
+            {buttons.map((p) => (
+              <ProviderButton key={p.id} provider={p} next={search.next} />
+            ))}
             {passkey.supported && (
               <button
                 type="button"
@@ -323,6 +300,7 @@ export function LoginPage() {
               </button>
             )}
           </div>
+          <DomainRules instance={instance} />
           {passkey.error && (
             <Banner tone="error" className="mt-3">
               {passkey.error}
@@ -333,7 +311,15 @@ export function LoginPage() {
           </div>
         </>
       )}
-      <form onSubmit={submit} className="flex flex-col gap-4">
+      <form
+        onSubmit={(e) => {
+          if (!via) return void submit(e);
+          // Its provider signs them in, offering the account of the address they typed first.
+          e.preventDefault();
+          goTo(startHref(via, { next: search.next, hint: email }));
+        }}
+        className="flex flex-col gap-4"
+      >
         <Field label="Email">
           {(id) => (
             <Input
@@ -342,37 +328,51 @@ export function LoginPage() {
               autoComplete="username webauthn"
               required
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setOwnerPassword(false);
+              }}
               autoFocus
             />
           )}
         </Field>
-        <Field
-          label="Password"
-          action={
-            // Without email, where the footer is the way to early access, it says whom to ask.
-            instance?.features.email || instance?.features.early_access ? (
-              <button
-                type="button"
-                className="text-[12px] text-ink-3 hover:text-ink"
-                onClick={() => setForgot(true)}
-              >
-                Forgot?
-              </button>
-            ) : undefined
-          }
-        >
-          {(id) => (
-            <Input
-              id={id}
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          )}
-        </Field>
+        {covered && (
+          <p className="-mt-1 text-[12.5px] leading-relaxed text-ink-3" aria-live="polite">
+            {covered.provider
+              ? ownerPassword
+                ? `Only the primary instance owner's password signs in at ${covered.rule.domains.length === 1 ? covered.rule.domains[0] : "these domains"}, for when ${covered.provider.name} is down.`
+                : `${says(covered.rule.domains, covered.provider.name)}: its own sign-in, with its checks, signs you in here.`
+              : `${says(covered.rule.domains, covered.rule.provider)}, which this instance hasn't set up: ask its admins.`}
+          </p>
+        )}
+        {!via && (
+          <Field
+            label="Password"
+            action={
+              // Without email, where the footer is the way to early access, it says whom to ask.
+              instance?.features.email || instance?.features.early_access ? (
+                <button
+                  type="button"
+                  className="text-[12px] text-ink-3 hover:text-ink"
+                  onClick={() => setForgot(true)}
+                >
+                  Forgot?
+                </button>
+              ) : undefined
+            }
+          >
+            {(id) => (
+              <Input
+                id={id}
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            )}
+          </Field>
+        )}
         {error && <Banner tone="error">{error.message}</Banner>}
         {sent && <Banner tone="ok">If {email} has an account, a reset link is on its way.</Banner>}
         {forgot && !instance?.features.email && (
@@ -390,15 +390,30 @@ export function LoginPage() {
             </button>
           </Banner>
         )}
-        <Button
-          type="submit"
-          variant="primary"
-          size="lg"
-          loading={busy}
-          trailing={<ArrowRight className="size-4" />}
-        >
-          Sign in
-        </Button>
+        {via ? (
+          <ProviderSubmit provider={via} email={email.trim()} />
+        ) : (
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            loading={busy}
+            trailing={<ArrowRight className="size-4" />}
+          >
+            Sign in
+          </Button>
+        )}
+        {covered?.provider && (
+          <button
+            type="button"
+            onClick={() => setOwnerPassword((v) => !v)}
+            className="text-[12.5px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+          >
+            {ownerPassword
+              ? `Continue with ${covered.provider.name} instead`
+              : "Primary instance owner? Sign in with your password"}
+          </button>
+        )}
       </form>
     </AuthFrame>
   );
@@ -518,6 +533,9 @@ export function InvitePage() {
     },
   });
   const { data: instance } = useInstance();
+  // The invited address's domain signs in with a provider only: no password for it.
+  const covered = ruleFor(instance, email);
+  const google = providers(instance).find((p) => p.id === GOOGLE);
   useEffect(() => {
     if (preview.isError) forgetInvite();
   }, [preview.isError]);
@@ -629,48 +647,65 @@ export function InvitePage() {
       }
     >
       {workspacesLine}
-      {instance?.features.google && (
+      {covered ? (
+        // Its domain signs in with a provider: that provider's first sign-in takes the invitation.
+        <div className="flex flex-col gap-3">
+          {covered.provider && <ProviderButton provider={covered.provider} email={email} />}
+          <p className="text-[12.5px] leading-relaxed text-ink-3">
+            {covered.provider
+              ? `${says(covered.rule.domains, covered.provider.name)}: continue with it to accept, and it signs you in from then on.`
+              : `${says(covered.rule.domains, covered.rule.provider)}, which this instance hasn't set up yet: ask the person who invited you.`}
+          </p>
+        </div>
+      ) : (
         <>
-          <GoogleButton email={email} />
-          <div className="my-5 flex items-center gap-3 text-[12px] text-ink-4">
-            <div className="h-px flex-1 bg-line" /> or set a password <div className="h-px flex-1 bg-line" />
-          </div>
+          {google && (
+            <>
+              <ProviderButton provider={google} email={email} />
+              <div className="my-5 flex items-center gap-3 text-[12px] text-ink-4">
+                <div className="h-px flex-1 bg-line" /> or set a password{" "}
+                <div className="h-px flex-1 bg-line" />
+              </div>
+            </>
+          )}
+          <form onSubmit={submit} className="flex flex-col gap-4">
+            <Field label="Email">
+              {(id) => <Input id={id} value={email} readOnly className="text-ink-3" />}
+            </Field>
+            <NameFields
+              given={given}
+              family={family}
+              onGiven={setGiven}
+              onFamily={setFamily}
+              error={fieldError}
+              autoFocus
+            />
+            <Field label="Password" hint="At least 10 characters." error={fieldError("password")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              )}
+            </Field>
+            {error && !error.field && <Banner tone="error">{error.message}</Banner>}
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              loading={busy}
+              disabled={!preview.data}
+              trailing={<ArrowRight className="size-4" />}
+            >
+              Create account
+            </Button>
+          </form>
         </>
       )}
-      <form onSubmit={submit} className="flex flex-col gap-4">
-        <Field label="Email">{(id) => <Input id={id} value={email} readOnly className="text-ink-3" />}</Field>
-        <NameFields
-          given={given}
-          family={family}
-          onGiven={setGiven}
-          onFamily={setFamily}
-          error={fieldError}
-          autoFocus
-        />
-        <Field label="Password" hint="At least 10 characters." error={fieldError("password")}>
-          {(id) => (
-            <Input
-              id={id}
-              type="password"
-              required
-              autoComplete="new-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          )}
-        </Field>
-        {error && !error.field && <Banner tone="error">{error.message}</Banner>}
-        <Button
-          type="submit"
-          variant="primary"
-          size="lg"
-          loading={busy}
-          disabled={!preview.data}
-          trailing={<ArrowRight className="size-4" />}
-        >
-          Create account
-        </Button>
-      </form>
     </AuthFrame>
   );
 }

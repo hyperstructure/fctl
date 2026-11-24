@@ -117,6 +117,14 @@ pub enum Sensitive {
     /// No longer asking people before service accounts start sessions for
     /// them.
     StopServiceAccountConsent,
+    /// Letting the people at a domain sign in another way than its
+    /// provider again: no longer requiring it, letting passkeys alone sign
+    /// them in, or requiring another provider.
+    RelaxSignIn,
+    /// Unlinking someone's provider account (instance admins): where their
+    /// domain requires the provider, whoever next signs in with its address
+    /// there links to their account.
+    UnlinkSignIn,
 }
 
 impl Sensitive {
@@ -158,6 +166,8 @@ impl Sensitive {
             StopServiceAccountConsent => {
                 "let service accounts start sessions for people without asking them"
             }
+            RelaxSignIn => "let people sign in another way than their domain's provider",
+            UnlinkSignIn => "unlink someone's sign-in account",
         }
     }
 }
@@ -239,9 +249,34 @@ pub fn instance_settings_change(
         update.service_account_consent,
     ) {
         Some(Sensitive::StopServiceAccountConsent)
+    } else if update
+        .sign_in
+        .as_ref()
+        .is_some_and(|next| relaxes(&current.sign_in, next))
+    {
+        Some(Sensitive::RelaxSignIn)
     } else {
         None
     }
+}
+
+/// Whether `next` lets anyone sign in a way `current` doesn't: a domain
+/// that no longer requires its provider, or requires another, or whose
+/// people's passkeys alone sign them in now.
+fn relaxes(current: &[fctl_proto::api::SignInRule], next: &[fctl_proto::api::SignInRule]) -> bool {
+    current.iter().any(|was| {
+        was.domains.iter().any(|d| {
+            let domain = crate::sign_in::domain(d).unwrap_or_else(|_| d.clone());
+            match next.iter().find(|r| {
+                r.domains
+                    .iter()
+                    .any(|n| crate::sign_in::domain(n).is_ok_and(|n| n == domain))
+            }) {
+                None => true,
+                Some(now) => now.provider != was.provider || (now.passkeys && !was.passkeys),
+            }
+        })
+    })
 }
 
 /// Whether someone whose instance role is `actor` may turn confirming
@@ -473,6 +508,68 @@ mod tests {
         };
         assert_eq!(instance_settings_change(&unasked, &ask), None);
         assert_eq!(instance_settings_change(&unasked, &stop), None);
+    }
+
+    #[test]
+    fn letting_people_past_their_domains_provider_is_sensitive() {
+        use fctl_proto::api::SignInRule;
+        let rule = |domains: &[&str], provider: &str, passkeys: bool| SignInRule {
+            domains: domains.iter().map(|d| (*d).to_owned()).collect(),
+            provider: provider.to_owned(),
+            passkeys,
+        };
+        let current = InstanceSettings {
+            sign_in: vec![rule(&["acme.com", "acme.dev"], "google", false)],
+            ..Default::default()
+        };
+        let change = |next: Vec<SignInRule>| {
+            instance_settings_change(
+                &current,
+                &UpdateInstanceSettingsRequest {
+                    sign_in: Some(next),
+                    ..Default::default()
+                },
+            )
+        };
+        let relaxes = Some(Sensitive::RelaxSignIn);
+        // A domain let go, passkeys let in, another provider.
+        assert_eq!(change(vec![]), relaxes);
+        assert_eq!(change(vec![rule(&["acme.com"], "google", false)]), relaxes);
+        assert_eq!(
+            change(vec![rule(&["acme.com", "acme.dev"], "google", true)]),
+            relaxes
+        );
+        assert_eq!(
+            change(vec![rule(&["acme.com", "acme.dev"], "okta", false)]),
+            relaxes
+        );
+        // Requiring more, as typed or split in two, isn't.
+        assert_eq!(
+            change(vec![rule(
+                &["*@ACME.com", "acme.dev", "acme.io"],
+                "google",
+                false
+            )]),
+            None
+        );
+        assert_eq!(
+            change(vec![
+                rule(&["acme.com"], "google", false),
+                rule(&["acme.dev"], "google", false)
+            ]),
+            None
+        );
+        // Nor is a first rule, or none sent.
+        let none = InstanceSettings::default();
+        let first = UpdateInstanceSettingsRequest {
+            sign_in: Some(vec![rule(&["acme.com"], "google", true)]),
+            ..Default::default()
+        };
+        assert_eq!(instance_settings_change(&none, &first), None);
+        assert_eq!(
+            instance_settings_change(&current, &UpdateInstanceSettingsRequest::default()),
+            None
+        );
     }
 
     #[test]

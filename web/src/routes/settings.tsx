@@ -33,7 +33,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { CONNECT_ID, ConnectClaude, EndedLogin, type Way } from "@/components/claude/connect";
+import { CONNECT_ID, ConnectClaude, EndedLogin, EndedToken, type Way } from "@/components/claude/connect";
 import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { KeepTokenOut } from "@/components/claude/stand-in";
 import { PasskeySettings } from "@/components/passkeys/settings";
@@ -41,6 +41,7 @@ import { PlanUsageList } from "@/components/plan-usage";
 import { AppLog } from "@/components/settings/app-log";
 import { SettingsIcon } from "@/components/settings/icon";
 import { type NavEntry, type NavLinkProps, SettingsList, SettingsNav } from "@/components/settings/nav";
+import { ProviderMark } from "@/components/sign-in/provider";
 import { AccessTokens } from "@/components/tokens";
 import { ConfirmWithCode } from "@/components/two-factor/confirm-code";
 import { RecoveryCodes } from "@/components/two-factor/recovery-codes";
@@ -71,6 +72,7 @@ import { api, clickConfirmed, confirmFirst, emails, linearLinkUrl, workspaces as
 import { forgetLog } from "@/lib/app-log";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
+import { fullDay, runsOutWords, SOON_DAYS, within } from "@/lib/claude-oversight";
 import { cn } from "@/lib/cn";
 import { withAlpha } from "@/lib/color";
 import { exported, exportHint, nextExport } from "@/lib/data-export";
@@ -96,6 +98,7 @@ import {
   workspacesGist,
 } from "@/lib/settings";
 import { forgetSidebar } from "@/lib/sidebar";
+import { domainOf, domainsWords, GOOGLE, providers, ruleFor, says, startHref } from "@/lib/sign-in";
 import { useTheme } from "@/lib/theme";
 import { useTickAt } from "@/lib/tick";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
@@ -516,6 +519,11 @@ function Addresses({ me }: { me: G.Me }) {
   const list = me.emails.length
     ? me.emails
     : [{ email: me.user.email, primary: true, commit_email: me.commit_email, workspaces: [], added_at: 0 }];
+  // An address at a domain that signs in with a provider only stays: without it, you would sign in another way.
+  // Any rule's domain, as the server checks it, not only the one Settings names.
+  const { data: instance } = useInstance();
+  const held = me.sign_in && !me.sign_in.exempt ? me.sign_in : undefined;
+  const kept = (email: string) => !!held && !!ruleFor(instance, email);
   return (
     <Section
       title="Email addresses"
@@ -563,14 +571,16 @@ function Addresses({ me }: { me: G.Me }) {
                   >
                     Make primary
                   </Button>
-                  <button
-                    type="button"
-                    aria-label={`Disconnect ${e.email}`}
-                    className="rounded p-1.5 text-ink-4 hover:text-danger"
-                    onClick={() => setDisconnecting(e)}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
+                  {!kept(e.email) && (
+                    <button
+                      type="button"
+                      aria-label={`Disconnect ${e.email}`}
+                      className="rounded p-1.5 text-ink-4 hover:text-danger"
+                      onClick={() => setDisconnecting(e)}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -597,6 +607,16 @@ function Addresses({ me }: { me: G.Me }) {
           To add another address, ask an instance admin to invite it. Open the invitation while you are signed
           in here, and connect it to this account.
         </p>
+        {held && list.some((e) => !e.primary && kept(e.email)) && (
+          <p>
+            Your addresses at{" "}
+            {domainsWords([
+              ...new Set(list.filter((e) => kept(e.email)).map((e) => domainOf(e.email) ?? "")),
+            ])}{" "}
+            stay on this account, as you sign in with {held.provider_name} as one of them: an instance admin
+            removes them.
+          </p>
+        )}
       </div>
       <Dialog
         open={!!disconnecting}
@@ -858,10 +878,15 @@ function Claude({ me }: { me: G.Me }) {
                         ? "Kept on your runners · never given to fctl · no Remote Control"
                         : c.kind === "oauth"
                           ? "Full login · Remote Control"
-                          : "Inference only · no Remote Control"}
+                          : c.provisioned
+                            ? "Set by your admins · inference only · no Remote Control"
+                            : "Inference only · no Remote Control"}
                       {planOf(c) && ` · ${planOf(c)}`}
                       {c.status === "invalid" && <span className="text-danger"> · needs reconnecting</span>}
-                      {c.last_used_at && ` · used ${ago(c.last_used_at)}`}
+                      {c.status !== "invalid" && c.answered_at
+                        ? ` · Claude answered ${ago(c.answered_at)}`
+                        : c.last_used_at && ` · used ${ago(c.last_used_at)}`}
+                      {runsOut(c) && !soon(c) && ` · ${runsOutWords(c.expires_at ?? 0, c.expiry_estimated)}`}
                     </div>
                   </div>
                   {!c.is_default && (
@@ -882,6 +907,15 @@ function Claude({ me }: { me: G.Me }) {
                   {c.status === "invalid" && c.kind === "oauth" && !c.on_runners && (
                     <EndedLogin onReconnect={reconnect} />
                   )}
+                  {c.status === "invalid" && c.kind === "setup_token" && (
+                    <EndedToken
+                      endedAt={c.ended_at}
+                      onRunners={c.on_runners}
+                      provisioned={c.provisioned}
+                      onReconnect={reconnect}
+                    />
+                  )}
+                  {soon(c) && <RunsOutSoon credential={c} onReconnect={() => reconnect("token")} />}
                   {c.on_runners && <OnRunnersDetails />}
                   {c.usage?.length ? (
                     <PlanUsageList usage={c.usage} />
@@ -899,6 +933,54 @@ function Claude({ me }: { me: G.Me }) {
         <ConnectClaude me={me} way={way} onWay={setWay} />
       </div>
     </Section>
+  );
+}
+
+/** A long-lived token fctl keeps, which runs out a year after it was made: it has a date. */
+const runsOut = (c: G.ClaudeCredentialInfo) =>
+  c.kind === "setup_token" && !c.on_runners && c.status === "active" && c.expires_at !== undefined;
+
+/** One that does within a month: the page says so in amber, with the way to a new one. */
+const soon = (c: G.ClaudeCredentialInfo) => runsOut(c) && within(c.expires_at, SOON_DAYS);
+
+/**
+ * Under a long-lived token within a month of running out: when, why fctl can only say "around", and
+ * the way to a new one before its sessions stop.
+ */
+function RunsOutSoon({
+  credential: c,
+  onReconnect,
+}: {
+  credential: G.ClaudeCredentialInfo;
+  onReconnect: () => void;
+}) {
+  const at = c.expires_at ?? 0;
+  const past = at <= Date.now();
+  return (
+    <div className="flex flex-col items-start gap-2.5 rounded-lg border border-amber/25 bg-amber-soft px-3.5 py-2.5 text-[13px] leading-relaxed text-ink-2">
+      <p>
+        <span className="text-amber">
+          {past
+            ? c.expiry_estimated
+              ? `It may have run out around ${fullDay(at)}.`
+              : `It ran out on ${fullDay(at)}.`
+            : `${runsOutWords(at, c.expiry_estimated).replace(/^r/, "R")}.`}
+        </span>{" "}
+        {c.expiry_estimated
+          ? "That's a year after you connected it: fctl can't read the date from the token, so it may be sooner. "
+          : ""}
+        {c.provisioned
+          ? past
+            ? "Your admins set this token: ask them for a new one, or connect one of your own here."
+            : "Your admins set this token, and set the next one: ask them if it doesn't come before then, or connect one of your own here."
+          : past
+            ? "Make a new one with claude setup-token and paste it here: sessions on this one may fail already."
+            : "Make a new one with claude setup-token and paste it here before then, or your sessions stop."}
+      </p>
+      <Button size="sm" icon={<KeyRound className="size-3.5" />} onClick={onReconnect}>
+        Connect a new token
+      </Button>
+    </div>
   );
 }
 
@@ -1263,6 +1345,10 @@ function Tile({ on, children }: { on?: boolean; children: ReactNode }) {
   );
 }
 
+/**
+ * How you sign in: your password and the providers' accounts linked to yours. Where a domain of yours signs in with
+ * a provider only (`me.sign_in`), that provider's accounts at it are your way in, and a password none.
+ */
 function SignIn({ me }: { me: G.Me }) {
   const { data: instance } = useInstance();
   const [changing, setChanging] = useState(false);
@@ -1271,76 +1357,99 @@ function SignIn({ me }: { me: G.Me }) {
     onSuccess: (m) => queryClient.setQueryData(keys.me, m),
     onError: (e) => toast(e.message, "error"),
   });
-  const google = me.identities.find((i) => i.provider === "google");
+  const rule = me.sign_in;
+  // Held to the provider: your organization's admins require it, and you aren't the primary instance owner.
+  const held = rule && !rule.exempt ? rule : undefined;
   const password = me.user.has_password;
+  const googles = me.identities.filter((i) => i.provider === GOOGLE);
+  const google = providers(instance).find((p) => p.id === GOOGLE);
+  // The linked accounts that meet a rule, vouched for at one of its domains: the way in it keeps, which stays
+  // linked. One that only shows an address there, unvouched, signs nobody in where a rule covers them.
+  const rules = instance?.sign_in?.rules ?? [];
+  const keeps = (i: G.Identity) =>
+    !!held &&
+    !!i.domain &&
+    rules.some((r) => r.provider === i.provider && r.domains.includes(i.domain ?? ""));
   return (
-    <Section title="Sign-in methods" description="Keep at least one way in.">
+    <Section
+      title="Sign-in methods"
+      description={held ? "Your organization chose how you sign in." : "Keep at least one way in."}
+    >
+      {rule && (
+        <Banner tone="info" className="mb-4">
+          {held
+            ? `${says(held.domains, held.provider_name)}, as ${instance?.name ?? "this instance"}'s admins require: ${held.provider_name}'s own sign-in, with its checks, signs you in here.`
+            : `${says(rule.domains, rule.provider_name)}. As the primary instance owner, you keep your password and passkeys too: the way in if ${rule.provider_name} is down.`}
+        </Banner>
+      )}
       <ul className="divide-y divide-line border-y border-line">
         <li className="flex items-center gap-3 py-3">
-          <Tile>
+          <Tile on={password && !held}>
             <RectangleEllipsis />
           </Tile>
           <div className="min-w-0 flex-1">
             <div className="text-[13.5px] text-ink">Password</div>
             <div className="text-[12px] text-ink-4">
-              {password
-                ? "Signs you in with any of your email addresses"
-                : "None yet: set one to sign in with your email address"}
+              {held
+                ? `None: passwords don't sign in at ${domainsWords(held.domains, "or")}`
+                : password
+                  ? "Signs you in with any of your email addresses"
+                  : "None yet: set one to sign in with your email address"}
             </div>
           </div>
-          <Button size="sm" variant={password ? "ghost" : "secondary"} onClick={() => setChanging(true)}>
-            {password ? "Change password" : "Set a password"}
-          </Button>
-        </li>
-        <li className="flex items-center gap-3 py-3">
-          <Tile>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="#4285F4"
-                d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.7z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 24c3.2 0 6-1.1 8-2.9l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.1 0-5.8-2.1-6.7-5H1.3v3.1A12 12 0 0 0 12 24z"
-              />
-              <path fill="#FBBC05" d="M5.3 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.3a12 12 0 0 0 0 10.8l4-3.1z" />
-              <path
-                fill="#EA4335"
-                d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.3 6.6l4 3.1c.9-2.9 3.6-4.9 6.7-4.9z"
-              />
-            </svg>
-          </Tile>
-          <div className="min-w-0 flex-1">
-            <div className="text-[13.5px] text-ink">Google</div>
-            <div className="truncate text-[12px] text-ink-4">
-              {google
-                ? `Linked as ${google.email}`
-                : instance?.features.google
-                  ? "Not linked"
-                  : "Not available on this instance"}
-            </div>
-          </div>
-          {google ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => unlink.mutate(google.id)}
-              loading={unlink.isPending}
-            >
-              Unlink
+          {!held && (
+            <Button size="sm" variant={password ? "ghost" : "secondary"} onClick={() => setChanging(true)}>
+              {password ? "Change password" : "Set a password"}
             </Button>
-          ) : (
-            instance?.features.google && (
+          )}
+        </li>
+        {googles.map((g) => (
+          <li key={g.id} className="flex items-center gap-3 py-3">
+            <Tile on>
+              <ProviderMark id={GOOGLE} />
+            </Tile>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13.5px] text-ink">Google</div>
+              <div className="truncate text-[12px] text-ink-4">
+                {keeps(g)
+                  ? `Your way in, as ${g.email}`
+                  : `Linked as ${g.email ?? "an account without an address"}`}
+              </div>
+            </div>
+            {!keeps(g) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => unlink.mutate(g.id)}
+                loading={unlink.isPending && unlink.variables === g.id}
+              >
+                Unlink
+              </Button>
+            )}
+          </li>
+        ))}
+        {googles.length === 0 && (
+          <li className="flex items-center gap-3 py-3">
+            <Tile>
+              <ProviderMark id={GOOGLE} />
+            </Tile>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13.5px] text-ink">Google</div>
+              <div className="truncate text-[12px] text-ink-4">
+                {google ? "Not linked" : "Not available on this instance"}
+              </div>
+            </div>
+            {google && (
               <a
                 // Back at /settings?linked=google, or ?error=…: Settings opens this page for either.
-                href="/api/v1/auth/google/start?intent=link&return_to=/settings"
+                href={startHref(google, { intent: "link", next: "/settings" })}
                 className={buttonClass({ size: "sm" })}
               >
                 Link Google
               </a>
-            )
-          )}
-        </li>
+            )}
+          </li>
+        )}
       </ul>
       <PasswordDialog me={me} open={changing} onClose={() => setChanging(false)} />
     </Section>
@@ -1499,7 +1608,9 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
                     }`
                   : t.on
                     ? "Not set up: your passkeys are your second factor"
-                    : "Off: your password alone signs you in"}
+                    : me.user.has_password
+                      ? "Off: your password alone signs you in"
+                      : "Off: no code follows your sign-in"}
               </div>
             </div>
             {on ? (
@@ -1739,6 +1850,14 @@ function AuthenticatorName({ name }: { name?: string }) {
 }
 
 /** Where you are signed in: browsers and the CLI. Access tokens have a section of their own. */
+/** How a sign-in was made, as a device's line says it ("signed in with Google"); nothing for one from before fctl kept it. */
+function signedInWith(method?: string): string | undefined {
+  if (!method) return undefined;
+  if (method === "password") return "a password";
+  if (method === "passkey") return "a passkey";
+  return method === GOOGLE ? "Google" : method;
+}
+
 function Devices() {
   const list = useQuery({ queryKey: keys.tokens, queryFn: api.tokens });
   const revoke = useMutation({
@@ -1762,7 +1881,9 @@ function Devices() {
                   {t.current && <span className="ml-2 text-[11.5px] text-accent">this device</span>}
                 </div>
                 <div className="text-[12px] text-ink-4">
-                  {t.kind === "cli" ? "fctl" : "Browser"} · active {ago(t.last_used_at ?? t.created_at)}
+                  {t.kind === "cli" ? "fctl" : "Browser"}
+                  {signedInWith(t.method) && ` · signed in with ${signedInWith(t.method)}`} · active{" "}
+                  {ago(t.last_used_at ?? t.created_at)}
                 </div>
               </div>
               {!t.current && (

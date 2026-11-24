@@ -187,6 +187,18 @@ pub async fn remove(ctx: &mut Ctx, email: &str) -> AppResult<Response> {
             "This is your primary address. Make another one primary first.",
         ));
     }
+    // The address that holds them to their organization's provider: they
+    // would sign in with a password again without it. An instance admin,
+    // or their directory's admin token, removes it.
+    if let Some(required) =
+        fctl_domain::sign_in::required(&ctx.settings().sign_in, &[&email], false)
+        && !user.is_owner()
+    {
+        return Err(conflict(&format!(
+            "{}, and your organization keeps this address on your account: an instance admin removes it.",
+            crate::sign_in::says(&required)
+        )));
+    }
     #[derive(Deserialize)]
     struct M {
         workspace_id: String,

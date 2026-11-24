@@ -179,6 +179,10 @@ starts without a `running` of its own, as with Claude Code), `limit`
 hits a usage limit that resets 20 seconds later (the session pauses and
 continues half a minute after the reset; a message that also says
 `reset`, like the one fctl-agent continues it with, doesn't count),
+`refused` answers as Claude Code does when Claude refuses its credential
+(`authentication_failed`: in as many sessions as the instance's
+`claude_refusals` says, fctl marks the connection ended, and Settings →
+Claude and the People tab show it),
 `overage` reports paid usage (the session must pause), `warning`
 reports plan usage with Claude Code's warning that the weekly limit goes
 faster than the week passes (`allowed_warning`: the apps go by the share

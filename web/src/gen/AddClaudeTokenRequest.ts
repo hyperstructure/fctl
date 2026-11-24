@@ -4,4 +4,11 @@ export type AddClaudeTokenRequest = {
 /**
  * The output of `claude setup-token` (`sk-ant-oat01-…`).
  */
-token: string, label?: string, };
+token: string, label?: string, 
+/**
+ * When `claude setup-token` made it, if the person knows: it runs out
+ * a year on. Absent, fctl counts the year from now and says it runs
+ * out around then ([`ClaudeCredentialInfo::expiry_estimated`]). The
+ * same token connected again keeps the date it had.
+ */
+made_at?: number, };

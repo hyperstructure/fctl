@@ -1291,7 +1291,7 @@ async fn run(
     let mut forced = false;
     // When the stop began, which bounds how long parts may keep it waiting.
     let mut stop_since: Option<Instant> = None;
-    let mut upload: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
+    let mut upload: Option<tokio::task::JoinHandle<Result<(), crate::snapshots::NotSaved>>> = None;
     // A snapshot's parts on their way to the agent, one at a time, and one
     // that waits for a link while there is none.
     let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<crate::snapshots::Paced>();
@@ -2104,20 +2104,26 @@ async fn run(
     if let Some(up) = upload.take() {
         let failed = match tokio::time::timeout(crate::snapshots::UPLOAD_LIMIT, up).await {
             Ok(Ok(Ok(()))) => None,
-            Ok(Ok(Err(e))) => Some(e),
-            Ok(Err(e)) => Some(e.to_string()),
+            Ok(Ok(Err(e))) => Some((e.why, e.maybe_kept)),
+            Ok(Err(e)) => Some((e.to_string(), false)),
             Err(_) => {
                 tracing::warn!("{session_id}: its snapshot's upload ran out of time");
-                Some("its upload ran out of time".into())
+                Some(("its upload ran out of time".into(), false))
             }
         };
-        if let Some(why) = failed {
+        if let Some((why, maybe_kept)) = failed {
+            // The control plane may have kept one whose commit got no answer.
+            let text = if maybe_kept {
+                format!(
+                    "The session's snapshot may not have been saved: {why}. If it wasn't, a resume on another runner starts from the task and the branch."
+                )
+            } else {
+                format!(
+                    "The session's snapshot wasn't saved: {why}. A resume on another runner starts from the task and the branch."
+                )
+            };
             uplink.send(UplinkUp::Notice {
-                notice: Notice::new(
-                    NoticeLevel::Warn,
-                    "snapshot_not_saved",
-                    format!("The session's snapshot wasn't saved: {why}. A resume on another runner starts from the task and the branch."),
-                ),
+                notice: Notice::new(NoticeLevel::Warn, "snapshot_not_saved", text),
             });
         }
     }

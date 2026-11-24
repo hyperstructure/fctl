@@ -9,6 +9,7 @@ use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use fctl_domain::cookies::Cookie;
 use fctl_domain::limits::Limits;
+use fctl_domain::sign_in::SignedIn;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_proto::ApiError;
 use fctl_proto::api::{InstanceSettings, Me, TokenKind};
@@ -52,19 +53,35 @@ pub fn dummy_verify(password: &str) {
 
 // ───────────────────────────── tokens ─────────────────────────────
 
-/// Creates a web session, CLI token or PAT and returns the secret. Web
-/// sessions also set the cookie on `ctx`. Only a PAT may have `limits`.
-/// `verified_at`: the sign-in it comes from confirmed it's its person
-/// (`fctl_domain::verify`).
+/// What a new token is, besides its person and kind.
+#[derive(Default)]
+pub struct NewToken<'a> {
+    pub name: Option<&'a str>,
+    pub expires_at: Option<i64>,
+    /// What it is limited to: only a PAT may be.
+    pub limits: Option<&'a Limits>,
+    /// The sign-in it comes from confirmed it's its person
+    /// (`fctl_domain::verify`).
+    pub verified_at: Option<i64>,
+    /// How the sign-in it comes from was made (`fctl_domain::sign_in`).
+    pub how: SignedIn,
+}
+
+/// Creates a web session, CLI token or PAT and returns its id and secret.
+/// Web sessions also set the cookie on `ctx`.
 pub async fn issue_token(
     ctx: &mut Ctx,
     user_id: &str,
     kind: TokenKind,
-    name: Option<&str>,
-    expires_at: Option<i64>,
-    limits: Option<&Limits>,
-    verified_at: Option<i64>,
+    new: NewToken<'_>,
 ) -> AppResult<(String, String)> {
+    let NewToken {
+        name,
+        expires_at,
+        limits,
+        verified_at,
+        how,
+    } = new;
     let secret_kind = match kind {
         TokenKind::Web => SecretKind::WebSession,
         TokenKind::Cli => SecretKind::Cli,
@@ -82,8 +99,8 @@ pub async fn issue_token(
         .map(Limits::to_json);
     q(
         &ctx.db,
-        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at, scope, verified_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at, scope, verified_at, auth_method, auth_domain) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&hash_secret(&secret)),
@@ -98,6 +115,8 @@ pub async fn issue_token(
             on(expires_at),
             os(scope.as_deref()),
             on(verified_at),
+            os(how.method_str()),
+            os(how.domain.as_deref()),
         ],
     )?
     .run()
@@ -118,11 +137,26 @@ pub async fn issue_token(
 /// and `last_active_at`. The request then counts as theirs (for the audit
 /// log). `confirmed`: the sign-in took a passkey or a second factor, so the
 /// browser counts as having confirmed it's them before sensitive actions
-/// (`fctl_domain::verify`) for the next 15 minutes.
-pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow, confirmed: bool) -> AppResult<()> {
+/// (`fctl_domain::verify`) for the next 15 minutes. `how`: how it was made,
+/// which the session keeps for the instance's sign-in rules.
+pub async fn start_web_session(
+    ctx: &mut Ctx,
+    user: &UserRow,
+    confirmed: bool,
+    how: SignedIn,
+) -> AppResult<()> {
     let verified_at = confirmed.then_some(ctx.now);
-    let (token_id, _) =
-        issue_token(ctx, &user.id, TokenKind::Web, None, None, None, verified_at).await?;
+    let (token_id, _) = issue_token(
+        ctx,
+        &user.id,
+        TokenKind::Web,
+        NewToken {
+            verified_at,
+            how: how.clone(),
+            ..NewToken::default()
+        },
+    )
+    .await?;
     q(
         &ctx.db,
         "UPDATE users SET last_login_at = ?1, last_active_at = ?1 WHERE id = ?2",
@@ -137,6 +171,7 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow, confirmed: bool) -
         ctx.now,
         settings,
         verified_at,
+        how,
     ));
     Ok(())
 }
@@ -181,6 +216,11 @@ struct TokenLookup {
     /// What the token is limited to (`fctl_domain::limits::Limits`, JSON).
     #[serde(default)]
     scope: Option<String>,
+    /// How its sign-in was made (`fctl_domain::sign_in::SignedIn`).
+    #[serde(default)]
+    auth_method: Option<String>,
+    #[serde(default)]
+    auth_domain: Option<String>,
     /// The instance's settings (JSON), for its two-factor policy.
     #[serde(default)]
     instance_settings: Option<String>,
@@ -207,6 +247,7 @@ fn token_lookup_sql(column: &str) -> String {
     format!(
         "SELECT t.id AS token_id, t.kind AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
          t.last_used_at AS last_used_at, t.verified_at AS verified_at, t.scope AS scope, \
+         t.auth_method AS auth_method, t.auth_domain AS auth_domain, \
          (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
          FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.{column} = ?",
         crate::instance::KEY,
@@ -220,6 +261,7 @@ fn admin_token_sql() -> String {
     format!(
         "SELECT t.id AS token_id, 'admin' AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
          t.last_used_at AS last_used_at, NULL AS verified_at, NULL AS scope, \
+         t.auth_method AS auth_method, t.auth_domain AS auth_domain, \
          (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
          FROM admin_tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?",
         crate::instance::KEY,
@@ -240,10 +282,11 @@ pub struct Holder {
 /// The account behind the token `token_id`, with the instance's settings
 /// and the token's limits, while the token still lets it in as
 /// [`authenticate`] does: it exists and hasn't expired, the account is
-/// active, and it may do more than set up two-factor sign-in. For sockets
-/// opened with the token, which check again while they stay open, so that
-/// signing out, revoking the token or disabling the account closes them
-/// too.
+/// active, its sign-in meets the instance's sign-in rules, and it may do
+/// more than set up two-factor sign-in. For sockets opened with the token,
+/// which check again while they stay open, so that signing out, revoking
+/// the token, disabling the account or requiring a provider of its domain
+/// closes them too.
 pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult<Option<Holder>> {
     let found: Option<TokenLookup> = q(db, &token_lookup_sql("id"), &[s(token_id)])?
         .first()
@@ -253,6 +296,10 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
             return None;
         }
         let settings = crate::instance::parse(f.instance_settings.as_deref());
+        let how = SignedIn::read(f.auth_method.as_deref(), f.auth_domain.as_deref());
+        if f.user.admits(&settings, &how).is_err() {
+            return None;
+        }
         let setup_required = fctl_domain::two_factor::setup_required(
             &settings,
             f.user.has_password(),
@@ -332,6 +379,18 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         )));
     }
     let kind = TokenKind::parse(&found.kind).unwrap_or(TokenKind::Pat);
+    let settings = crate::instance::parse(found.instance_settings.as_deref());
+    // A domain of theirs signs in with a provider only: a sign-in made
+    // another way, or before fctl kept how, no longer lets them in. A
+    // browser's is signed out, and the sign-in page shows the way in.
+    let how = SignedIn::read(found.auth_method.as_deref(), found.auth_domain.as_deref());
+    if let Err(required) = found.user.admits(&settings, &how) {
+        if via_cookie {
+            clear_session_cookie(ctx);
+            return Ok(());
+        }
+        return Err(AppError(crate::sign_in::token_refused(&required, kind)));
+    }
     // Touch the token at most every 10 minutes; slide web and CLI expiry.
     let stale = found
         .last_used_at
@@ -365,7 +424,6 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
             ));
         }
     }
-    let settings = crate::instance::parse(found.instance_settings.as_deref());
     let two_factor_setup_required = fctl_domain::two_factor::setup_required(
         &settings,
         found.user.has_password(),
@@ -380,6 +438,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         via_cookie,
         signed_in_at: found.token_created_at,
         verified_at: found.verified_at,
+        signed_in_with: how,
         two_factor_setup_required,
         settings,
         limits,
@@ -418,6 +477,13 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             "This admin token stopped working: the admin who made it isn't an active admin of the instance any more.",
         )));
     }
+    let settings = crate::instance::parse(found.instance_settings.as_deref());
+    // Held to the rules as its admin's own sign-ins are: one their domain's
+    // rule doesn't meet stops.
+    let how = SignedIn::read(found.auth_method.as_deref(), found.auth_domain.as_deref());
+    if let Err(required) = found.user.admits(&settings, &how) {
+        return Err(AppError(crate::sign_in::admin_token_refused(&required)));
+    }
     if found
         .last_used_at
         .is_none_or(|t| ctx.now - t > 10 * 60 * 1000)
@@ -435,7 +501,6 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             Ok(())
         });
     }
-    let settings = crate::instance::parse(found.instance_settings.as_deref());
     // An admin the instance requires two-factor sign-in of, who hasn't set
     // it up, does nothing else until they have, with their tokens too.
     let two_factor_setup_required = fctl_domain::two_factor::setup_required(
@@ -452,6 +517,7 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
         via_cookie: false,
         signed_in_at: found.token_created_at,
         verified_at: None,
+        signed_in_with: how,
         two_factor_setup_required,
         settings,
         limits: None,
@@ -493,7 +559,7 @@ pub async fn user_by_id(ctx: &Ctx, id: &str) -> AppResult<Option<UserRow>> {
 pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
     let identities: Vec<IdentityRow> = q(
         &ctx.db,
-        "SELECT id, provider, email, name, avatar_url, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
+        "SELECT id, provider, email, vouched_domain, name, avatar_url, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
         &[s(&user.id)],
     )?
     .all()
@@ -532,6 +598,7 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
         gravatar: ctx.settings().gravatar.then_some(user.gravatar),
         claude_stand_in: user.claude_stand_in,
         export: Some(data_export(ctx, user)),
+        sign_in: crate::sign_in::requirement(user, &ctx.settings()),
     })
 }
 

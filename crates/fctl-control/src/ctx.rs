@@ -7,6 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::http;
 use crate::model::UserRow;
 use fctl_domain::limits::Limits;
+use fctl_domain::sign_in::SignedIn;
 use fctl_domain::verify::{self, Sensitive};
 use fctl_proto::api::{InstanceSettings, TokenKind};
 use fctl_proto::{ApiError, ErrorCode};
@@ -26,6 +27,10 @@ pub struct Authed {
     /// When it last confirmed it's its person, before sensitive actions
     /// ([`Ctx::verified`]).
     pub verified_at: Option<i64>,
+    /// How the sign-in it comes from was made (`tokens.auth_method`): what
+    /// a CLI sign-in it approves and an access token it makes inherit, and
+    /// what the instance's sign-in rules check (`fctl_domain::sign_in`).
+    pub signed_in_with: SignedIn,
     /// The instance requires two-factor of this account and it has none
     /// yet: only setting it up works (`crate::api::two_factor::gate`).
     pub two_factor_setup_required: bool,
@@ -87,13 +92,14 @@ impl AutopilotCaller {
 }
 
 impl Authed {
-    /// The browser session `user` just signed in with.
+    /// The browser session `user` just signed in with, made `how`.
     pub fn signed_in(
         user: &UserRow,
         token_id: String,
         now: i64,
         settings: InstanceSettings,
         verified_at: Option<i64>,
+        how: SignedIn,
     ) -> Self {
         Self {
             user: user.clone(),
@@ -102,6 +108,7 @@ impl Authed {
             via_cookie: true,
             signed_in_at: now,
             verified_at,
+            signed_in_with: how,
             two_factor_setup_required: false,
             settings,
             limits: None,
