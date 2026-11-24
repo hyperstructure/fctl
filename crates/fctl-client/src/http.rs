@@ -196,7 +196,29 @@ impl HttpClient {
         body: Option<Vec<u8>>,
         content_type: Option<&str>,
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
-        let req = request(method, url, token, body, content_type, &self.headers(&[]))?;
+        let req = request(
+            method,
+            url,
+            token,
+            body.map(Bytes::from),
+            content_type,
+            &self.headers(&[]),
+        )?;
+        self.finish(url, req).await
+    }
+
+    /// Sends a request with `headers` besides the usual ones, which they
+    /// replace (a signed `Authorization`, say), and `body`, which a caller
+    /// that tries again sends again without copying it: status, headers
+    /// and body, whatever the status.
+    pub async fn send_with(
+        &self,
+        method: Method,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<Bytes>,
+    ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
+        let req = request(method, url, None, body, None, &self.headers(headers))?;
         self.finish(url, req).await
     }
 
@@ -356,9 +378,12 @@ impl HttpClient {
         url: &str,
         req: Request<Full<Bytes>>,
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
+        // A query can carry a token or a signature: errors, which reach
+        // logs and the control plane, show none.
+        let shown = without_query(url);
         let fut = async {
             let res = self.client.request(req).await.map_err(|e| Error::Network {
-                url: url.to_owned(),
+                url: shown.clone(),
                 message: error_chain(&e),
             })?;
             let (parts, body) = res.into_parts();
@@ -366,7 +391,7 @@ impl HttpClient {
                 .collect()
                 .await
                 .map_err(|e| Error::Network {
-                    url: url.to_owned(),
+                    url: shown.clone(),
                     message: e.to_string(),
                 })?
                 .to_bytes();
@@ -478,7 +503,7 @@ fn request(
     method: Method,
     url: &str,
     token: Option<&str>,
-    body: Option<Vec<u8>>,
+    body: Option<Bytes>,
     content_type: Option<&str>,
     headers: &[(&str, &str)],
 ) -> Result<Request<Full<Bytes>>> {
@@ -510,7 +535,7 @@ fn request(
             }
         }
     }
-    req.body(Full::new(Bytes::from(body.unwrap_or_default())))
+    req.body(Full::new(body.unwrap_or_default()))
         .map_err(|e| Error::Other(e.to_string()))
 }
 
@@ -528,6 +553,26 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A request that reaches nothing says where it went, but not its
+    /// query, which can carry a token.
+    #[tokio::test]
+    async fn errors_show_no_query() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0");
+        let Ok(port) = listener.and_then(|l| l.local_addr()).map(|a| a.port()) else {
+            return;
+        };
+        // Its listener is gone: nothing answers there.
+        let url = format!("http://127.0.0.1:{port}/sts?WebIdentityToken=secret");
+        let err = HttpClient::new(Duration::from_secs(5))
+            .send_with(Method::GET, &url, &[], None)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains(&format!("127.0.0.1:{port}/sts")), "{err}");
+        assert!(!err.contains("secret"), "{err}");
+    }
 
     #[test]
     fn sign_in_links_stay_on_the_server() {

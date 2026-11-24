@@ -10,7 +10,7 @@ use crate::ctx::Ctx;
 use crate::error::{AppError, AppResult, not_found};
 use crate::{http, internal};
 use fctl_proto::ApiError;
-use fctl_proto::api::{Ok as Done, SnapshotCommit};
+use fctl_proto::api::{Ok as Done, SnapshotCommit, SnapshotCommitted};
 use fctl_proto::runner::SNAPSHOT_PART_BYTES;
 use worker::{Request, Response};
 
@@ -25,11 +25,7 @@ fn enc(s: &str) -> String {
 
 /// A snapshot's id as agents make them: `snp_` and letters and digits.
 fn check_id(id: &str) -> AppResult<()> {
-    let ok = id.len() <= 64
-        && id.strip_prefix("snp_").is_some_and(|rest| {
-            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())
-        });
-    if ok {
+    if fctl_domain::snapshots::valid_id(id) {
         Ok(())
     } else {
         Err(AppError(ApiError::bad_request(
@@ -95,9 +91,11 @@ pub async fn put_part(
 
 /// `POST /api/v1/runner/sessions/{id}/snapshots/{snapshot}`: once every
 /// part is uploaded, makes the snapshot the session's, in place of the one
-/// before. Refused, and its parts deleted, for a session whose specs carry
-/// no snapshot key, where the instance or the workspace keeps no
-/// snapshots, or past the size the instance allows.
+/// before; or, from a host that kept it in a bucket of its own, where it is
+/// there (`location`, with no part). Refused, and its parts deleted, for a
+/// session whose specs carry no snapshot key, where the instance or the
+/// workspace keeps no snapshots, or past the size the instance allows for
+/// what it keeps itself.
 pub async fn commit(
     ctx: &Ctx,
     req: &mut Request,
@@ -108,11 +106,26 @@ pub async fn commit(
     let r = runners::runner_auth(ctx, req).await?;
     crate::spec::check_runs(&ctx.db, &r.id, session_id).await?;
     check_id(snapshot)?;
-    if body.parts == 0 || body.parts > MAX_PARTS {
-        return Err(AppError(ApiError::bad_request(
-            "That isn't a snapshot's parts",
-        )));
-    }
+    // In a bucket of the runner's own, with no part here; else in parts.
+    let in_bucket = match &body.location {
+        Some(at)
+            if body.parts == 0
+                && fctl_domain::snapshots::valid_location(at, session_id, snapshot) =>
+        {
+            true
+        }
+        Some(_) => {
+            return Err(AppError(ApiError::bad_request(
+                "That isn't where a snapshot is in a bucket",
+            )));
+        }
+        None if body.parts == 0 || body.parts > MAX_PARTS => {
+            return Err(AppError(ApiError::bad_request(
+                "That isn't a snapshot's parts",
+            )));
+        }
+        None => false,
+    };
     let stub = internal::session_stub(&ctx.env, session_id)?;
     let parts = internal::SnapshotParts {
         id: snapshot.to_owned(),
@@ -121,10 +134,13 @@ pub async fn commit(
     };
     let settings = crate::instance::settings(&ctx.db).await?;
     // Only a session whose spec let it save one has a key, and a row.
-    let refused = match crate::snapshots::row(&ctx.db, session_id).await? {
+    let before = crate::snapshots::row(&ctx.db, session_id).await?;
+    let refused = match &before {
         None => Some("This session saves no snapshots".to_owned()),
+        // The instance's limit is for what it keeps itself.
         Some(_) => {
-            crate::snapshots::refusal(&ctx.db, &settings, session_id, body.saved.size).await?
+            let size = if in_bucket { 0 } else { body.saved.size };
+            crate::snapshots::refusal(&ctx.db, &settings, session_id, size).await?
         }
     };
     if let Some(why) = refused {
@@ -134,7 +150,9 @@ pub async fn commit(
     }
     // Whole in SessionDO, then the session's in D1, and only then does the
     // one before go: D1 never names a snapshot whose parts are gone.
-    let _: serde_json::Value = internal::post(&stub, "/snapshot/commit", &parts).await?;
+    if !in_bucket {
+        let _: serde_json::Value = internal::post(&stub, "/snapshot/commit", &parts).await?;
+    }
     // A D1 that fails keeps the parts, so that the host's retry commits
     // them; D1 still names the one before, whose parts are still there.
     crate::snapshots::keep(
@@ -155,7 +173,11 @@ pub async fn commit(
             e.0.message
         );
     }
-    http::ok(&Done { ok: true })
+    // The one before, in a bucket: its host deletes it there, when the
+    // bucket is its own (the control plane can't). A commit that comes
+    // again, its first answer lost, names it again.
+    let replaced = before.and_then(|b| b.replaced_by(snapshot));
+    http::ok(&SnapshotCommitted { ok: true, replaced })
 }
 
 /// `GET /api/v1/runner/sessions/{id}/snapshots/{snapshot}/parts/{n}`: part
@@ -183,11 +205,12 @@ pub async fn get_part(
     internal::fetch(&stub, &format!("/snapshot/part?id={}&n={n}", enc(snapshot))).await
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
-    #[test]
+    #[wasm_bindgen_test]
     fn ids_and_parts_are_what_agents_make() {
         assert!(check_id("snp_01M84ABCDEF").is_ok());
         for bad in [

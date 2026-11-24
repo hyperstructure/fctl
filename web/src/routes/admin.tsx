@@ -36,6 +36,7 @@ import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
 import { PageTabs, TabCount } from "@/components/page-tabs";
 import { DriverLine } from "@/components/runner-driver";
+import { SnapshotStoreLine } from "@/components/runner-snapshots";
 import { SignInAdmin } from "@/components/sign-in/admin";
 import {
   Avatar,
@@ -1596,6 +1597,7 @@ function Runners() {
                   {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
                   {r.status !== "disabled" && <LowDiskLine runner={r} />}
                   <DriverLine runner={r} />
+                  <SnapshotStoreLine runner={r} />
                   <RunnerResources runner={r} />
                   <RunnerImages runner={r} />
                 </div>

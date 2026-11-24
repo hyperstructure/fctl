@@ -1193,6 +1193,25 @@ fn print_runner(r: &Runner) {
     if let Some(d) = driver_line(r) {
         println!("  {}", style::amber(&d));
     }
+    if let Some(store) = &r.snapshot_store {
+        match &store.error {
+            Some(e) => println!(
+                "  {}",
+                style::amber(&format!(
+                    "keeps sessions' snapshots in {}, but the last one failed{}: {e}",
+                    store.url,
+                    store
+                        .failed_at
+                        .map(|t| format!(" ({})", style::ago(t)))
+                        .unwrap_or_default()
+                ))
+            ),
+            None => println!(
+                "  {}",
+                style::dim(&format!("keeps sessions' snapshots in {}", store.url))
+            ),
+        }
+    }
     if let Some(h) = r.remove_offline_after_minutes {
         println!(
             "  {}",

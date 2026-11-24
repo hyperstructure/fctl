@@ -243,6 +243,46 @@ fn pick_from(
     Ok((chosen.id.to_owned(), name))
 }
 
+/// The runner of `candidates` a session that wants `want` starts on, or
+/// why it waits: `home` has its sandbox, which it waits for while `wait`.
+///
+/// With a snapshot to restore, a resume doesn't wait for a busy runner
+/// that has its sandbox: it starts as it was where a host restores
+/// snapshots and can take it now, the runner with its sandbox first, which
+/// has more (`crate::snapshots`). While those are busy, it waits for them
+/// as long as it would for its sandbox's runner (`wait`), rather than start
+/// elsewhere without its conversation; then, and where none could take it,
+/// it waits, or starts, as any other.
+fn pick_runner(
+    candidates: &[Candidate],
+    want: &spec::SessionWants,
+    labels: &[String],
+    home: Option<&str>,
+    wait: bool,
+) -> std::result::Result<(String, String), Wait> {
+    if want.snapshot {
+        // One in a bucket of its runner's own, a runner whose host reads it
+        // there: with that bucket, under the same prefix.
+        let location = want.snapshot_location.as_deref();
+        let restoring: Vec<&Candidate> = candidates
+            .iter()
+            .filter(|c| {
+                home == Some(c.id.as_str())
+                    || (c.snapshots
+                        && location
+                            .is_none_or(|l| c.snapshot_bucket.as_ref().is_some_and(|b| b.holds(l))))
+            })
+            .collect();
+        match pick_from(&restoring, want, labels, home, false) {
+            Ok(picked) => return Ok(picked),
+            Err(Wait::Busy) if wait => return Err(Wait::Busy),
+            Err(_) => {}
+        }
+    }
+    let all: Vec<&Candidate> = candidates.iter().collect();
+    pick_from(&all, want, labels, home, wait)
+}
+
 /// A connected runner, as scheduling sees it.
 struct Candidate {
     id: String,
@@ -270,8 +310,10 @@ struct Candidate {
     serves: Serves,
     /// Its pool packs sessions onto the busiest runner with room.
     packed: bool,
-    /// Its host restores session snapshots ([`FEATURE_SNAPSHOTS`]).
+    /// Its host restores session snapshots ([`FEATURE_SNAPSHOTS`]), and the
+    /// bucket it keeps them in, under its prefix, if it has one of its own.
     snapshots: bool,
+    snapshot_bucket: Option<fctl_domain::snapshots::Bucket>,
 }
 
 /// Whose sessions a runner runs, and the pool it is in, as D1 had it at
@@ -1213,6 +1255,7 @@ impl FleetObject {
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
                 let drivers_changed = self.note_drivers(&rs.id, hb.drivers).await;
+                let store_changed = self.note_snapshot_store(&rs.id, hb.snapshot_store).await;
                 let (told, tell) = fctl_domain::disk::heard(
                     &disk.told,
                     &rs.name,
@@ -1232,11 +1275,13 @@ impl FleetObject {
                 self.tell_disk(&rs.id, tell).await;
                 // The runners list says when a runner takes no new sessions
                 // for its disk, when it is nearly out, and when it takes them
-                // again, why its driver isn't ready, and its owner sees
-                // whether it keeps their Claude token.
+                // again, why its driver isn't ready, why its bucket refused a
+                // snapshot, and its owner sees whether it keeps their Claude
+                // token.
                 let room = |free| fctl_domain::disk::room(free, disk.min_free_mb);
                 if token_changed
                     || drivers_changed
+                    || store_changed
                     || room(hb.disk_available_mb) != room(disk.free_mb)
                 {
                     self.feed_runner(&rs.id).await;
@@ -1489,6 +1534,25 @@ impl FleetObject {
                 return false;
             }
             hello.claude_token = Some(token);
+            true
+        })
+        .await
+    }
+
+    /// Keeps what a heartbeat says of the bucket the runner's host keeps
+    /// its sessions' snapshots in (an upload failed, or worked again) in
+    /// the runner's hello, here and in D1. Older hosts say nothing.
+    async fn note_snapshot_store(
+        &self,
+        runner_id: &str,
+        store: Option<fctl_proto::runner::SnapshotStore>,
+    ) -> bool {
+        let Some(store) = store else { return false };
+        self.change_hello(runner_id, |hello| {
+            if hello.snapshot_store.as_ref() == Some(&store) {
+                return false;
+            }
+            hello.snapshot_store = Some(store);
             true
         })
         .await
@@ -2644,6 +2708,10 @@ impl FleetObject {
                     unready,
                     claude_token: hello.claude_token,
                     snapshots: hello.features.iter().any(|f| f == FEATURE_SNAPSHOTS),
+                    snapshot_bucket: hello
+                        .snapshot_store
+                        .as_ref()
+                        .and_then(|s| fctl_domain::snapshots::Bucket::parse(&s.url).ok()),
                     serves,
                 })
             })
@@ -3034,23 +3102,7 @@ impl FleetObject {
         home: Option<&str>,
         wait: bool,
     ) -> std::result::Result<(String, String), Wait> {
-        let candidates = self.candidates();
-        // With a snapshot to restore, a resume doesn't wait for a busy
-        // runner that has its sandbox: it starts as it was where a host
-        // restores snapshots and can take it now, the runner with its
-        // sandbox first, which has more (`crate::snapshots`). Where none
-        // can, it waits, or starts, as any other.
-        if want.snapshot {
-            let restoring: Vec<&Candidate> = candidates
-                .iter()
-                .filter(|c| c.snapshots || home == Some(c.id.as_str()))
-                .collect();
-            if let Ok(picked) = pick_from(&restoring, want, labels, home, false) {
-                return Ok(picked);
-            }
-        }
-        let all: Vec<&Candidate> = candidates.iter().collect();
-        pick_from(&all, want, labels, home, wait)
+        pick_runner(&self.candidates(), want, labels, home, wait)
     }
 
     async fn stop(&self, b: Stop) -> std::result::Result<serde_json::Value, ApiError> {
@@ -4085,5 +4137,118 @@ impl FleetObject {
                 let _ = ws.send_with_str(&text);
             }
         }
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// An online runner of `wsp_1` with one slot, `active` of it taken.
+    fn runner(id: &str, active: u32, snapshots: bool, bucket: Option<&str>) -> Candidate {
+        Candidate {
+            id: id.into(),
+            name: id.into(),
+            capacity: 1,
+            active,
+            labels: Vec::new(),
+            sandbox: None,
+            draining: false,
+            low_disk: false,
+            image: None,
+            allowed_images: None,
+            allowed_builds: None,
+            reviews: false,
+            unready: None,
+            claude_token: None,
+            serves: Serves {
+                owner: Some("usr_owner".into()),
+                workspaces: vec![("wsp_1".into(), false)],
+                pool_labels: Vec::new(),
+                packed: false,
+            },
+            packed: false,
+            snapshots,
+            snapshot_bucket: bucket.and_then(|b| fctl_domain::snapshots::Bucket::parse(b).ok()),
+        }
+    }
+
+    /// A resume of a session of `wsp_1` with a snapshot, at `location`
+    /// when it is in a bucket.
+    fn resume(location: Option<&str>) -> spec::SessionWants {
+        spec::SessionWants {
+            workspace_id: "wsp_1".into(),
+            person: Some("usr_owner".into()),
+            snapshot: true,
+            snapshot_location: location.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    fn picked(
+        runners: &[Candidate],
+        want: &spec::SessionWants,
+        wait: bool,
+    ) -> std::result::Result<String, Wait> {
+        pick_runner(runners, want, &[], None, wait).map(|(id, _)| id)
+    }
+
+    #[wasm_bindgen_test]
+    fn a_resume_waits_a_while_for_a_runner_with_its_snapshots_bucket() {
+        let want = resume(Some("s3://acme/fctl/ses_1/snp_1"));
+        let busy = [
+            runner("rnr_bucket", 1, true, Some("s3://acme/fctl")),
+            runner("rnr_other", 0, true, Some("s3://other/fctl")),
+            runner("rnr_none", 0, true, None),
+        ];
+        // The runner with its bucket is busy: it waits for it, while it
+        // waits for its sandbox's runner...
+        assert_eq!(picked(&busy, &want, true), Err(Wait::Busy));
+        // ...then starts on another, from its branch.
+        assert!(picked(&busy, &want, false).is_ok_and(|id| id != "rnr_bucket"));
+        // With room there, it goes there.
+        let room = [
+            runner("rnr_other", 0, true, Some("s3://other/fctl")),
+            runner("rnr_bucket", 0, true, Some("s3://acme/fctl")),
+        ];
+        assert_eq!(picked(&room, &want, true).as_deref(), Ok("rnr_bucket"));
+        // With no runner online that has its bucket, it doesn't wait.
+        let none = [runner("rnr_other", 0, true, Some("s3://other/fctl"))];
+        assert_eq!(picked(&none, &want, true).as_deref(), Ok("rnr_other"));
+    }
+
+    /// Runners on one bucket under different prefixes read only their own
+    /// snapshots: a resume waits for one under its snapshot's.
+    #[wasm_bindgen_test]
+    fn a_resume_waits_for_a_runner_under_its_snapshots_prefix() {
+        let want = resume(Some("s3://acme/team-a/ses_1/snp_1"));
+        let busy = [
+            runner("rnr_a", 1, true, Some("s3://acme/team-a")),
+            runner("rnr_b", 0, true, Some("s3://acme/team-b")),
+        ];
+        assert_eq!(picked(&busy, &want, true), Err(Wait::Busy));
+        let room = [
+            runner("rnr_b", 0, true, Some("s3://acme/team-b")),
+            runner("rnr_a", 0, true, Some("s3://acme/team-a")),
+        ];
+        assert_eq!(picked(&room, &want, true).as_deref(), Ok("rnr_a"));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_resume_waits_a_while_for_a_host_that_restores_snapshots() {
+        let want = resume(None);
+        let runners = [
+            runner("rnr_new", 1, true, None),
+            runner("rnr_old", 0, false, None),
+        ];
+        assert_eq!(picked(&runners, &want, true), Err(Wait::Busy));
+        assert_eq!(picked(&runners, &want, false).as_deref(), Ok("rnr_old"));
+        // A session with no snapshot starts where there is room.
+        let fresh = spec::SessionWants {
+            snapshot: false,
+            ..want
+        };
+        assert_eq!(picked(&runners, &fresh, true).as_deref(), Ok("rnr_old"));
     }
 }

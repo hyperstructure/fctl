@@ -1556,6 +1556,9 @@ pub struct SessionSnapshot {
     pub left_out: Vec<String>,
     /// When it goes, as its workspace keeps them.
     pub expires_at: Option<crate::Millis>,
+    /// Where it is when its runner kept it in a bucket of its own
+    /// (`s3://bucket/key`). Absent where the control plane keeps it.
+    pub location: Option<String>,
 }
 
 /// A question a session's agent asks people, when it needs their input to

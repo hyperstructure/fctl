@@ -114,6 +114,26 @@ pub struct HostHello {
     /// itself: its `host.toml` doesn't turn that off, and it can replace
     /// its fctl (Homebrew didn't install it). Absent from older hosts.
     pub auto_update: Option<bool>,
+    /// The bucket it keeps its sessions' snapshots in, when its `host.toml`
+    /// has one (`[snapshots] url`): the control plane then keeps only where
+    /// each is. Absent where they go to the control plane, and from older
+    /// hosts.
+    pub snapshot_store: Option<SnapshotStore>,
+}
+
+/// A bucket of an organization's own that a host keeps its sessions'
+/// snapshots in, in place of the control plane.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SnapshotStore {
+    /// `s3://bucket/prefix`.
+    pub url: String,
+    /// Why the host's last upload to it, or download from it, failed, while
+    /// it does: the bucket refused (a permission), or didn't answer.
+    pub error: Option<String>,
+    /// When that was.
+    pub failed_at: Option<crate::Millis>,
 }
 
 /// The Claude token a host keeps for its runner's owner (`fctl host claude
@@ -155,6 +175,9 @@ pub struct HostHeartbeat {
     /// changed since it last said: the one it uses may have become ready,
     /// or stopped being. Absent when they didn't, and from older hosts.
     pub drivers: Option<Vec<DriverInfo>>,
+    /// Its snapshots' bucket, as in its hello ([`HostHello::snapshot_store`]),
+    /// when what it says changed: an upload failed, or worked again.
+    pub snapshot_store: Option<SnapshotStore>,
 }
 
 /// How short of room a runner is on the disk where its sandboxes are
@@ -533,6 +556,10 @@ pub struct SnapshotRef {
     /// not pushed.
     pub conversation: bool,
     pub changes: bool,
+    /// Where it is when a host kept it in a bucket of its own
+    /// (`s3://bucket/key`): only a host with that bucket restores it.
+    /// Absent where the control plane keeps its parts.
+    pub location: Option<String>,
 }
 
 /// What hosts whose agents save and restore session snapshots announce in

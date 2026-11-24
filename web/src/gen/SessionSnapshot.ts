@@ -25,4 +25,9 @@ left_out?: Array<string>,
 /**
  * When it goes, as its workspace keeps them.
  */
-expires_at?: number, };
+expires_at?: number, 
+/**
+ * Where it is when its runner kept it in a bucket of its own
+ * (`s3://bucket/key`). Absent where the control plane keeps it.
+ */
+location?: string, };

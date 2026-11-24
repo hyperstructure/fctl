@@ -1384,6 +1384,66 @@ off. The `preStop` hook drains the runner when the pod is to go, gives the
 turns under way 25 minutes, then stops what still runs, whose agents push
 their work, within the pod's 30.
 
+### Session snapshots in a bucket of your own
+
+A session's snapshot, its conversation and the work its agent hadn't
+pushed, goes to the control plane as its sandbox stops, encrypted
+([Session snapshots](architecture.md#session-snapshots)). To keep them in
+your own cloud instead, give your runners a bucket in `host.toml`; the
+control plane then keeps only where each is, its size and its checksum:
+
+```toml
+[snapshots]
+url = "s3://acme-fctl/sessions"   # the bucket, and where in it
+# region = "eu-north-1"           # unset: AWS_REGION, the machine's own on EC2, else us-east-1
+# endpoint = "https://<account>.r2.cloudflarestorage.com"   # an S3-compatible service; unset: AWS S3
+# access_key_id = "…"             # with secret_access_key_file: keys of its own, for a service without roles
+# secret_access_key_file = "/etc/fctl/s3-secret"
+# max_mb = 2048                   # the largest snapshot it keeps there
+```
+
+`fctl host restart` takes it up; `fctl host install --snapshot-bucket
+s3://acme-fctl/sessions` sets the URL as it installs, for boot scripts.
+The host signs its requests with the
+machine's own credentials, where AWS's tools look for them: the
+instance's role on EC2, a web identity (IRSA) or the container's
+credentials (Pod Identity) on EKS, the `AWS_*` variables. They need
+these on the prefix, and `s3:ListBucket` on the bucket, without which S3
+answers a request for a snapshot that its lifecycle rule deleted with
+403 rather than 404, and the runner shows it as the bucket refusing it:
+
+```json
+[
+  { "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+    "Resource": "arn:aws:s3:::acme-fctl/sessions/*" },
+  { "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::acme-fctl" }
+]
+```
+
+A session's snapshot is at `sessions/<session>/<snapshot>`, and a
+host that saves a new one deletes the one before, when that one is in its
+bucket too. A session resumes with its snapshot only on a runner whose
+host has the same bucket and prefix, and waits up to ten minutes for one
+that is busy before it starts on another from its branch. Requests that
+S3 asks to slow down, or that fail on the way, go again up to three
+times.
+The control plane forgets a snapshot once its workspace's days have
+passed, but it can't delete it from your bucket: give the prefix a
+lifecycle rule that expires objects after as many days (30 unless the
+workspace says otherwise). Uploads that a machine never finished go with
+a rule that aborts incomplete multipart uploads after a day. On Google
+Cloud Storage, use its XML API with HMAC keys
+(`endpoint = "https://storage.googleapis.com"`); R2 and MinIO take their
+endpoints as they are.
+
+A host that can't read its `[snapshots] url` doesn't start, so that
+snapshots meant for your bucket never go to the control plane by
+mistake. One whose bucket fails it (no credentials, a policy that
+refuses it, a bucket that doesn't answer) says why on the workspace's
+Runners tab and in `fctl runners` until a snapshot goes through again. A
+snapshot the bucket didn't take is saved nowhere: the session resumes
+elsewhere from its branch, as without snapshots.
+
 ## Notifications, published screenshots and identity tokens
 
 - **Notifications** need no setup and no push provider account: the control

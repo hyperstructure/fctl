@@ -47,6 +47,10 @@ pub struct Row {
     #[serde(deserialize_with = "opt_int", default)]
     pub saved_at: Option<i64>,
     pub runner_name: Option<String>,
+    /// Where it is when its runner kept it in a bucket of its own.
+    pub location: Option<String>,
+    /// Where the one it replaced was, when that one was in a bucket.
+    pub replaced: Option<String>,
     /// Its workspace keeps snapshots, this many days (NULL: the default).
     #[serde(deserialize_with = "int_bool", default)]
     pub workspace_keeps: bool,
@@ -56,7 +60,7 @@ pub struct Row {
 
 const ROW_SELECT: &str = "SELECT ss.key_enc, ss.snapshot_id, ss.size, ss.sha256, ss.parts, \
     ss.claude_version, ss.agent_seq, ss.conversation, ss.changes, ss.left_out, ss.saved_at, ss.runner_name, \
-    w.snapshots AS workspace_keeps, w.snapshot_days AS days \
+    ss.location, ss.replaced, w.snapshots AS workspace_keeps, w.snapshot_days AS days \
     FROM session_snapshots ss JOIN sessions se ON se.id = ss.session_id \
     JOIN projects p ON p.id = se.project_id JOIN workspaces w ON w.id = p.workspace_id";
 
@@ -72,6 +76,18 @@ pub async fn row(db: &D1Database, session_id: &str) -> AppResult<Option<Row>> {
 }
 
 impl Row {
+    /// Where the snapshot that `snapshot` replaces, or replaced, was, when
+    /// that one was in a bucket: the row's own while another is the
+    /// session's; what it kept of it once `snapshot` is, for a commit that
+    /// comes again.
+    pub fn replaced_by(&self, snapshot: &str) -> Option<String> {
+        if self.snapshot_id.as_deref() == Some(snapshot) {
+            self.replaced.clone()
+        } else {
+            self.location.clone()
+        }
+    }
+
     fn days(&self) -> Option<u32> {
         self.days.and_then(|d| u32::try_from(d).ok())
     }
@@ -104,6 +120,7 @@ impl Row {
             saved_on: self.runner_name.clone(),
             conversation: self.conversation,
             changes: self.changes,
+            location: self.location.clone(),
         })
     }
 
@@ -118,6 +135,7 @@ impl Row {
             changes: self.changes,
             left_out: self.left_out(),
             expires_at: Some(domain::expires_at(saved_at, self.days())),
+            location: self.location.clone(),
         })
     }
 }
@@ -229,10 +247,12 @@ pub async fn keep(
     let saved: &SnapshotSaved = &commit.saved;
     let changed = q(
         db,
-        "UPDATE session_snapshots SET snapshot_id = ?, size = ?, sha256 = ?, parts = ?, claude_version = ?, \
+        "UPDATE session_snapshots SET replaced = CASE WHEN snapshot_id IS ? THEN replaced ELSE location END, \
+         snapshot_id = ?, size = ?, sha256 = ?, parts = ?, claude_version = ?, \
          agent_seq = ?, conversation = ?, changes = ?, left_out = ?, saved_at = ?, runner_id = ?, runner_name = ?, \
-         expire_tried_at = NULL, uploading_since = NULL WHERE session_id = ?",
+         location = ?, expire_tried_at = NULL, uploading_since = NULL WHERE session_id = ?",
         &[
+            s(snapshot_id),
             s(snapshot_id),
             n(i64::try_from(saved.size).unwrap_or(i64::MAX)),
             s(&saved.sha256),
@@ -247,6 +267,7 @@ pub async fn keep(
             n(now),
             s(runner.0),
             s(runner.1),
+            os(commit.location.as_deref()),
             s(session_id),
         ],
     )?
@@ -361,12 +382,15 @@ pub async fn due(
 }
 
 /// Forgets snapshot `snapshot_id` as the session's, unless another is
-/// the session's by now.
+/// the session's by now: all D1 said of it. The session's key stays, for
+/// its next one.
 pub async fn forget(db: &D1Database, session_id: &str, snapshot_id: &str) -> AppResult<()> {
     q(
         db,
         "UPDATE session_snapshots SET snapshot_id = NULL, size = NULL, sha256 = NULL, parts = NULL, \
-         left_out = NULL, expire_tried_at = NULL WHERE session_id = ? AND snapshot_id = ?",
+         claude_version = NULL, agent_seq = NULL, conversation = NULL, changes = NULL, left_out = NULL, \
+         saved_at = NULL, runner_id = NULL, runner_name = NULL, location = NULL, replaced = NULL, \
+         expire_tried_at = NULL WHERE session_id = ? AND snapshot_id = ?",
         &[s(session_id), s(snapshot_id)],
     )?
     .run()
@@ -460,6 +484,7 @@ mod tests {
                 left_out: vec!["images".into()],
             },
             parts,
+            location: None,
         }
     }
 
@@ -618,6 +643,95 @@ mod tests {
         assert!(info(&db, "ses_1", NOW + DAY).await?.is_some());
         forget(&db, "ses_1", "snp_two").await?;
         assert!(info(&db, "ses_1", NOW + DAY).await?.is_none());
+        // One its runner kept in a bucket of its own: only where it is,
+        // which a resume's spec, the session's details and FleetDO all see.
+        let at = "s3://acme-fctl/sessions/ses_1/snp_three";
+        keep(
+            &db,
+            "ses_1",
+            "snp_three",
+            &SnapshotCommit {
+                parts: 0,
+                location: Some(at.into()),
+                ..commit(900_000_000, 0)
+            },
+            ("rnr_3", "aws-8"),
+            NOW + DAY,
+        )
+        .await?;
+        let with = spec(&db, &keys, &settings, "ses_1", false, NOW + DAY)
+            .await?
+            .ok_or_else(|| internal("no spec"))?;
+        let restore = with.restore.ok_or_else(|| internal("nothing to restore"))?;
+        assert_eq!(restore.location.as_deref(), Some(at));
+        let shown = info(&db, "ses_1", NOW + DAY)
+            .await?
+            .ok_or_else(|| internal("no info"))?;
+        assert_eq!(shown.location.as_deref(), Some(at));
+        let wants = crate::spec::session_wants(&db, &["ses_1"], NOW + DAY).await?;
+        assert_eq!(
+            wants
+                .get("ses_1")
+                .and_then(|w| w.snapshot_location.as_deref()),
+            Some(at)
+        );
+        // The next one's commit names it, for its host to delete it there,
+        // and so does that commit when it comes again, its answer lost.
+        let next = "s3://acme-fctl/sessions/ses_1/snp_four";
+        let four = SnapshotCommit {
+            parts: 0,
+            location: Some(next.into()),
+            ..commit(1_000, 0)
+        };
+        let replaces = |r: Option<Row>| r.and_then(|r| r.replaced_by("snp_four"));
+        assert_eq!(replaces(row(&db, "ses_1").await?).as_deref(), Some(at));
+        for _ in 0..2 {
+            keep(
+                &db,
+                "ses_1",
+                "snp_four",
+                &four,
+                ("rnr_3", "aws-8"),
+                NOW + DAY,
+            )
+            .await?;
+            assert_eq!(replaces(row(&db, "ses_1").await?).as_deref(), Some(at));
+        }
+        forget(&db, "ses_1", "snp_four").await?;
+        assert!(info(&db, "ses_1", NOW + DAY).await?.is_none());
+        // Of a snapshot forgotten, D1 keeps nothing but the session's key.
+        let left = row(&db, "ses_1")
+            .await?
+            .ok_or_else(|| internal("the session's key went too"))?;
+        assert!(!left.key_enc.is_empty());
+        assert_eq!(left.replaced, None);
+        assert_eq!(
+            (
+                left.snapshot_id,
+                left.size,
+                left.sha256,
+                left.parts,
+                left.claude_version,
+                left.agent_seq,
+                left.conversation,
+                left.changes,
+                left.left_out,
+                left.saved_at,
+                left.runner_name,
+                left.location,
+            ),
+            (
+                None, None, None, None, None, None, false, false, None, None, None, None
+            )
+        );
+        let runner: Option<serde_json::Value> = q(
+            &db,
+            "SELECT runner_id FROM session_snapshots WHERE session_id = 'ses_1' AND runner_id IS NOT NULL",
+            &[],
+        )?
+        .first()
+        .await?;
+        assert!(runner.is_none());
         Ok(())
     }
 }

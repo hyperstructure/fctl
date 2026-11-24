@@ -40,4 +40,10 @@ saved_on?: string,
  * It holds Claude's conversation, and uncommitted work or commits
  * not pushed.
  */
-conversation: boolean, changes: boolean, };
+conversation: boolean, changes: boolean, 
+/**
+ * Where it is when a host kept it in a bucket of its own
+ * (`s3://bucket/key`): only a host with that bucket restores it.
+ * Absent where the control plane keeps its parts.
+ */
+location?: string, };

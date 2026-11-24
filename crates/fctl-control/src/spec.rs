@@ -266,6 +266,9 @@ pub struct SessionWants {
     /// it on any runner, so it doesn't wait for the busy runner that has
     /// its sandbox.
     pub snapshot: bool,
+    /// Where that snapshot is, when its runner kept it in a bucket of its
+    /// own: only runners with that bucket restore it.
+    pub snapshot_location: Option<String>,
     /// The labels its project asks of a runner (`runner_labels`): only
     /// runners with them all take it, until it has waited
     /// `fallback_minutes`, when there are some.
@@ -309,6 +312,7 @@ pub async fn session_wants(
         review: bool,
         #[serde(deserialize_with = "crate::db::int_bool", default)]
         snapshot: bool,
+        snapshot_location: Option<String>,
     }
     let rows: Vec<Row> = q(
         db,
@@ -319,7 +323,7 @@ pub async fn session_wants(
           AND COALESCE(w.snapshots, 0) = 1 \
           AND ss.saved_at > ?2 - COALESCE(w.snapshot_days, ?3) * 86400000 \
           AND COALESCE((SELECT json_extract(value, '$.snapshots') FROM settings WHERE key = 'instance_settings'), 1) = 1) \
-         AS snapshot \
+         AS snapshot, ss.location AS snapshot_location \
          FROM sessions s JOIN projects p ON p.id = s.project_id \
          LEFT JOIN workspaces w ON w.id = p.workspace_id \
          LEFT JOIN session_snapshots ss ON ss.session_id = s.id \
@@ -353,6 +357,7 @@ pub async fn session_wants(
                 on_runners: r.on_runners,
                 review: r.review,
                 snapshot: r.snapshot,
+                snapshot_location: r.snapshot.then_some(r.snapshot_location).flatten(),
                 labels: settings.runner_labels.clone(),
                 fallback_minutes: settings.runner_fallback_minutes,
             };

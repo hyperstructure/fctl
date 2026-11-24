@@ -961,7 +961,7 @@ impl Api {
         session: &str,
         snapshot: &str,
         commit: &SnapshotCommit,
-    ) -> Result<Ok> {
+    ) -> Result<SnapshotCommitted> {
         self.post(
             &format!(
                 "/runner/sessions/{}/snapshots/{}",

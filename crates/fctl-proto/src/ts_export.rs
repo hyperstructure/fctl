@@ -211,6 +211,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::PoolShape,
         api::WorkspaceDemand,
         api::SnapshotCommit,
+        runner::SnapshotStore,
         api::ProjectList,
         api::CreateProjectRequest,
         api::UpdateProjectRequest,

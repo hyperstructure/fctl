@@ -1346,6 +1346,7 @@ impl RunnerRow {
                 .as_ref()
                 .and_then(|h| h.claude_token)
                 .filter(|_| yours),
+            snapshot_store: hello.as_ref().and_then(|h| h.snapshot_store.clone()),
             auto_update: hello.as_ref().and_then(|h| h.auto_update),
             waits_for_driver: hello.as_ref().map(|h| {
                 h.features

@@ -106,3 +106,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0098](0098-admins-see-facts-about-members-claude-connections.md) | Admins see facts about members' Claude connections |
 | [0099](0099-domains-require-signing-in-with-their-provider.md) | Domains require signing in with their provider |
 | [0100](0100-autopilots-keep-trying-after-their-sessions-fail.md) | Autopilots keep trying after their sessions fail (experimental) |
+| [0101](0101-runners-keep-snapshots-in-a-bucket-of-their-own.md) | Runners keep snapshots in a bucket of their own |

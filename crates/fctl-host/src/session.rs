@@ -69,6 +69,9 @@ pub struct HostCtx {
     /// Where its certificate authority is kept: [`claude_relay::FILE`] in
     /// the directory of `host.toml`.
     pub claude_relay_ca: PathBuf,
+    /// A bucket of the organization's own that it keeps its sessions'
+    /// snapshots in (`[snapshots]` in host.toml), if it has one.
+    pub snapshot_store: Option<Arc<crate::s3::Store>>,
 }
 
 impl HostCtx {
@@ -92,6 +95,7 @@ impl HostCtx {
             disk: tokio::sync::watch::channel(None).0,
             claude_relay: Mutex::new(None),
             claude_relay_ca: crate::config::config_dir().join(claude_relay::FILE),
+            snapshot_store: None,
         }
     }
 
@@ -394,7 +398,9 @@ pub fn spawn(
 /// A framed connection to fctl-agent. Dropping it kills the exec that
 /// carries it.
 struct AgentLink {
-    tx: mpsc::UnboundedSender<HostToAgent>,
+    /// Frames for the agent, each with what hears once it is written, if
+    /// anything waits for that ([`crate::snapshots::Paced`]).
+    tx: mpsc::UnboundedSender<(HostToAgent, Option<tokio::sync::oneshot::Sender<()>>)>,
     rx: mpsc::UnboundedReceiver<AgentToHost>,
     health: Health,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -413,7 +419,8 @@ impl AgentLink {
     /// Frames from the agent go without `secrets`: Claude tokens, which
     /// must not reach the control plane in what it sends there.
     fn open(io: AgentIo, sandbox: &str, secrets: Secrets) -> Self {
-        let (tx, mut out_rx) = mpsc::unbounded_channel::<HostToAgent>();
+        let (tx, mut out_rx) =
+            mpsc::unbounded_channel::<(HostToAgent, Option<tokio::sync::oneshot::Sender<()>>)>();
         let (in_tx, rx) = mpsc::unbounded_channel::<AgentToHost>();
         let mut tasks = Vec::new();
         let mut child = io.child;
@@ -431,7 +438,7 @@ impl AgentLink {
         }
         let mut writer = io.writer;
         tasks.push(tokio::spawn(async move {
-            while let Some(msg) = out_rx.recv().await {
+            while let Some((msg, written)) = out_rx.recv().await {
                 let Ok(mut line) = serde_json::to_string(&msg) else {
                     continue;
                 };
@@ -439,6 +446,9 @@ impl AgentLink {
                 if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err()
                 {
                     break;
+                }
+                if let Some(w) = written {
+                    let _ = w.send(());
                 }
             }
         }));
@@ -481,7 +491,12 @@ impl AgentLink {
     }
 
     fn send(&self, msg: HostToAgent) {
-        let _ = self.tx.send(msg);
+        let _ = self.tx.send((msg, None));
+    }
+
+    /// Sends a frame whose sender waits until it is written.
+    fn send_paced(&self, p: crate::snapshots::Paced) {
+        let _ = self.tx.send((p.frame, p.written));
     }
 }
 
@@ -1225,6 +1240,14 @@ async fn run(
         Start::New(spec) => (spec.session_id.clone(), Some(spec)),
         Start::Recover(id) => (id, None),
     };
+    // A bucket of the host's own keeps snapshots up to its own limit, not
+    // the control plane's.
+    if let (Some(store), Some(snapshot)) = (
+        &ctx.snapshot_store,
+        spec.as_mut().and_then(|s| s.snapshot.as_mut()),
+    ) {
+        snapshot.max_bytes = store.max_bytes;
+    }
     // The Claude tokens its agent has: the one it starts with, those it
     // gets later, and the one this host keeps (a session found running
     // after a restart may have it), kept out of what the agent sends.
@@ -1268,8 +1291,11 @@ async fn run(
     let mut forced = false;
     // When the stop began, which bounds how long parts may keep it waiting.
     let mut stop_since: Option<Instant> = None;
-    let mut upload: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
-    let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<HostToAgent>();
+    let mut upload: Option<tokio::task::JoinHandle<Result<(), crate::snapshots::NotSaved>>> = None;
+    // A snapshot's parts on their way to the agent, one at a time, and one
+    // that waits for a link while there is none.
+    let (snapshot_tx, mut snapshot_rx) = mpsc::unbounded_channel::<crate::snapshots::Paced>();
+    let mut paced_waiting: Vec<crate::snapshots::Paced> = Vec::new();
     // Screenshots and calls under way (`MAX_IN_FLIGHT`).
     let mut in_flight: usize = 0;
     let set_report = |status: SessionStatus, seq: Option<u64>| {
@@ -1645,6 +1671,9 @@ async fn run(
                             for frame in queued.drain(..) {
                                 to_agent(l, frame, agent_files, &uplink);
                             }
+                            for p in paced_waiting.drain(..) {
+                                l.send_paced(p);
+                            }
                         }
                         said_hello = true;
                     }
@@ -1718,7 +1747,7 @@ async fn run(
                                     }
                                     match saved {
                                         Some(saved) => {
-                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved));
+                                            upload = Some(crate::snapshots::upload(api.clone(), session_id.clone(), s, saved, ctx.snapshot_store.clone()));
                                         }
                                         None => spool = Some(s),
                                     }
@@ -1734,7 +1763,7 @@ async fn run(
                             .filter(|r| r.id == id)
                             .cloned();
                         match wanted {
-                            Some(r) => crate::snapshots::fetch(api.clone(), session_id.clone(), r, snapshot_tx.clone()),
+                            Some(r) => crate::snapshots::fetch(api.clone(), session_id.clone(), r, ctx.snapshot_store.clone(), ctx.cfg.data_dir(), snapshot_tx.clone()),
                             None => l.send(HostToAgent::SnapshotMissing {
                                 id,
                                 why: "this runner's host doesn't know it: it restarted since the session started here".into(),
@@ -1853,9 +1882,9 @@ async fn run(
                     None => queued.push(HostToAgent::Deliver { delivery }),
                 },
             },
-            Some(frame) = snapshot_rx.recv() => match &link {
-                Some(l) => l.send(frame),
-                None => queued.push(frame),
+            Some(p) = snapshot_rx.recv() => match &link {
+                Some(l) => l.send_paced(p),
+                None => paced_waiting.push(p),
             },
             Some((request_id, result)) = published_rx.recv() => {
                 in_flight = in_flight.saturating_sub(1);
@@ -2075,20 +2104,26 @@ async fn run(
     if let Some(up) = upload.take() {
         let failed = match tokio::time::timeout(crate::snapshots::UPLOAD_LIMIT, up).await {
             Ok(Ok(Ok(()))) => None,
-            Ok(Ok(Err(e))) => Some(e),
-            Ok(Err(e)) => Some(e.to_string()),
+            Ok(Ok(Err(e))) => Some((e.why, e.maybe_kept)),
+            Ok(Err(e)) => Some((e.to_string(), false)),
             Err(_) => {
                 tracing::warn!("{session_id}: its snapshot's upload ran out of time");
-                Some("its upload ran out of time".into())
+                Some(("its upload ran out of time".into(), false))
             }
         };
-        if let Some(why) = failed {
+        if let Some((why, maybe_kept)) = failed {
+            // The control plane may have kept one whose commit got no answer.
+            let text = if maybe_kept {
+                format!(
+                    "The session's snapshot may not have been saved: {why}. If it wasn't, a resume on another runner starts from the task and the branch."
+                )
+            } else {
+                format!(
+                    "The session's snapshot wasn't saved: {why}. A resume on another runner starts from the task and the branch."
+                )
+            };
             uplink.send(UplinkUp::Notice {
-                notice: Notice::new(
-                    NoticeLevel::Warn,
-                    "snapshot_not_saved",
-                    format!("The session's snapshot wasn't saved: {why}. A resume on another runner starts from the task and the branch."),
-                ),
+                notice: Notice::new(NoticeLevel::Warn, "snapshot_not_saved", text),
             });
         }
     }

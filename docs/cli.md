@@ -1117,6 +1117,7 @@ fctl host install --token fctl_rt_…   # with a runner token from a workspace's
 fctl host install --enroll fctl_et_…  # without signing in, as one of a workspace's runners, or a member's own (or FCTL_ENROLL_TOKEN)
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
+fctl host install --snapshot-bucket s3://acme-fctl/sessions   # keep sessions' snapshots in your bucket, not the control plane
 fctl host install --agent-as-root off # run fctl-agent as the sandbox's user, not root
 fctl host install --enroll fctl_et_… --retire-when-idle 20m --retire-command 'systemctl poweroff'   # a machine that goes once idle
 fctl host run                    # run in the foreground (what the service runs)
@@ -1247,6 +1248,13 @@ retire_idle_minutes = 0  # once the runner has run nothing this long, drain, run
 
 [kubernetes]             # with the host in a Kubernetes pod
 pod_deletion_cost = true # keep the pod's deletion cost at its number of sessions, so that scaling down takes idle pods first
+
+[snapshots]              # sessions' snapshots in a bucket of your own, not the control plane
+# url = "s3://acme-fctl/sessions"   # unset: the control plane keeps them
+# endpoint = "https://<account>.r2.cloudflarestorage.com"   # an S3-compatible service (unset: AWS S3)
+# region = "eu-north-1"  # unset: AWS_REGION, the machine's own on EC2, else us-east-1
+# access_key_id = "…"    # with secret_access_key_file (unset: the machine's role or AWS_* variables)
+# max_mb = 2048          # the largest snapshot it keeps there
 
 [firecracker]            # with the firecracker driver
 # firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads
