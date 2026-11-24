@@ -9,6 +9,7 @@ use crate::error::{AppError, AppResult, conflict, not_found, validation};
 use crate::http;
 use crate::model::{UserRow, user_columns};
 use fctl_domain::allowlist;
+use fctl_domain::sign_in::SignedIn;
 use fctl_domain::tokens::{self, SecretKind, hash_secret, new_secret};
 use fctl_domain::two_factor::{self, Via};
 use fctl_domain::validate;
@@ -47,6 +48,7 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
             admin_tokens: ctx.cfg.admin_tokens,
             service_account_consent: settings.service_account_consent,
         },
+        sign_in: Some(crate::sign_in::info(&ctx.cfg, &settings)),
     })
 }
 
@@ -116,7 +118,7 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| conflict("Setup is already complete. Sign in instead."))?;
-    auth::start_web_session(ctx, &user, false).await?;
+    auth::start_web_session(ctx, &user, false, SignedIn::password()).await?;
     let user = new_gravatar(ctx, user).await?;
     ctx.audit("instance.setup", Some(&user.id), None);
     http::created(&signed_in(auth::me(ctx, &user).await?))
@@ -235,6 +237,12 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "An account with this email already exists. Sign in instead.",
         ));
     }
+    // Where its domain signs in with a provider, the invitation is taken
+    // with that provider's sign-in, which makes the account (`api::sign_in`).
+    let settings = crate::instance::settings(&ctx.db).await?;
+    if let Some(required) = fctl_domain::sign_in::required(&settings.sign_in, &[&email], false) {
+        return Err(AppError(crate::sign_in::password_refused(&required)));
+    }
     let Some((_, allowed)) = allow_match(ctx, &email).await? else {
         return Err(AppError(ApiError::new(
             ErrorCode::AccessDenied,
@@ -274,7 +282,7 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| crate::error::internal("user vanished after insert"))?;
-    auth::start_web_session(ctx, &user, false).await?;
+    auth::start_web_session(ctx, &user, false, SignedIn::password()).await?;
     let user = new_gravatar(ctx, user).await?;
     ctx.audit(
         "user.signup",
@@ -311,7 +319,14 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "Your account is disabled. Ask an admin for access.",
         )));
     }
-    let settings = user.two_factor_settings(&crate::instance::settings(&ctx.db).await?);
+    let instance = crate::instance::settings(&ctx.db).await?;
+    // Only to whoever has the password: that a domain signs in with a
+    // provider is on the sign-in page already, but which addresses an
+    // account has isn't.
+    if let Err(required) = user.admits(&instance, &SignedIn::password()) {
+        return Err(AppError(crate::sign_in::password_refused(&required)));
+    }
+    let settings = user.two_factor_settings(&instance);
     if two_factor::asks(
         &settings,
         Via::Password,
@@ -328,7 +343,7 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .await?;
         return http::ok(&waits_for(challenge));
     }
-    auth::start_web_session(ctx, &user, false).await?;
+    auth::start_web_session(ctx, &user, false, SignedIn::password()).await?;
     ctx.audit("user.login", Some(&user.id), None);
     http::ok(&signed_in(auth::me(ctx, &user).await?))
 }
@@ -543,6 +558,12 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     let body: ChangePasswordRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("password:{}", user.id)).await?;
+    if let Some(required) = user.sign_in_required(&ctx.settings()) {
+        return Err(conflict(&format!(
+            "{}: a password wouldn't sign you in.",
+            crate::sign_in::says(&required)
+        )));
+    }
     if let Some(phc) = user.password_hash.as_deref() {
         let current = body.current_password.as_deref().unwrap_or_default();
         if !auth::verify_password(current, phc) {
@@ -620,6 +641,22 @@ pub async fn forgot_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         auth::user_by_email(ctx, &email).await?,
     ) && user.is_active()
     {
+        let settings = crate::instance::settings(&ctx.db).await?;
+        if let Some(required) = user.sign_in_required(&settings) {
+            // A link would set a password that signs nobody in: it says how
+            // they sign in instead.
+            let text = format!(
+                "Someone asked to reset the password of your {} account. {}, so it has no password to reset: on the sign-in page, choose Continue with {}.\n\n{}\n\nIf it wasn't you, ignore this email.",
+                ctx.cfg.instance_name,
+                crate::sign_in::says(&required),
+                crate::sign_in::provider_name(&required.provider),
+                ctx.cfg.url("/login")
+            );
+            ctx.defer(
+                async move { crate::email::send(&mail, &email, "How you sign in", &text).await },
+            );
+            return http::ok(&Ok { ok: true });
+        }
         let secret = new_secret(SecretKind::PasswordReset);
         let url = reset_url(ctx, &secret);
         let text = format!(
@@ -706,11 +743,17 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
             "Your account is disabled.",
         )));
     }
+    let instance = crate::instance::settings(&ctx.db).await?;
+    // A link from before their domain required a provider sets no password
+    // that wouldn't sign them in.
+    if let Some(required) = user.sign_in_required(&instance) {
+        return Err(AppError(crate::sign_in::password_refused(&required)));
+    }
     validate::password(&body.new_password, Some(&user.email))?;
     let phc = auth::hash_password(&body.new_password)?;
     // With two-factor, the link alone changes nothing: the new password
     // takes effect once a code checks out (`api::two_factor::verify`).
-    let settings = user.two_factor_settings(&crate::instance::settings(&ctx.db).await?);
+    let settings = user.two_factor_settings(&instance);
     if two_factor::on(&settings, user.has_password(), user.factors()) {
         let challenge = crate::api::two_factor::challenge(
             ctx,
@@ -741,7 +784,7 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     ];
     statements.extend(auth::sign_out_everywhere(&ctx.db, &user.id, None)?);
     batch(&ctx.db, statements).await?;
-    auth::start_web_session(ctx, &user, false).await?;
+    auth::start_web_session(ctx, &user, false, SignedIn::password()).await?;
     ctx.audit("user.password_reset", Some(&user.id), None);
     password_reset_notice(ctx, &user).await?;
     http::ok(&signed_in(auth::me(ctx, &user).await?))
@@ -855,6 +898,12 @@ struct DeviceRow {
     expires_at: i64,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     last_poll_at: Option<i64>,
+    /// How the sign-in of the browser that approved it was made, which the
+    /// CLI's takes.
+    #[serde(default)]
+    auth_method: Option<String>,
+    #[serde(default)]
+    auth_domain: Option<String>,
 }
 
 pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
@@ -935,10 +984,11 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
         ctx,
         &user.id,
         TokenKind::Cli,
-        Some(&row.client_name),
-        None,
-        None,
-        None,
+        auth::NewToken {
+            name: Some(&row.client_name),
+            how: SignedIn::read(row.auth_method.as_deref(), row.auth_domain.as_deref()),
+            ..auth::NewToken::default()
+        },
     )
     .await?;
     let me = auth::me(ctx, &user).await?;
@@ -999,11 +1049,23 @@ pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppR
         ctx.verified(fctl_domain::verify::Sensitive::ApproveCli)?;
     }
     let status = if body.approve { "approved" } else { "denied" };
+    // The CLI's sign-in takes how this browser's was made.
+    let how = ctx
+        .auth
+        .as_ref()
+        .map(|a| a.signed_in_with.clone())
+        .unwrap_or_default();
     let decided = q(
         &ctx.db,
-        "UPDATE device_codes SET status = ?1, user_id = ?2 WHERE device_hash = ?3 AND status = 'pending' \
-         AND (token_id IS NULL OR user_id = ?2)",
-        &[s(status), s(&user.id), s(&row.device_hash)],
+        "UPDATE device_codes SET status = ?1, user_id = ?2, auth_method = ?4, auth_domain = ?5 \
+         WHERE device_hash = ?3 AND status = 'pending' AND (token_id IS NULL OR user_id = ?2)",
+        &[
+            s(status),
+            s(&user.id),
+            s(&row.device_hash),
+            os(how.method_str()),
+            os(how.domain.as_deref()),
+        ],
     )?
     .run()
     .await?;

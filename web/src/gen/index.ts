@@ -400,6 +400,17 @@ export type { SetWorkspaceMembershipRequest } from "./SetWorkspaceMembershipRequ
 export type { SetupRequest } from "./SetupRequest";
 export type { Severity } from "./Severity";
 export type { ShareList } from "./ShareList";
+export type { SignInCoverage } from "./SignInCoverage";
+export type { SignInInfo } from "./SignInInfo";
+export type { SignInOverview } from "./SignInOverview";
+export type { SignInPerson } from "./SignInPerson";
+export type { SignInPreview } from "./SignInPreview";
+export type { SignInPreviewRequest } from "./SignInPreviewRequest";
+export type { SignInProvider } from "./SignInProvider";
+export type { SignInProviderStatus } from "./SignInProviderStatus";
+export type { SignInRequirement } from "./SignInRequirement";
+export type { SignInRule } from "./SignInRule";
+export type { SignInYou } from "./SignInYou";
 export type { SignupRequest } from "./SignupRequest";
 export type { Snapshot } from "./Snapshot";
 export type { SnapshotCommit } from "./SnapshotCommit";

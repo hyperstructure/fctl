@@ -32,10 +32,12 @@ struct TokenRow {
     expires_at: Option<i64>,
     #[serde(default)]
     scope: Option<String>,
+    #[serde(default)]
+    auth_method: Option<String>,
 }
 
 const TOKEN_COLUMNS: &str =
-    "id, kind, name, user_agent, created_at, last_used_at, expires_at, scope";
+    "id, kind, name, user_agent, created_at, last_used_at, expires_at, scope, auth_method";
 
 /// A workspace or project as a token names it.
 #[derive(Deserialize)]
@@ -144,6 +146,7 @@ impl TokenRow {
             expires_at: self.expires_at,
             user_agent: self.user_agent,
             scope,
+            method: self.auth_method,
         }
     }
 }
@@ -274,14 +277,25 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let places = places(ctx, &body.workspaces, &body.projects).await?;
     let limits = Limits::new(access, places, body.github_access);
     ctx.verified(Sensitive::NewToken)?;
+    // It takes how the sign-in that makes it was made, for the instance's
+    // sign-in rules.
+    let how = ctx
+        .auth
+        .as_ref()
+        .map(|a| a.signed_in_with.clone())
+        .unwrap_or_default();
+    let method = how.method_str().map(str::to_owned);
     let (id, secret) = auth::issue_token(
         ctx,
         &user.id,
         TokenKind::Pat,
-        Some(&name),
-        expires_at,
-        limits.as_ref(),
-        None,
+        auth::NewToken {
+            name: Some(&name),
+            expires_at,
+            limits: limits.as_ref(),
+            verified_at: None,
+            how,
+        },
     )
     .await?;
     let scope = match &limits {
@@ -304,6 +318,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             user_agent: None,
             current: false,
             scope,
+            method,
         },
         secret,
     })
@@ -359,5 +374,6 @@ pub fn limited_me(user: &crate::model::UserRow, token: Option<TokenInfo>) -> Me 
         gravatar: None,
         claude_stand_in: false,
         export: None,
+        sign_in: None,
     }
 }
