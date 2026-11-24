@@ -69,6 +69,7 @@ const me = (fields: Partial<G.Me> = {}): G.Me => ({
     created_at: 0,
     emails: [],
     workspaces: 0,
+    providers: [],
   },
   identities: [],
   claude: [

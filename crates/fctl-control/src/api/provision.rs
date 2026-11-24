@@ -117,6 +117,22 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     };
     let hash = match body.password.as_deref() {
         Some(password) => {
+            // A password wouldn't sign them in where their domain signs in
+            // with a provider: its first sign-in links to the account.
+            if let Some(required) = fctl_domain::sign_in::required(
+                &crate::instance::settings(&ctx.db).await?.sign_in,
+                &[&email],
+                false,
+            ) {
+                return Err(validation(
+                    "password",
+                    &format!(
+                        "{}, so a password wouldn't sign them in: leave it out, and their first sign-in with {} links it to the account.",
+                        crate::sign_in::says(&required),
+                        crate::sign_in::provider_name(&required.provider)
+                    ),
+                ));
+            }
             validate::password(password, Some(&email))?;
             Some(auth::hash_password(password)?)
         }

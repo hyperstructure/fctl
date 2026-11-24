@@ -2395,8 +2395,8 @@ function Access({ w }: { w: G.Workspace }) {
                   <>
                     {" "}
                     (
-                    <Link to="/admin" search={{ tab: "settings" }} className="underline underline-offset-2">
-                      Admin → Settings
+                    <Link to="/admin" search={{ tab: "sign-in" }} className="underline underline-offset-2">
+                      Admin → Sign-in
                     </Link>
                     )
                   </>

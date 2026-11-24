@@ -2260,6 +2260,17 @@ impl Api {
         .await
     }
 
+    /// Unlinks someone's accounts of `provider` (`google`), for when theirs
+    /// was recreated or its address handed to someone else (admins).
+    pub async fn admin_unlink(&self, user_id: &str, provider: &str) -> Result<User> {
+        self.delete(&format!(
+            "/admin/users/{}/identities/{}",
+            enc(user_id),
+            enc(provider)
+        ))
+        .await
+    }
+
     pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
         self.delete(&format!("/admin/users/{}/two-factor", enc(user_id)))
             .await
@@ -2267,6 +2278,25 @@ impl Api {
 
     pub async fn instance_settings(&self) -> Result<InstanceSettings> {
         self.get("/admin/settings").await
+    }
+
+    /// How people sign in to the instance: its providers, the domains that
+    /// require one, and whom they cover (admins).
+    pub async fn sign_in_overview(&self) -> Result<SignInOverview> {
+        self.get("/admin/sign-in").await
+    }
+
+    /// What saving `rules` in place of the instance's sign-in rules would
+    /// do, before anything changes (admins). Saving them is
+    /// [`Self::update_instance_settings`] with `sign_in`.
+    pub async fn sign_in_preview(&self, rules: &[SignInRule]) -> Result<SignInPreview> {
+        self.post(
+            "/admin/sign-in/preview",
+            &SignInPreviewRequest {
+                rules: rules.to_vec(),
+            },
+        )
+        .await
     }
 
     /// Invites an address to the instance, and to workspaces you are an

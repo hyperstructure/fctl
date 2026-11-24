@@ -357,6 +357,23 @@ impl Bucket {
         let snapshot = key.strip_prefix(&self.key(session, ""))?;
         valid_id(snapshot).then(|| key.to_owned())
     }
+
+    /// Whether `location` is a snapshot that a host with this bucket reads:
+    /// in it, under its prefix ([`key_of`](Self::key_of)). Runners on one
+    /// bucket under different prefixes don't restore each other's.
+    pub fn holds(&self, location: &str) -> bool {
+        let Some(key) = location.strip_prefix(&format!("s3://{}/", self.name)) else {
+            return false;
+        };
+        let under = if self.prefix.is_empty() {
+            Some(key)
+        } else {
+            key.strip_prefix(&format!("{}/", self.prefix))
+        };
+        under
+            .and_then(|k| k.split_once('/'))
+            .is_some_and(|(session, _)| self.key_of(location, session).is_some())
+    }
 }
 
 /// A snapshot's id as agents make them: `snp_` and letters and digits, at
@@ -478,6 +495,28 @@ mod tests {
             (top.url(), top.key("s", "snp_1")),
             ("s3://acme-fctl".to_owned(), "s/snp_1".to_owned())
         );
+        // A host reads only what is under its prefix, whatever the session:
+        // runners on one bucket under different prefixes restore only
+        // their own.
+        assert!(b.holds(&at));
+        let team = |url: &str| Bucket::parse(url).unwrap_or_else(|e| panic!("{e}"));
+        let (a, sessions) = (
+            team("s3://acme-fctl/team-a"),
+            team("s3://acme-fctl/sessions/a"),
+        );
+        for (bucket, location, held) in [
+            (&a, "s3://acme-fctl/team-a/ses_1/snp_2", true),
+            (&a, "s3://acme-fctl/team-b/ses_1/snp_2", false),
+            (&a, "s3://acme-fctl/team-ab/ses_1/snp_2", false),
+            (&a, "s3://acme-other/team-a/ses_1/snp_2", false),
+            (&a, "s3://acme-fctl/team-a/x/ses_1/snp_2", false),
+            (&a, "s3://acme-fctl/team-a/ses_1/../snp_2", false),
+            (&sessions, "s3://acme-fctl/sessions/ses_1/snp_2", false),
+            (&top, "s3://acme-fctl/s/snp_1", true),
+            (&top, "s3://acme-fctl/team-a/ses_1/snp_2", false),
+        ] {
+            assert_eq!(bucket.holds(location), held, "{} {location}", bucket.url());
+        }
         assert_eq!(
             top.key_of("s3://acme-fctl/s/snp_1", "s").as_deref(),
             Some("s/snp_1")

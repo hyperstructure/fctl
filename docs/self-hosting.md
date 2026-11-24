@@ -535,8 +535,10 @@ then sign in and create your first workspace. Then invite your team under
 **Admin → People** (each address on its own, and to your workspaces at the
 same time), or allow them under **Admin → Access**: exact emails (which
 also creates invite links) or whole domains (`*@acme.dev`), whose people
-then sign up with Google and join the workspaces that invite them. To require
-two-factor sign-in of everyone, turn it on under **Admin → Settings →
+then sign up with Google and join the workspaces that invite them. To
+have your people sign in with your Google Workspace alone, require it for
+your domains ([Requiring Google for your domains](#requiring-google-for-your-domains)).
+To require two-factor sign-in of everyone, turn it on under **Admin →
 Sign-in** (or `fctl admin set --require-two-factor on`); it seals each
 authenticator app's secret with `FCTL_MASTER_KEY`. Passkeys belong to the
 host name in `FCTL_PUBLIC_URL`: moving the instance to another host name
@@ -635,7 +637,10 @@ create`, `show`, `set`, `add` and `remove`
   Google instead: while the account has no way in at all (no password,
   passkey or linked Google account), its first Google sign-in links
   Google to it. The allowlist admits the address from then on, as an
-  invitation's, and they join the workspaces it was invited to.
+  invitation's, and they join the workspaces it was invited to. Where
+  [Google is required for the address's domain](#requiring-google-for-your-domains),
+  leave `password` out: the token's request with one is refused, as a
+  password wouldn't sign them in.
 - **Leaving.** Disable an account first (`{"status": "disabled"}`): that
   signs them out and stops the sessions that run on their Claude
   subscription. Deleting it then works as deleting their own would: the
@@ -1156,6 +1161,85 @@ People can then link Google under **Settings**, and allowlisted people can
 sign up with it. An account with no way to sign in yet, as an admin
 token makes one, links Google at its first Google sign-in
 ([Provision people with admin tokens](#provision-people-with-admin-tokens)).
+**Admin → Sign-in** shows the redirect URI to give Google, and how many
+people sign in with it.
+
+### Requiring Google for your domains
+
+Where your people's addresses are your Google Workspace's, they can sign
+in with it alone: under its two-step verification and device checks,
+unable to sign in again once you close their Google account, and with no
+password of fctl's to forget or leave behind. Closing a Google account
+doesn't end the sessions its person has already: disable their account
+here too as they leave (or with your [admin
+token](#provision-people-with-admin-tokens)'s sync). Under **Admin → Sign-in → Domains that sign in
+with a provider**, choose **Require a provider** and give your domains
+(`acme.com, acme.dev`), or:
+
+```sh
+fctl admin sign-in require acme.com acme.dev
+```
+
+Before it saves, it shows whom it concerns ("38 people sign in with a
+password today: their next sign-in goes through Google, and their
+passwords stop working. 4 people at other domains sign in as before."),
+and the CLI asks to confirm unless `--yes`. Then, for everyone with an
+address at those domains, a connected one too:
+
+- **Google, as that address, is the way in.** Their passwords stop
+  working, and so do their passkeys alone, unless you allow those
+  (`--passkeys`): quick, but a passkey still signs in someone whose Google
+  account you closed. Passkeys still confirm it's them after Google and
+  before sensitive actions. Saving the rule deletes the browser sessions,
+  CLI sign-ins, access tokens and admin tokens they made another way,
+  those from before the rule too: they sign in again, and make access
+  tokens again, once. The admin token your directory sync uses stops if
+  an admin the rule covers made it another way: make it after signing in
+  with Google, or as the primary instance owner.
+- **Their next Google sign-in moves them over.** It links their Google
+  Workspace account to their fctl account by its address, whatever else
+  the account has, unless another Workspace account at those domains signs
+  in to it already (a recycled address's new holder doesn't get the
+  account). Once its second factor checks out, where it asks for one, it
+  takes the account's password, which signs nobody in any more. Signing
+  in as a personal Google account (a Gmail one) is refused: the page says
+  which address to choose.
+- **They hear of it**, by email where the instance [sends
+  it](#email-optional), and the sign-in page says which domains sign in
+  with Google and turns its form into Google's button for an address
+  there.
+- **Their addresses stay**: they can't disconnect an address at those
+  domains, as that would let them sign in another way. An instance admin
+  or an admin token can.
+- **A Google account that's gone keeps its place**: when you recreate
+  someone's Workspace account at the same address, the old one, still
+  linked, keeps the new one from linking (so that whoever gets a recycled
+  address doesn't get its account). Unlink it under **Admin → People →
+  Unlink Google**, or with `fctl admin unlink ada@acme.com`, and their
+  next sign-in links the new one.
+- **You keep a way in while Google is down**: the primary instance owner's
+  password and passkeys sign in whatever the rules say (**Primary instance
+  owner? Sign in with your password** on the sign-in page). Nobody else's
+  do.
+- **You don't sign yourself out**: if the rule would cover you and you
+  signed in another way, it waits until you sign in with Google as an
+  address there, which shows it works for you.
+
+`fctl admin sign-in` shows the rules and whom each covers, and `fctl admin
+sign-in unrequire acme.dev` lets a domain's people sign in as they like
+again (it asks you to confirm it's you where the instance asks for that);
+passwords that went at their first Google sign-in don't come back, and
+each sets one from **Settings** or **Forgot?** on the sign-in page.
+
+To keep accounts to your directory as well, so that signing in with
+Google through a `*@acme.com` allowlist entry makes none, turn off
+**Admin → Sign-in → Accounts → Signing in makes accounts** (or `fctl admin
+set --self-sign-up off`): only invitations, addresses you allow one by
+one and [admin tokens](#provision-people-with-admin-tokens) make accounts,
+and the sign-in page tells people without one to ask an admin.
+
+fctl signs people in through Google alone today. SAML, Okta, Microsoft
+Entra ID and other OpenID Connect providers aren't supported yet.
 
 ## Email (optional)
 
@@ -1324,18 +1408,25 @@ The host signs its requests with the
 machine's own credentials, where AWS's tools look for them: the
 instance's role on EC2, a web identity (IRSA) or the container's
 credentials (Pod Identity) on EKS, the `AWS_*` variables. They need
-these, on the prefix alone:
+these on the prefix, and `s3:ListBucket` on the bucket, without which S3
+answers a request for a snapshot that its lifecycle rule deleted with
+403 rather than 404, and the runner shows it as the bucket refusing it:
 
 ```json
-{ "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
-  "Resource": "arn:aws:s3:::acme-fctl/sessions/*" }
+[
+  { "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+    "Resource": "arn:aws:s3:::acme-fctl/sessions/*" },
+  { "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::acme-fctl" }
+]
 ```
 
 A session's snapshot is at `sessions/<session>/<snapshot>`, and a
 host that saves a new one deletes the one before, when that one is in its
 bucket too. A session resumes with its snapshot only on a runner whose
-host has the same bucket, and waits up to ten minutes for one that is
-busy before it starts on another from its branch.
+host has the same bucket and prefix, and waits up to ten minutes for one
+that is busy before it starts on another from its branch. Requests that
+S3 asks to slow down, or that fail on the way, go again up to three
+times.
 The control plane forgets a snapshot once its workspace's days have
 passed, but it can't delete it from your bucket: give the prefix a
 lifecycle rule that expires objects after as many days (30 unless the

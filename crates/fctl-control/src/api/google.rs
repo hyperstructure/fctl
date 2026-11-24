@@ -1,23 +1,24 @@
-//! Google sign-in and account linking (OpenID Connect, authorization code + PKCE).
+//! Google sign-in and account linking (OpenID Connect, authorization code +
+//! PKCE): Google's part of signing in with a provider (`api::sign_in`).
 //!
 //! The browser goes to `/api/v1/auth/google/start?intent=login|link`, which
 //! sets a signed, short-lived state cookie and redirects to Google. Google
 //! redirects back to `/api/v1/auth/google/callback`, where the code is
 //! exchanged server to server; the ID token arrives over that TLS connection
 //! from Google, so its claims are trusted without a signature check (OIDC
-//! Core §3.1.3.7) after checking issuer, audience, expiry and nonce.
+//! Core §3.1.3.7) after checking issuer, audience, expiry and nonce. What
+//! it says of the person then goes to `api::sign_in::finish`, which links,
+//! signs in or signs up as the instance's sign-in rules say.
 
-use crate::auth;
+use crate::api::sign_in::{self, Intent, Provided, fail, safe_return};
 use crate::crypto;
 use crate::ctx::Ctx;
-use crate::db::{Count, n, os, q, s};
-use crate::error::{AppError, AppResult, not_configured, not_found};
+use crate::error::{AppError, AppResult, not_configured};
 use crate::http;
-use crate::model::{UserRow, user_columns};
 use fctl_domain::cookies::Cookie;
-use fctl_proto::{ApiError, ErrorCode};
+use fctl_proto::ApiError;
 use serde::{Deserialize, Serialize};
-use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit, Response};
+use worker::{Fetch, Headers, Method, Request, RequestInit, Response};
 
 const STATE_TTL_MS: i64 = 10 * 60 * 1000;
 
@@ -55,14 +56,37 @@ struct Claims {
     picture: Option<String>,
 }
 
-/// `path` when it is a path of the app, else the home page.
-fn safe_return(path: Option<String>) -> String {
-    path.filter(|p| fctl_domain::validate::is_app_path(p))
-        .unwrap_or_else(|| "/".to_owned())
+impl Claims {
+    /// What they say of the person, as `api::sign_in` takes it.
+    fn provided(self) -> Provided {
+        let email = self.email.as_deref().map(str::to_lowercase);
+        let verified = self.email_verified.unwrap_or(false);
+        let vouched = email
+            .clone()
+            .filter(|e| fctl_domain::google::vouches_for(e, verified, self.hd.as_deref()));
+        Provided {
+            provider: fctl_domain::sign_in::GOOGLE,
+            subject: self.sub,
+            email,
+            verified,
+            vouched,
+            name: self.name,
+            given_name: self.given_name,
+            family_name: self.family_name,
+            picture: self.picture,
+        }
+    }
+}
+
+/// Where Google sends people back after they sign in: the instance's OAuth
+/// client lists it as an authorized redirect URI (Admin → Sign-in shows
+/// it).
+pub fn redirect_url(cfg: &crate::config::Config) -> String {
+    cfg.url("/api/v1/auth/google/callback")
 }
 
 fn redirect_uri(ctx: &Ctx) -> String {
-    ctx.cfg.url("/api/v1/auth/google/callback")
+    redirect_url(&ctx.cfg)
 }
 
 pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
@@ -80,7 +104,7 @@ pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
             // the last 15 minutes links one, so that a stolen session or
             // token can't add a way in.
             if !crate::api::two_factor::fresh_sign_in(ctx) {
-                return fail(ctx, "/settings", "google_reauth");
+                return clear_and_fail(ctx, "/settings", "google_reauth");
             }
             Some(user_id)
         }
@@ -120,19 +144,31 @@ pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("prompt", "select_account");
+    // The address the sign-in page was given, at a domain that signs in
+    // with Google: Google offers its account first. Only a hint: what
+    // Google answers is checked as ever.
+    if let Some(hint) =
+        http::query(req, "login_hint").and_then(|h| fctl_domain::validate::email(&h).ok())
+    {
+        url.query_pairs_mut().append_pair("login_hint", &hint);
+    }
     http::redirect(url.as_str())
 }
 
-/// Redirects back into the app with an error the page can show.
-fn fail(ctx: &mut Ctx, return_to: &str, code: &str) -> AppResult<Response> {
+/// Forgets the sign-in's state and redirects back into the app with an
+/// error the page can show.
+fn clear_and_fail(ctx: &mut Ctx, return_to: &str, code: &str) -> AppResult<Response> {
+    clear_state(ctx);
+    fail(return_to, code, "")
+}
+
+fn clear_state(ctx: &mut Ctx) {
     ctx.cookies.push(http::set_cookie(
         Cookie::GoogleSignIn,
         "",
         0,
         ctx.cfg.secure_cookies(),
     ));
-    let sep = if return_to.contains('?') { '&' } else { '?' };
-    http::redirect(&format!("{return_to}{sep}error={code}"))
 }
 
 pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
@@ -146,7 +182,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         .and_then(|c| ctx.keys().ok()?.verify(&c))
         .and_then(|b| serde_json::from_slice(&b).ok());
     let Some(st) = st.filter(|s| s.exp > ctx.now) else {
-        return fail(ctx, "/login", "google_expired");
+        return clear_and_fail(ctx, "/login", "google_expired");
     };
     let failure_page = if st.intent == "link" {
         "/settings"
@@ -154,13 +190,13 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         "/login"
     };
     if http::query(req, "state").as_deref() != Some(st.state.as_str()) {
-        return fail(ctx, failure_page, "google_state");
+        return clear_and_fail(ctx, failure_page, "google_state");
     }
     if http::query(req, "error").is_some() {
-        return fail(ctx, failure_page, "google_cancelled");
+        return clear_and_fail(ctx, failure_page, "google_cancelled");
     }
     let Some(code) = http::query(req, "code") else {
-        return fail(ctx, failure_page, "google_state");
+        return clear_and_fail(ctx, failure_page, "google_state");
     };
     // Exchange the code.
     let form = url::form_urlencoded::Serializer::new(String::new())
@@ -185,7 +221,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     .await?;
     if res.status_code() != 200 {
         worker::console_error!("google token exchange: HTTP {}", res.status_code());
-        return fail(ctx, failure_page, "google_exchange");
+        return clear_and_fail(ctx, failure_page, "google_exchange");
     }
     let tokens: TokenResponse = res.json().await?;
     let claims = tokens
@@ -195,7 +231,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         .and_then(crypto::b64url_decode)
         .and_then(|b| serde_json::from_slice::<Claims>(&b).ok());
     let Some(claims) = claims else {
-        return fail(ctx, failure_page, "google_exchange");
+        return clear_and_fail(ctx, failure_page, "google_exchange");
     };
     let valid = (claims.iss == "https://accounts.google.com"
         || claims.iss == "accounts.google.com")
@@ -203,652 +239,18 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         && claims.exp * 1000 > ctx.now
         && claims.nonce.as_deref() == Some(st.nonce.as_str());
     if !valid {
-        return fail(ctx, failure_page, "google_invalid");
+        return clear_and_fail(ctx, failure_page, "google_invalid");
     }
-    let email = claims.email.as_deref().map(str::to_lowercase);
-    let verified = claims.email_verified.unwrap_or(false);
-    ctx.cookies.push(http::set_cookie(
-        Cookie::GoogleSignIn,
-        "",
-        0,
-        ctx.cfg.secure_cookies(),
-    ));
-
-    let linked: Option<UserRow> = q(
-        &ctx.db,
-        &format!(
-            "SELECT {} FROM identities i JOIN users u ON u.id = i.user_id WHERE i.provider = 'google' AND i.subject = ?",
-            user_columns("u")
-        ),
-        &[s(&claims.sub)],
-    )?
-    .first()
-    .await?;
-
-    if st.intent == "link" {
-        let Some(user_id) = st.user_id.as_deref() else {
-            return fail(ctx, "/settings", "google_state");
-        };
-        let Some(user) = auth::user_by_id(ctx, user_id)
-            .await?
-            .filter(UserRow::is_active)
-        else {
-            return fail(ctx, "/settings", "google_state");
-        };
-        if let Some(other) = &linked {
-            if other.id != user_id {
-                return fail(ctx, "/settings", "google_linked_elsewhere");
-            }
-            return http::redirect(&format!("{}?linked=google", st.return_to));
-        }
-        insert_identity(ctx, user_id, &claims, email.as_deref()).await?;
-        let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
-        crate::email::notice(
-            ctx,
-            &user,
-            "A Google account was linked to your account",
-            format!(
-                "The Google account {} now signs in to your {instance} account ({}).\n\nIf you didn't link it, unlink it in Settings now and change your password: {}",
-                email.as_deref().unwrap_or("without an email address"),
-                user.email,
-                ctx.cfg.url("/settings?tab=security")
-            ),
-        );
-        if user.avatar_url.is_none() {
-            adopt_picture(ctx, user_id, &claims).await;
-        }
-        ctx.audit(
-            "identity.linked",
-            Some(user_id),
-            Some(serde_json::json!({ "provider": "google" })),
-        );
-        return http::redirect(&format!(
-            "{}?linked=google",
-            safe_return(Some(st.return_to))
-        ));
-    }
-
-    // Sign in.
-    if let Some(user) = linked {
-        return sign_in(ctx, user, &st.return_to).await;
-    }
-    let Some(email) = email.filter(|_| verified) else {
-        return fail(ctx, "/login", "google_unverified");
+    clear_state(ctx);
+    let intent = match (st.intent.as_str(), st.user_id) {
+        ("link", Some(user_id)) => Intent::Link {
+            user_id,
+            return_to: st.return_to,
+        },
+        ("link", None) => return fail("/settings", "google_state", ""),
+        _ => Intent::Login {
+            return_to: st.return_to,
+        },
     };
-    // Google vouches for an address only where it hosts it, Gmail's or a
-    // Google Workspace account's: any other a Google account shows was
-    // verified once, when the account was made, and may be someone else's
-    // now (a former employee's, a recycled one). Signing up with one takes
-    // the invitation sent to it, which only its mailbox gets.
-    if !fctl_domain::google::vouches_for(&email, verified, claims.hd.as_deref()) {
-        return fail(ctx, "/login", "google_not_authoritative");
-    }
-    if let Some(user) = auth::user_by_email(ctx, &email).await? {
-        return first_sign_in(ctx, user, &claims, &email, &st.return_to).await;
-    }
-    let Some((_, role)) = crate::api::auth::allow_match(ctx, &email).await? else {
-        return fail(ctx, "/login", "not_allowed");
-    };
-    let id = fctl_domain::ids::user_id(ctx.now);
-    let role = if role == fctl_proto::session::InstanceRole::Admin {
-        "admin"
-    } else {
-        "member"
-    };
-    // Google's first and last name when it has them; else its full name or
-    // the email's local part.
-    let fallback = claims
-        .name
-        .clone()
-        .unwrap_or_else(|| email.split('@').next().unwrap_or("New user").to_owned());
-    let person = fctl_domain::validate::person_name(
-        claims.given_name.as_deref(),
-        claims.family_name.as_deref(),
-        None,
-    )
-    .or_else(|_| fctl_domain::validate::person_name(None, None, Some(&fallback)))
-    .or_else(|_| fctl_domain::validate::person_name(None, None, Some("New user")))?;
-    // At once, and failing whole: an address another account took since
-    // it was looked up (connecting it, say) makes no second account for it.
-    crate::db::batch(
-        &ctx.db,
-        vec![
-            q(
-                &ctx.db,
-                "INSERT INTO users (id, email, name, given_name, family_name, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-                &[
-                    s(id.as_str()),
-                    s(&email),
-                    s(&person.full),
-                    os(person.given.as_deref()),
-                    os(person.family.as_deref()),
-                    s(role),
-                    n(ctx.now),
-                    n(ctx.now),
-                ],
-            )?,
-            q(
-                &ctx.db,
-                "INSERT INTO user_emails (email, user_id, created_at) VALUES (?, ?, ?)",
-                &[s(&email), s(id.as_str()), n(ctx.now)],
-            )?,
-            identity_insert(ctx, id.as_str(), &claims, Some(&email))?,
-        ],
-    )
-    .await?;
-    let user = auth::user_by_id(ctx, id.as_str())
-        .await?
-        .ok_or_else(|| not_found("User"))?;
-    auth::start_web_session(ctx, &user, false).await?;
-    // Their Gravatar first, which only people who chose a picture have;
-    // else Google's, which is a letter for those who didn't.
-    let user = crate::api::auth::new_gravatar(ctx, user).await?;
-    if user.avatar_url.is_none() {
-        adopt_picture(ctx, &user.id, &claims).await;
-    }
-    ctx.audit(
-        "user.signup",
-        Some(&user.id),
-        Some(serde_json::json!({ "via": "google" })),
-    );
-    crate::api::workspaces::joined_after_sign_up(ctx, &user, &email).await?;
-    http::redirect(&st.return_to)
-}
-
-/// Signs in `user`, whom this Google account signs in, and goes on to
-/// `return_to`: by way of the page that asks for a code, when their
-/// two-factor sign-in asks for one on Google sign-ins.
-async fn sign_in(ctx: &mut Ctx, user: UserRow, return_to: &str) -> AppResult<Response> {
-    if !user.is_active() {
-        return fail(ctx, "/login", "disabled");
-    }
-    let settings = user.two_factor_settings(&crate::instance::settings(&ctx.db).await?);
-    if fctl_domain::two_factor::asks(
-        &settings,
-        fctl_domain::two_factor::Via::Google,
-        user.has_password(),
-        user.factors(),
-        user.two_factor_google,
-    ) {
-        // The page that asks for the code finishes it, then goes on to
-        // `return_to`.
-        crate::api::two_factor::challenge(
-            ctx,
-            &user,
-            fctl_proto::api::ChallengeReason::Google,
-            crate::api::two_factor::Pending {
-                return_to: Some(return_to.to_owned()),
-                ..Default::default()
-            },
-        )
-        .await?;
-        return http::redirect("/two-factor");
-    }
-    auth::start_web_session(ctx, &user, false).await?;
-    ctx.audit(
-        "user.login",
-        Some(&user.id),
-        Some(serde_json::json!({ "via": "google" })),
-    );
-    http::redirect(return_to)
-}
-
-/// A Google sign-in with the address of `user`, whom no Google account
-/// signs in yet; Google vouches that the person holds the address
-/// ([`first`]).
-async fn first_sign_in(
-    ctx: &mut Ctx,
-    user: UserRow,
-    claims: &Claims,
-    email: &str,
-    return_to: &str,
-) -> AppResult<Response> {
-    match first(&ctx.db, &user, claims, email, ctx.now).await? {
-        First::Linked => {}
-        First::Signs => return sign_in(ctx, user, return_to).await,
-        First::Refused(code) => return fail(ctx, "/login", code),
-    }
-    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
-    crate::email::notice(
-        ctx,
-        &user,
-        "A Google account was linked to your account",
-        format!(
-            "You signed in to your {instance} account ({}) for the first time, with the Google account {email}: it signs you in from now on.\n\nIf it wasn't you, tell an admin of {instance} now. To sign in another way too, add a password or a passkey in Settings: {}",
-            user.email,
-            ctx.cfg.url("/settings?tab=security")
-        ),
-    );
-    if user.avatar_url.is_none() {
-        adopt_picture(ctx, &user.id, claims).await;
-    }
-    let response = sign_in(ctx, user.clone(), return_to).await;
-    // After the sign-in, so that the log names them as who linked it, and
-    // whether or not the sign-in went through. It starts their session at
-    // once: two-factor sign-in asks for a code only of accounts with an
-    // authenticator app or a passkey, which nobody set up on an account
-    // nobody could sign in to.
-    ctx.audit(
-        "identity.linked",
-        Some(&user.id),
-        Some(serde_json::json!({ "provider": "google", "via": "first_sign_in" })),
-    );
-    response
-}
-
-/// What a Google sign-in with the address of `user`, whom no Google
-/// account signs in yet, does with the account.
-#[derive(Debug, PartialEq)]
-enum First {
-    /// It linked Google to the account, which had no way in.
-    Linked,
-    /// This Google account signs in to it already: another request's
-    /// first sign-in with it linked it a moment ago.
-    Signs,
-    /// It refuses, with the error the sign-in page explains.
-    Refused(&'static str),
-}
-
-/// Linking a Google account by address would let it take over an account
-/// someone signs in to another way: they sign in that way, then link
-/// Google from Settings. An account with no way to sign in at all (no
-/// password, passkey or linked account), though, has nobody to take it
-/// from: an admin token made it for this address (`api::provision`), and
-/// nobody has signed in to it. Its first Google sign-in links Google to it.
-async fn first(
-    db: &D1Database,
-    user: &UserRow,
-    c: &Claims,
-    email: &str,
-    now: i64,
-) -> AppResult<First> {
-    if !user.is_active() {
-        return Ok(First::Refused("disabled"));
-    }
-    if link_first(db, &user.id, c, email, now).await? {
-        return Ok(First::Linked);
-    }
-    #[derive(Deserialize)]
-    struct Owner {
-        user_id: String,
-    }
-    let owner: Option<Owner> = q(
-        db,
-        "SELECT user_id FROM identities WHERE provider = 'google' AND subject = ?",
-        &[s(&c.sub)],
-    )?
-    .first()
-    .await?;
-    if owner.is_some_and(|o| o.user_id == user.id) {
-        return Ok(First::Signs);
-    }
-    Ok(First::Refused(link_required(user)))
-}
-
-/// Links the Google account of `c` to the account `user_id` as its first
-/// way to sign in, as one statement that checks again that the account is
-/// active, has no way in and has `email`, the address Google vouched for:
-/// a password, a passkey or a Google account given it since it was read,
-/// or an address an admin token changed meanwhile, leaves it as it is.
-/// Whether it linked it.
-async fn link_first(
-    db: &D1Database,
-    user_id: &str,
-    c: &Claims,
-    email: &str,
-    now: i64,
-) -> AppResult<bool> {
-    let linked = q(
-        db,
-        "INSERT OR IGNORE INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at) \
-         SELECT ?1, ?2, 'google', ?3, ?4, ?5, ?6, ?7 \
-         WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = ?2 AND u.status = 'active' AND u.password_hash IS NULL \
-           AND (u.email = ?4 OR EXISTS (SELECT 1 FROM user_emails e WHERE e.user_id = ?2 AND e.email = ?4))) \
-         AND NOT EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = ?2) \
-         AND NOT EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2)",
-        &[
-            s(fctl_domain::ids::identity_id(now).as_str()),
-            s(user_id),
-            s(&c.sub),
-            s(email),
-            os(c.name.as_deref()),
-            os(c.picture.as_deref()),
-            n(now),
-        ],
-    )?
-    .run()
-    .await?;
-    Ok(linked == 1)
-}
-
-/// Why a Google sign-in didn't link to `user`, who signs in another way,
-/// as the sign-in page tells them: sign in that way, then link Google
-/// from Settings.
-fn link_required(user: &UserRow) -> &'static str {
-    if user.has_password() {
-        "google_link_required"
-    } else if user.passkeys > 0 {
-        "google_link_passkey"
-    } else {
-        // Another Google account.
-        "google_link_other"
-    }
-}
-
-/// The Google account's picture as the avatar of someone who has none: a
-/// copy (`api::avatars::adopt_google`). Without it, they keep their
-/// initials until they upload one.
-async fn adopt_picture(ctx: &Ctx, user_id: &str, c: &Claims) {
-    if let Some(picture) = c.picture.as_deref()
-        && let Err(e) = crate::api::avatars::adopt_google(ctx, user_id, picture).await
-    {
-        worker::console_log!("google picture not copied: {e}");
-    }
-}
-
-async fn insert_identity(
-    ctx: &Ctx,
-    user_id: &str,
-    c: &Claims,
-    email: Option<&str>,
-) -> AppResult<()> {
-    identity_insert(ctx, user_id, c, email)?.run().await?;
-    Ok(())
-}
-
-/// The statement that links the Google account of `c` to `user_id`.
-fn identity_insert(
-    ctx: &Ctx,
-    user_id: &str,
-    c: &Claims,
-    email: Option<&str>,
-) -> AppResult<crate::db::Query> {
-    q(
-        &ctx.db,
-        "INSERT INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at) VALUES (?, ?, 'google', ?, ?, ?, ?, ?)",
-        &[
-            s(fctl_domain::ids::identity_id(ctx.now).as_str()),
-            s(user_id),
-            s(&c.sub),
-            os(email),
-            os(c.name.as_deref()),
-            os(c.picture.as_deref()),
-            n(ctx.now),
-        ],
-    )
-}
-
-pub async fn unlink(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
-    let user = ctx.user()?.clone();
-    let others: Option<Count> = q(
-        &ctx.db,
-        "SELECT COUNT(*) AS n FROM identities WHERE user_id = ? AND id != ?",
-        &[s(&user.id), s(id)],
-    )?
-    .first()
-    .await?;
-    if user.password_hash.is_none() && user.passkeys == 0 && others.map_or(0, |c| c.n) == 0 {
-        return Err(AppError(ApiError::new(
-            ErrorCode::Conflict,
-            "Set a password or add a passkey first, or you would have no way to sign in",
-        )));
-    }
-    let changed = q(
-        &ctx.db,
-        "DELETE FROM identities WHERE id = ? AND user_id = ?",
-        &[s(id), s(&user.id)],
-    )?
-    .run()
-    .await?;
-    if changed == 0 {
-        return Err(not_found("Linked account"));
-    }
-    ctx.audit("identity.unlinked", Some(&user.id), None);
-    http::ok(&auth::me(ctx, &user).await?)
-}
-
-#[cfg(all(test, target_arch = "wasm32"))]
-mod tests {
-    use super::*;
-    use crate::db::Count;
-    use crate::testing;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    const NOW: i64 = 1_800_000_000_000;
-
-    /// Bob, whom an admin token made as `api::provision::create` does: an
-    /// active member, with an allowlist entry of his own and no way to sign
-    /// in. Ada signs in with a password, Cy with a passkey and Dee with
-    /// another Google account; Eve's account, made as Bob's was, is
-    /// disabled.
-    async fn world(db: &D1Database) -> AppResult<()> {
-        for sql in [
-            "INSERT INTO users (id, email, name, password_hash, role, status, created_at, updated_at) VALUES \
-             ('usr_ada', 'ada@acme.dev', 'Ada', 'hash', 'admin', 'active', 0, 0), \
-             ('usr_bob', 'bob@acme.dev', 'Bob', NULL, 'member', 'active', 0, 0), \
-             ('usr_cy', 'cy@acme.dev', 'Cy', NULL, 'member', 'active', 0, 0), \
-             ('usr_dee', 'dee@acme.dev', 'Dee', NULL, 'member', 'active', 0, 0), \
-             ('usr_eve', 'eve@acme.dev', 'Eve', NULL, 'member', 'disabled', 0, 0)",
-            "INSERT INTO user_emails (email, user_id, created_at) VALUES ('ada@acme.dev', 'usr_ada', 0), \
-             ('bob@acme.dev', 'usr_bob', 0), ('cy@acme.dev', 'usr_cy', 0), ('dee@acme.dev', 'usr_dee', 0), \
-             ('eve@acme.dev', 'usr_eve', 0)",
-            "INSERT INTO allowlist (id, pattern, role, note, created_by, created_at) VALUES \
-             ('alw_bob', 'bob@acme.dev', 'member', 'Admin token', 'usr_ada', 0), \
-             ('alw_eve', 'eve@acme.dev', 'member', 'Admin token', 'usr_ada', 0)",
-            "INSERT INTO passkeys (id, user_id, credential_id, public_key, algorithm, name, created_at) VALUES \
-             ('psk_cy', 'usr_cy', 'cred-cy', 'key', -7, 'Laptop', 0)",
-            "INSERT INTO identities (id, user_id, provider, subject, email, created_at) VALUES \
-             ('idn_dee', 'usr_dee', 'google', 'g-dee-personal', 'dee@gmail.com', 0)",
-        ] {
-            q(db, sql, &[])?.run().await?;
-        }
-        Ok(())
-    }
-
-    /// What Google's ID token says of the account with `sub` and `email`.
-    fn claims(sub: &str, email: &str) -> Claims {
-        Claims {
-            iss: "https://accounts.google.com".into(),
-            aud: "client".into(),
-            sub: sub.into(),
-            exp: NOW / 1000 + 3600,
-            nonce: None,
-            email: Some(email.into()),
-            email_verified: Some(true),
-            hd: Some("acme.dev".into()),
-            name: Some("Someone".into()),
-            given_name: None,
-            family_name: None,
-            picture: None,
-        }
-    }
-
-    async fn user(db: &D1Database, id: &str) -> AppResult<UserRow> {
-        q(
-            db,
-            &format!("SELECT {} FROM users u WHERE u.id = ?", user_columns("u")),
-            &[s(id)],
-        )?
-        .first()
-        .await?
-        .ok_or_else(|| not_found("User"))
-    }
-
-    /// The Google accounts that sign in to `user_id`.
-    async fn googles(db: &D1Database, user_id: &str) -> AppResult<Vec<String>> {
-        #[derive(Deserialize)]
-        struct Subject {
-            subject: String,
-        }
-        let rows: Vec<Subject> = q(
-            db,
-            "SELECT subject FROM identities WHERE user_id = ? AND provider = 'google' ORDER BY subject",
-            &[s(user_id)],
-        )?
-        .all()
-        .await?;
-        Ok(rows.into_iter().map(|r| r.subject).collect())
-    }
-
-    #[wasm_bindgen_test]
-    async fn a_provisioned_account_takes_its_first_google_sign_in() -> AppResult<()> {
-        let db = testing::database();
-        world(&db).await?;
-        let bob = user(&db, "usr_bob").await?;
-        let google = claims("g-bob", "bob@acme.dev");
-        assert_eq!(
-            first(&db, &bob, &google, "bob@acme.dev", NOW).await?,
-            First::Linked
-        );
-        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
-        // Then it is his way in: the same Google account signs in, and
-        // another with his address links to it only from his Settings.
-        assert_eq!(
-            first(&db, &bob, &google, "bob@acme.dev", NOW + 1).await?,
-            First::Signs
-        );
-        let other = claims("g-bob-2", "bob@acme.dev");
-        assert_eq!(
-            first(
-                &db,
-                &user(&db, "usr_bob").await?,
-                &other,
-                "bob@acme.dev",
-                NOW + 2
-            )
-            .await?,
-            First::Refused("google_link_other")
-        );
-        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
-        Ok(())
-    }
-
-    #[wasm_bindgen_test]
-    async fn an_account_someone_signs_in_to_keeps_to_its_way_in() -> AppResult<()> {
-        let db = testing::database();
-        world(&db).await?;
-        for (id, email, code) in [
-            ("usr_ada", "ada@acme.dev", "google_link_required"),
-            ("usr_cy", "cy@acme.dev", "google_link_passkey"),
-            ("usr_dee", "dee@acme.dev", "google_link_other"),
-            // A disabled account takes none, though nobody signs in to it.
-            ("usr_eve", "eve@acme.dev", "disabled"),
-        ] {
-            let c = claims(&format!("g-{id}"), email);
-            let found = first(&db, &user(&db, id).await?, &c, email, NOW).await?;
-            assert_eq!(found, First::Refused(code), "{id}");
-        }
-        assert!(googles(&db, "usr_ada").await?.is_empty());
-        assert!(googles(&db, "usr_cy").await?.is_empty());
-        assert_eq!(
-            googles(&db, "usr_dee").await?,
-            vec!["g-dee-personal".to_owned()]
-        );
-        assert!(googles(&db, "usr_eve").await?.is_empty());
-        // Nor does one that had no way in a moment ago, and has one now.
-        let bob = user(&db, "usr_bob").await?;
-        q(
-            &db,
-            "UPDATE users SET password_hash = 'hash' WHERE id = 'usr_bob'",
-            &[],
-        )?
-        .run()
-        .await?;
-        let c = claims("g-bob", "bob@acme.dev");
-        assert!(matches!(
-            first(&db, &bob, &c, "bob@acme.dev", NOW).await?,
-            First::Refused(_)
-        ));
-        assert!(googles(&db, "usr_bob").await?.is_empty());
-        Ok(())
-    }
-
-    #[wasm_bindgen_test]
-    async fn the_link_holds_to_the_address_google_vouched_for() -> AppResult<()> {
-        let db = testing::database();
-        world(&db).await?;
-        // An admin token gives Bob a new address after the sign-in found
-        // his account by the old one: the old one's Google account gets
-        // nothing.
-        let bob = user(&db, "usr_bob").await?;
-        for sql in [
-            "UPDATE users SET email = 'bob@new.acme.dev' WHERE id = 'usr_bob'",
-            "UPDATE user_emails SET email = 'bob@new.acme.dev' WHERE email = 'bob@acme.dev'",
-        ] {
-            q(&db, sql, &[])?.run().await?;
-        }
-        let old = claims("g-bob-old", "bob@acme.dev");
-        assert!(matches!(
-            first(&db, &bob, &old, "bob@acme.dev", NOW).await?,
-            First::Refused(_)
-        ));
-        assert!(googles(&db, "usr_bob").await?.is_empty());
-        // Any address of his signs in, the ones connected to his account too.
-        q(
-            &db,
-            "INSERT INTO user_emails (email, user_id, created_at) VALUES ('bob@acme.io', 'usr_bob', 0)",
-            &[],
-        )?
-        .run()
-        .await?;
-        let connected = claims("g-bob-io", "bob@acme.io");
-        assert_eq!(
-            first(
-                &db,
-                &user(&db, "usr_bob").await?,
-                &connected,
-                "bob@acme.io",
-                NOW
-            )
-            .await?,
-            First::Linked
-        );
-        Ok(())
-    }
-
-    #[wasm_bindgen_test]
-    async fn two_first_sign_ins_at_once_link_one_google_account() -> AppResult<()> {
-        let db = testing::database();
-        world(&db).await?;
-        let bob = user(&db, "usr_bob").await?;
-        // Two Google accounts with his address: one links, the other is
-        // turned away.
-        let (one, two) = (
-            claims("g-bob", "bob@acme.dev"),
-            claims("g-bob-2", "bob@acme.dev"),
-        );
-        let (a, b) = futures::join!(
-            first(&db, &bob, &one, "bob@acme.dev", NOW),
-            first(&db, &bob, &two, "bob@acme.dev", NOW),
-        );
-        let mut both = [a?, b?];
-        both.sort_by_key(|f| format!("{f:?}"));
-        assert_eq!(both, [First::Linked, First::Refused("google_link_other")]);
-        let linked: Option<Count> = q(
-            &db,
-            "SELECT COUNT(*) AS n FROM identities WHERE user_id = 'usr_bob'",
-            &[],
-        )?
-        .first()
-        .await?;
-        assert_eq!(linked.map(|c| c.n), Some(1));
-        Ok(())
-    }
-
-    #[wasm_bindgen_test]
-    async fn the_same_google_account_twice_at_once_signs_in_both_times() -> AppResult<()> {
-        let db = testing::database();
-        world(&db).await?;
-        let bob = user(&db, "usr_bob").await?;
-        let google = claims("g-bob", "bob@acme.dev");
-        let (a, b) = futures::join!(
-            first(&db, &bob, &google, "bob@acme.dev", NOW),
-            first(&db, &bob, &google, "bob@acme.dev", NOW),
-        );
-        let mut both = [a?, b?];
-        both.sort_by_key(|f| format!("{f:?}"));
-        assert_eq!(both, [First::Linked, First::Signs]);
-        assert_eq!(googles(&db, "usr_bob").await?, vec!["g-bob".to_owned()]);
-        Ok(())
-    }
+    sign_in::finish(ctx, claims.provided(), intent).await
 }

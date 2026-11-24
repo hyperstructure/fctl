@@ -140,6 +140,17 @@ pub enum AdminCmd {
         #[command(subcommand)]
         cmd: Option<EarlyAccessCmd>,
     },
+    /// How people sign in: the providers, the domains whose people sign in
+    /// with one only, and who has which way in. `require` and `unrequire`
+    /// change those domains.
+    #[command(
+        name = "sign-in",
+        after_help = "Examples:\n  fctl admin sign-in\n  fctl admin sign-in require acme.com acme.dev   # people at acme.com and acme.dev sign in with Google only\n  fctl admin sign-in require acme.com --passkeys # passkeys alone sign them in too\n  fctl admin sign-in unrequire acme.dev\n  fctl admin set --self-sign-up off              # accounts only from invitations and admin tokens"
+    )]
+    SignIn {
+        #[command(subcommand)]
+        cmd: Option<crate::cmd::sign_in::SignInCmd>,
+    },
     /// Show who may sign up.
     Allowlist,
     /// Allow an email (invites them) or a domain (`*@example.com`).
@@ -197,6 +208,19 @@ pub enum AdminCmd {
         /// Any of their email addresses, or their user id.
         user: String,
     },
+    /// Unlink someone's Google account, for when theirs was recreated or
+    /// its address handed to someone else: where their domain signs in with
+    /// Google, their next Google sign-in links the account they sign in
+    /// with. Only the primary instance owner unlinks an admin's. Takes
+    /// confirming it's you, where the instance asks for that.
+    #[command(after_help = "Examples:\n  fctl admin unlink ada@acme.com")]
+    Unlink {
+        /// Any of their email addresses, or their user id.
+        user: String,
+        /// The provider whose accounts to unlink.
+        #[arg(long, default_value = fctl_domain::sign_in::GOOGLE)]
+        provider: String,
+    },
     /// What happened on the instance, newest first: sign-ins, invitations,
     /// people, workspaces, runners and settings (what happened in a
     /// workspace is in `fctl workspaces audit`).
@@ -210,8 +234,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces", "snapshots", "max_snapshot_mb", "claude_oversight", "claude_limit_pauses", "claude_instance_view", "claude_refusals"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces\n  fctl admin set --claude-oversight readiness   # admins see only whose sessions can run\n  fctl admin set --claude-instance-view on      # instance admins see everyone's\n  fctl admin set --claude-refusals 1            # ended at Claude's first refusal"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces", "snapshots", "max_snapshot_mb", "claude_oversight", "claude_limit_pauses", "claude_instance_view", "claude_refusals", "self_sign_up"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces\n  fctl admin set --claude-oversight readiness   # admins see only whose sessions can run\n  fctl admin set --claude-instance-view on      # instance admins see everyone's\n  fctl admin set --claude-refusals 1            # ended at Claude's first refusal\n  fctl admin set --self-sign-up off   # accounts only from invitations and admin tokens"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -286,6 +310,13 @@ pub enum AdminCmd {
         /// then its uncommitted work, then saves none.
         #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u32).range(1..=2048))]
         max_snapshot_mb: Option<u32>,
+        /// Let signing in with Google make an account for an address the
+        /// allowlist admits, `*@domain` entries included: on by default.
+        /// Off, only invitations, addresses you allow one by one and admin
+        /// tokens make accounts, and the sign-in page tells people without
+        /// one to ask an admin.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        self_sign_up: Option<bool>,
         /// The most a workspace's admins may see of their members' Claude
         /// connections, never a token: `details` (the default: each
         /// connection's kind, plan, last answer and when its token runs
@@ -705,6 +736,29 @@ fn print_claude(s: &InstanceSettings) {
 fn print_settings(s: &InstanceSettings) {
     print_snapshots(s);
     print_claude(s);
+    println!(
+        "Sign-in                {}",
+        match s.sign_in.len() {
+            0 => style::dim("any way, at any domain"),
+            _ => style::accent(&format!(
+                "{} with a provider only",
+                fctl_domain::sign_in::domains_words(
+                    &s.sign_in
+                        .iter()
+                        .flat_map(|r| r.domains.iter().cloned())
+                        .collect::<Vec<_>>()
+                )
+            )),
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.self_sign_up {
+            "Signing in with Google makes an account for an address the allowlist admits. `fctl admin sign-in` says more."
+        } else {
+            "Only invitations, addresses allowed one by one and admin tokens make accounts. `fctl admin sign-in` says more."
+        })
+    );
     println!(
         "Published screenshots  {}",
         if s.publish_screenshots {
@@ -1358,6 +1412,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             print_audit(&list);
         }
+        AdminCmd::SignIn { cmd } => crate::cmd::sign_in::run(&api, cmd, json).await?,
         AdminCmd::Claude { expiring, problems } => {
             use crate::cmd::claude_overview as overview;
             let all = api
@@ -1401,6 +1456,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             max_workspaces,
             snapshots,
             max_snapshot_mb,
+            self_sign_up,
             claude_oversight,
             claude_limit_pauses,
             claude_instance_view,
@@ -1419,6 +1475,8 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     max_workspaces,
                     snapshots,
                     max_snapshot_mb,
+                    self_sign_up,
+                    sign_in: None,
                     claude_oversight: claude_oversight.map(Into::into),
                     claude_limit_pauses,
                     claude_instance_view,
@@ -1476,6 +1534,25 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     );
                 }
             }
+        }
+        AdminCmd::Unlink { user, provider } => {
+            let users = api.users().await?.users;
+            let target = find_user(&users, &user)?;
+            let updated = api.admin_unlink(target.id.as_str(), &provider).await?;
+            if json {
+                return style::print_json(&updated);
+            }
+            println!(
+                "{} Unlinked the {} account of {} <{}>: their next sign-in with it links the account they sign in with, where their domain requires it.",
+                style::accent("✓"),
+                if provider == fctl_domain::sign_in::GOOGLE {
+                    "Google"
+                } else {
+                    provider.as_str()
+                },
+                updated.name,
+                updated.email
+            );
         }
         AdminCmd::ResetTwoFactor { user } => {
             let users = api.users().await?.users;

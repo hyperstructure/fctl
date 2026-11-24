@@ -717,7 +717,13 @@ pub async fn sign_in(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "Your account is disabled. Ask an admin for access.",
         )));
     }
-    auth::start_web_session(ctx, &user, true).await?;
+    // Where a domain of theirs signs in with a provider, a passkey alone
+    // signs them in only if its rule allows that.
+    let how = fctl_domain::sign_in::SignedIn::passkey();
+    if let Err(required) = user.admits(&crate::instance::settings(&ctx.db).await?, &how) {
+        return Err(AppError(crate::sign_in::passkey_refused(&required)));
+    }
+    auth::start_web_session(ctx, &user, true, how).await?;
     ctx.audit(
         "user.login",
         Some(&user.id),

@@ -1035,8 +1035,9 @@ usage limit or fails, in every browser where you turned notifications on
 (Settings → Notifications in the web app; on iPhone and iPad, fctl added to
 the Home Screen). You follow the sessions you start and resume. An
 autopilot's own session, and those it starts while it is on, notify you only
-when they ask you something, or when fctl paused it because they kept
-failing: it looks after the rest itself.
+when they ask you something, or when its own sessions failed four times in
+a row, and each day they go on failing: it looks after the rest itself, and
+fctl goes on trying every hour.
 
 ```sh
 fctl notifications status                   # what notifies you, and the browsers that get it
@@ -1700,12 +1701,28 @@ fctl admin set --claude-instance-view on   # instance admins see everyone's Clau
 fctl admin set --claude-refusals 1         # mark a long-lived token ended the first time Claude refuses it (2 sessions by default, at most 5)
 fctl admin claude                          # everyone's Claude connection, with their address, where --claude-instance-view is on
 fctl admin claude --problems               # …only those whose sessions can't run, or whose token runs out within 30 days (--expiring 14d, --json)
+fctl admin set --self-sign-up off          # signing in makes no account: only invitations, allowed addresses and admin tokens do
+fctl admin sign-in                         # the providers, the domains that require one and whom each covers
+fctl admin sign-in require acme.com acme.dev   # their people sign in with Google alone: says whom it concerns, then asks
+fctl admin sign-in require acme.com --passkeys --yes   # passkeys alone sign them in too; without asking
+fctl admin sign-in unrequire acme.dev      # its people sign in as they like again
+fctl admin unlink grace@example.com        # her Google account was recreated: her next Google sign-in links the new one
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them
 fctl admin tokens create "Okta provisioning" --days 365   # prints it once
 fctl admin tokens revoke "Okta provisioning"
 ```
+
+`fctl admin sign-in require` prints what the change does before it
+asks, on stderr, so that `--json` leaves stdout to how people sign in
+once it's saved: whose passwords and passkeys stop working, who signs in
+with the provider already, and who keeps a way in while it is down (the
+primary instance owner). It saves nothing that would sign you out: sign
+in with the provider first (`fctl login`, then continue with Google as
+your address there). A CLI whose sign-in a domain's rule doesn't meet
+says so, and signs in again with `fctl login`
+([Requiring Google for your domains](self-hosting.md#requiring-google-for-your-domains)).
 
 ### Provisioning people with an admin token
 

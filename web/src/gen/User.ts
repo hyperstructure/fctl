@@ -44,4 +44,10 @@ emails: Array<string>,
 /**
  * How many workspaces it is a member of (for instance admins).
  */
-workspaces: number, };
+workspaces: number, 
+/**
+ * The providers whose accounts sign in to it (`google`), once each
+ * (for instance admins; empty elsewhere, and from control planes
+ * before it).
+ */
+providers: Array<string>, };
