@@ -6,10 +6,11 @@ use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use clap::builder::BoolishValueParser;
+use fctl_domain::reach::{Reach, TARGET};
 use fctl_domain::{disk, image, size};
 use fctl_host::config::{NOT_A_RUNNER, means_default_image};
 use fctl_host::docker_access::{self, Problem};
-use fctl_host::driver::{DiskSpot, Driver};
+use fctl_host::driver::{DiskSpot, Driver, network};
 use fctl_host::{HostConfig, caches, claude_token, refresh, service, update};
 use fctl_proto::api::{
     EnrollRunnerRequest, EnrollmentInfo, Runner, RunnerAutopilot, RunnerDetail, RunnerFacts,
@@ -1905,6 +1906,26 @@ fn not_answering(name: &str, pids: &[i32]) -> (String, String) {
     (what, fix)
 }
 
+/// What `fctl host doctor` says of whether a fresh sandbox of Apple's
+/// `container` reaches [`TARGET`] (`found`), and this Mac (`here`), and
+/// what fixes it: whether all is well, what, and the fix.
+fn sandboxes_reach(found: &Reach, here: Result<(), String>) -> (bool, String, String) {
+    let host = fctl_domain::reach::host_of(TARGET);
+    match (found, here) {
+        (Reach::Reached, _) => (true, format!("sandboxes reach {host}"), String::new()),
+        (Reach::Unreachable(why), Ok(())) => (
+            false,
+            format!("sandboxes don't reach {host}, though this Mac does: {why}"),
+            "the host service restarts Apple's `container` as a session starts, or within a minute while sessions run, at most every 30 minutes; `container system stop; container system start` does it now, stopping every sandbox".into(),
+        ),
+        (Reach::Unreachable(_), Err(here)) => (
+            false,
+            format!("neither sandboxes nor this Mac reach {host}: {here}"),
+            "this Mac's own network keeps it from it, which restarting Apple's `container` doesn't change".into(),
+        ),
+    }
+}
+
 async fn doctor() -> Result<()> {
     let mut problems = 0;
     let mut check = |ok: bool, what: &str, fix: &str| {
@@ -2029,6 +2050,24 @@ async fn doctor() -> Result<()> {
             let (what, fix) = not_answering(&name, &pids);
             check(false, &what, &fix);
         }
+    }
+    // With Apple's `container`, sandboxes can lose the network while the
+    // Mac has it: the host service restarts Apple's `container` then.
+    if let Ok(d) = Driver::select(&cfg.driver, &cfg).await
+        && d.probe().await.available
+        && let Some(found) = d
+            .fresh_reaches(
+                fctl_host::agentbin::linux_agent_here(&cfg).as_deref(),
+                &cfg.own_images(),
+            )
+            .await
+    {
+        let here = match found {
+            Reach::Reached => Ok(()),
+            Reach::Unreachable(_) => network::reach_from_here(TARGET, network::REACH_WITHIN).await,
+        };
+        let (ok, what, fix) = sandboxes_reach(&found, here);
+        check(ok, &what, &fix);
     }
     if docker
         && let Some(pid) = service::main_pid()
@@ -2313,6 +2352,33 @@ mod tests {
             Some(
                 "Once its runner has run nothing for 20 minutes, this machine drains, runs `systemctl poweroff`, then leaves and runs nothing more until installed again (retire_idle_minutes)."
             )
+        );
+    }
+
+    #[test]
+    fn doctor_says_whether_sandboxes_reach_the_network() {
+        let (ok, what, fix) = sandboxes_reach(&Reach::Reached, Ok(()));
+        assert!(ok && fix.is_empty());
+        assert_eq!(what, "sandboxes reach github.com");
+        let why = Reach::Unreachable("github.com didn't resolve: Try again".into());
+        let (ok, what, fix) = sandboxes_reach(&why, Ok(()));
+        assert!(!ok);
+        assert_eq!(
+            what,
+            "sandboxes don't reach github.com, though this Mac does: github.com didn't resolve: Try again"
+        );
+        assert!(
+            fix.contains("`container system stop; container system start`"),
+            "{fix}"
+        );
+        let (ok, what, _) = sandboxes_reach(
+            &why,
+            Err("github.com didn't resolve: nodename nor servname provided".into()),
+        );
+        assert!(!ok);
+        assert_eq!(
+            what,
+            "neither sandboxes nor this Mac reach github.com: github.com didn't resolve: nodename nor servname provided"
         );
     }
 

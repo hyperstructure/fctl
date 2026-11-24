@@ -4792,6 +4792,37 @@ the host can't find, makes the apple driver not ready, saying why and
 what stops it, until a look finds it answering or gone; `fctl host
 doctor` names stuck VMs too.
 
+Apple's sandboxes can also lose the network, all at once, while the
+Mac's own works on
+([ADR 0097](adr/0097-hosts-restart-apples-container-when-its-sandboxes-lose-the-network.md)).
+Apple's `container` gives each VM its network's gateway as nameserver,
+where macOS's vmnet answers lookups and carries the VM's traffic out, and
+that network can stop doing both, after the Mac's network changed, a VPN
+came or went, or the network's bridge went with its last VM, until
+Apple's `container` restarts and makes it again. So before fctl-agent
+starts in a sandbox, and every minute while sessions' sandboxes run, the
+host runs `fctl-agent reach github.com:443` in the sandbox, which looks
+GitHub up and opens a connection to it within 10 seconds
+(`crates/fctl-host/src/driver/network.rs`, `fctl_domain::reach`). When the
+sandbox doesn't reach it, the host asks the Mac itself (one that doesn't
+reach GitHub either is left, with its sandboxes, for 5 minutes), then a
+fresh, short-lived sandbox, twice, which runs only the host's own
+fctl-agent, from a directory of the host's that holds nothing else,
+mounted read-only: a sandbox that keeps itself off the network (its
+`/etc/hosts`, say) is left as it is, and the host doesn't ask it again
+for half an hour. When fresh sandboxes don't reach it and the Mac does,
+the host runs `container system stop` and `container system start`, then
+starts again each container that ran, its sandboxes and any other, at
+most once every 30 minutes, in a task of its own that goes on past what
+fails; what it can't start yet starts once Apple's `container` answers,
+and what starts a sandbox, or fctl-agent in one, waits for the restart.
+What ran in them is gone: a session at work has its turn cut off, and
+fctl-agent carries it on. Until a fresh sandbox reaches GitHub again (the
+host asks two after a restart, 5 seconds apart), the apple driver isn't
+ready, saying why, so sessions wait rather than fail; one whose start
+found the network gone goes back to the queue, its sandbox stopped. When
+no fresh sandbox can tell for 10 minutes, the driver is ready again.
+
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
 Restarting or upgrading the host does not stop agents. The host pings the
