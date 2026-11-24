@@ -6,10 +6,35 @@ import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
 import { EnrollmentTokens, WaitingRunners } from "./runners";
 
-// No request is answered: the sections show what the cache holds.
+// No request is answered but making a pool: the sections show what the cache holds.
 vi.mock("@/lib/api", () => {
   const pending = new Proxy({}, { get: () => () => new Promise(() => {}) });
-  return { api: pending, workspaces: pending, ApiFailure: class extends Error {} };
+  const workspaces = new Proxy(
+    {},
+    {
+      get: (_, name) =>
+        name === "createEnrollmentToken"
+          ? (_id: string, b: G.CreateEnrollmentTokenRequest) =>
+              Promise.resolve({
+                token: {
+                  id: "enr_new",
+                  name: b.name,
+                  personal: false,
+                  approval: false,
+                  created_at: 0,
+                  runners: 0,
+                  pending: 0,
+                  labels: b.labels,
+                  placement: b.placement,
+                  max_runners: b.max_runners,
+                  remove_offline_after_minutes: b.remove_offline_after_minutes,
+                },
+                secret: "fctl_et_shown_once",
+              })
+          : () => new Promise(() => {}),
+    },
+  );
+  return { api: pending, workspaces, ApiFailure: class extends Error {} };
 });
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -20,10 +45,16 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function show(node: React.ReactNode, tokens?: G.EnrollmentToken[], demand?: G.WorkspaceDemand) {
+function show(
+  node: React.ReactNode,
+  tokens?: G.EnrollmentToken[],
+  demand?: G.WorkspaceDemand,
+  instance?: Partial<G.InstanceInfo>,
+) {
   const client = new QueryClient();
   if (tokens) client.setQueryData<G.EnrollmentTokenList>(keys.enrollmentTokens(acme.id), { tokens });
   if (demand) client.setQueryData<G.WorkspaceDemand>(keys.workspaceDemand(acme.id), demand);
+  if (instance) client.setQueryData(keys.instance, instance);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -261,5 +292,57 @@ describe("pools", () => {
     expect(summary()).toContain(
       "No labels: projects that ask for none run on its runners. Spread: each session goes to the least busy runner.",
     );
+  });
+});
+
+describe("making a pool", () => {
+  const type = (input: HTMLInputElement, text: string) =>
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  const field = (label: string) => {
+    const l = [...document.querySelectorAll("dialog label")].find((e) => e.textContent === label);
+    return document.querySelector(`[id="${(l as HTMLLabelElement | undefined)?.htmlFor}"]`) as HTMLElement;
+  };
+
+  it("goes step by step, and a cloud brings what its machines need", async () => {
+    vi.useFakeTimers();
+    try {
+      show(<EnrollmentTokens w={acme} admin onRunners={false} />, [], undefined, { version: "0.38.0" });
+      act(() => button("New pool").click());
+      const dialog = () => document.querySelector("dialog[open]")?.textContent ?? "";
+      expect(dialog()).toContain("Name it");
+      expect(dialog()).toContain("Choose its labels and machines");
+      expect(dialog()).toContain("Choose where it runs");
+      // A preview of the pool once a runner is online, named as the form says.
+      type(field("Name") as HTMLInputElement, "AWS large");
+      type(field("Labels") as HTMLInputElement, "aws, large");
+      expect(dialog()).toContain("Once its first runner is online:");
+      expect(dialog()).toContain("Idle: its runner runs nothing.");
+      // A cloud's machines go without uninstalling: they're removed when offline, and packed.
+      act(() => field("Its machines").click());
+      const aws = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+        o.textContent?.startsWith("AWS"),
+      );
+      act(() => aws?.click());
+      act(() => vi.advanceTimersByTime(1000));
+      const summary = document.querySelector("dialog [aria-live]")?.textContent ?? "";
+      expect(summary).toContain("are removed once they have been offline for 5 minutes");
+      expect(summary).toContain(
+        "Its runners carry the labels aws and large. Packed: fills one runner before the next, so that idle ones can go.",
+      );
+      await act(async () => button("Create pool").click());
+      expect(dialog()).toContain("AWS large is ready");
+      expect(dialog()).toContain("Bring it online on AWS");
+      expect(dialog()).toContain("Add fctl's module to your Terraform");
+      const code = [...document.querySelectorAll("dialog code")].map((c) => c.textContent).join("\n");
+      expect(code).toContain("fctl_et_shown_once");
+      expect(code).toContain('module "fctl_aws_large"');
+      // The image installs the version this instance runs.
+      expect(code).toContain('fctl_version     = "0.38.0"');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

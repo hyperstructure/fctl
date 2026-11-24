@@ -132,6 +132,9 @@ describe("a pool's card", () => {
     expect(poolState(demand({ runners: { online: 4, busy: 4 }, wanted: 4 })).text).toBe(
       "Busy: 4 of 4 runners run sessions.",
     );
+    expect(poolState(demand({ runners: { online: 2, busy: 1 }, wanted: 2 })).text).toBe(
+      "Busy: 1 of 2 runners runs sessions.",
+    );
     expect(poolState(demand({ pool: { closed: true } })).text).toBe("Its token enrolls no more runners.");
   });
 

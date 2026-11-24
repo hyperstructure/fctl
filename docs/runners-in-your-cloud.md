@@ -314,6 +314,7 @@ variable "gcp_zone" { default = "europe-north1-a" }
 variable "azure_subscription" { default = "" }
 variable "azure_resource_group" { default = "acme-runners" }
 variable "azure_location" { default = "swedencentral" }
+variable "azure_gallery" { default = "acme_runners" }
 
 locals { name = "fctl-runner-${replace(var.fctl_version, ".", "-")}" }
 
@@ -365,7 +366,7 @@ source "azure-arm" "fctl-runner" {
   shared_image_gallery_destination {
     subscription   = var.azure_subscription
     resource_group = var.azure_resource_group
-    gallery_name   = "acme_runners"
+    gallery_name   = var.azure_gallery
     image_name     = "fctl-runner"
     image_version  = var.fctl_version
     target_region { name = var.azure_location }

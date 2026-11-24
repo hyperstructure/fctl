@@ -164,7 +164,10 @@ export function poolState(d: G.PoolDemand): { text: string; tone: "quiet" | "acc
       text: `Could shrink: it wants ${count(d.wanted, "runner", "runners")} of its ${r.online}.`,
       tone: "quiet",
     };
-  return { text: `Busy: ${r.busy} of ${count(r.online, "runner", "runners")} run sessions.`, tone: "quiet" };
+  return {
+    text: `Busy: ${r.busy} of ${count(r.online, "runner", "runners")} ${r.busy === 1 ? "runs" : "run"} sessions.`,
+    tone: "quiet",
+  };
 }
 
 /**
