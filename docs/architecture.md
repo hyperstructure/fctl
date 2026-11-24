@@ -1825,7 +1825,12 @@ parts of an upload that never committed a day after it started;
 deleting a session
 or its project deletes its snapshot with its event log. `fctl show` and
 `GET /api/v1/sessions/{id}` say what the session's snapshot holds, where
-and when it was saved, and until when it is kept (`Session.snapshot`).
+and when it was saved, and until when it is kept (`Session.snapshot`),
+as the session page's details do. `GET /api/v1/workspaces/{id}/snapshots`
+(`fctl workspaces snapshots`) adds up a workspace's, in the control plane
+and by bucket, for the end of its Runners tab, which says where snapshots
+go and how to keep them in a bucket, and its settings, where its admins
+turn them off or choose their days.
 
 ### Host updates
 

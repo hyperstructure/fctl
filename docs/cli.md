@@ -321,6 +321,7 @@ fctl workspaces set --snapshots off        # sessions keep no snapshots: one tha
 fctl workspaces set --claude-oversight readiness   # its admins see only whether members' sessions can run (details by default, off for nothing)
 fctl workspaces set --claude-limit-pauses off      # …and not how often members' sessions paused on usage limits
 fctl workspaces set --claude-admin-email each      # its admins get an email for each token that runs out or stops working (weekly by default, or off)
+fctl workspaces snapshots                  # what its sessions' snapshots take now, with fctl and in each of its runners' buckets
 
 fctl workspaces runners                    # the runners its sessions start on, with their ids
 fctl workspaces add-runner studio-mac      # one of yours runs its sessions too (its name or id)

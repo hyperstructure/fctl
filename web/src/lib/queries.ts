@@ -117,6 +117,7 @@ export const keys = {
   /** What its members' sessions run on, as its admins see it. */
   workspaceClaude: (id: string) => ["workspace", id, "claude"] as const,
   workspaceRunners: (id: string) => ["workspace", id, "runners"] as const,
+  workspaceSnapshots: (id: string) => ["workspace", id, "snapshots"] as const,
   enrollmentTokens: (id: string) => ["workspace", id, "enrollment-tokens"] as const,
   workspaceGithub: (id: string) => ["workspace", id, "github"] as const,
   /** Under the workspace's GitHub, so that what changes its accounts asks again. */

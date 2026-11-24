@@ -663,6 +663,7 @@ export const workspaces = {
   audit: (id: string, before?: number) =>
     request<G.AuditList>("GET", `/workspaces/${enc(id)}/audit${before ? `?before=${before}` : ""}`),
   runners: (id: string) => request<G.RunnerList>("GET", `/workspaces/${enc(id)}/runners`),
+  snapshots: (id: string) => request<G.WorkspaceSnapshots>("GET", `/workspaces/${enc(id)}/snapshots`),
   // Without `personal`: only your sessions as a member, everyone's as an admin.
   createRunner: (id: string, name: string, personal?: boolean) =>
     request<G.RunnerRegistration>("POST", `/workspaces/${enc(id)}/runners`, {

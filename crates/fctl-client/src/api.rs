@@ -2542,6 +2542,12 @@ impl Api {
         self.get(&format!("/workspaces/{}/runners", enc(id))).await
     }
 
+    /// What a workspace's sessions' snapshots take now, where they are.
+    pub async fn workspace_snapshots(&self, id: &str) -> Result<WorkspaceSnapshots> {
+        self.get(&format!("/workspaces/{}/snapshots", enc(id)))
+            .await
+    }
+
     /// Lets one of your runners run a workspace's sessions.
     /// Lets one of your runners run a workspace's sessions: with
     /// `personal`, only yours. Absent: only yours when you are a member,
