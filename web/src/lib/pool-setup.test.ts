@@ -53,6 +53,17 @@ describe("a pool's setup", () => {
     expect(code("aws", { ...v, maxRunners: undefined })).not.toContain("max_size");
   });
 
+  it("says where to find the version while the app doesn't know it", () => {
+    const unknown = { ...v, version: undefined };
+    expect(code("aws", unknown)).toContain(
+      '  fctl_version     = "YOUR_FCTL_VERSION" # what the instance runs: its /api/v1/health says',
+    );
+    for (const place of ["google", "azure"] as const) {
+      expect(code(place, unknown)).toContain('-var "fctl_version=YOUR_FCTL_VERSION"');
+      expect(code(place, unknown)).not.toContain('fctl_version="');
+    }
+  });
+
   it("fills in the Google Cloud and Azure examples, the token kept out of their files", () => {
     const google = code("google");
     expect(google).toContain('-var "fctl_version=0.38.0"');
@@ -63,6 +74,31 @@ describe("a pool's setup", () => {
     expect(azure).toContain("azure-arm.fctl-runner");
     expect(azure).toContain('fctl_server     = "https://fctl.acme.dev"');
     expect(azure).toContain('vault_name      = "fctl-aws-large"');
+  });
+
+  it("makes the Azure image's gallery first, apart from the scale set's group", () => {
+    const azure = code("azure");
+    // The gallery, its group and its image definition, which Packer's build needs.
+    expect(azure).toContain("RG=fctl-aws-large-images");
+    expect(azure).toContain('az group create -n "$RG" -l "$LOCATION"');
+    expect(azure).toContain('az sig create -g "$RG" --gallery-name fctl_aws_large');
+    expect(azure).toContain("--gallery-image-definition fctl-runner");
+    expect(azure).toContain('-var "azure_gallery=fctl_aws_large"');
+    // The tfvars take the shell's values, the image from that gallery, and a group of the scale set's own.
+    expect(azure).toContain("cat > terraform.tfvars <<EOF\n");
+    expect(azure).toContain('subscription_id = "$SUBSCRIPTION"');
+    expect(azure).toContain('location        = "$LOCATION"');
+    expect(azure).toContain('resource_group  = "fctl-aws-large" # the scale set\'s, which it makes');
+    expect(azure).toContain(
+      '"/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Compute/galleries/fctl_aws_large/images/fctl-runner/versions/0.38.0"',
+    );
+    // A Key Vault's name ends with a letter or a digit, within 24 characters.
+    expect(code("azure", { ...v, name: "Build fleet in westeurope" })).toContain(
+      'vault_name      = "fctl-build-fleet-in-west"',
+    );
+    expect(code("azure", { ...v, name: "Build fleet in abc def" })).toContain(
+      'vault_name      = "fctl-build-fleet-in-abc"',
+    );
   });
 
   it("scales a Deployment with KEDA from the pool's demand", () => {

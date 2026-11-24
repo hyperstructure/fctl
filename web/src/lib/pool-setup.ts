@@ -61,9 +61,12 @@ export interface SetupValues {
   capacity: number;
   /** The most runners the pool keeps at once, if it has a limit. */
   maxRunners?: number;
-  /** The version the instance runs, which a cloud's image installs. */
-  version: string;
+  /** The version the instance runs, which a cloud's image installs: unknown until the app has heard it. */
+  version?: string;
 }
+
+/** What stands for the version while the app doesn't know it, for whoever copies the steps to fill in. */
+export const VERSION_TO_FILL = "YOUR_FCTL_VERSION";
 
 /** A step of the setup: what it achieves, what to know, and what to copy. */
 export interface SetupStep {
@@ -105,6 +108,7 @@ function hcl(lines: [string, string, string?][], indent = ""): string {
 export function setupSteps(place: PoolPlace, v: SetupValues): SetupStep[] {
   const name = resourceName(v.name);
   const max = groupMax(v.maxRunners);
+  const version = v.version || VERSION_TO_FILL;
   switch (place) {
     case "own":
       return [
@@ -135,7 +139,11 @@ export function setupSteps(place: PoolPlace, v: SetupValues): SetupStep[] {
                 ["source", `"github.com/hyperstructure/fctl//deploy/cloud/terraform/aws"`],
                 ["name", `"${name}"`],
                 ["fctl_server", `"${v.origin}"`],
-                ["fctl_version", `"${v.version}"`],
+                [
+                  "fctl_version",
+                  `"${version}"`,
+                  v.version ? undefined : "what the instance runs: its /api/v1/health says",
+                ],
                 ["enrollment_token", `file("enroll-token")`],
                 ["capacity", String(v.capacity), "sessions each machine runs"],
                 ...(max !== undefined
@@ -170,7 +178,7 @@ export function setupSteps(place: PoolPlace, v: SetupValues): SetupStep[] {
             label: "Google Cloud, in the guide",
           },
           code: [
-            `git clone https://github.com/hyperstructure/fctl && cd fctl/deploy/cloud\npacker init . && packer build -only='googlecompute.fctl-runner' -var "fctl_version=${v.version}" -var "gcp_project=YOUR_PROJECT" .`,
+            `git clone https://github.com/hyperstructure/fctl && cd fctl/deploy/cloud\npacker init . && packer build -only='googlecompute.fctl-runner' -var "fctl_version=${version}" -var "gcp_project=YOUR_PROJECT" .`,
           ],
         },
         {
@@ -192,25 +200,40 @@ export function setupSteps(place: PoolPlace, v: SetupValues): SetupStep[] {
           code: [`terraform init && TF_VAR_enrollment_token='${v.token}' terraform apply`],
         },
       ];
-    case "azure":
+    case "azure": {
+      // The image has a resource group and a gallery of its own, made before it: Terraform makes the
+      // scale set's group. Galleries take underscores where names have hyphens.
+      const gallery = name.replace(/-/g, "_");
       return [
         {
-          title: "Build the image into a gallery",
-          body: "With Packer, in fctl's deploy/cloud, once the resource group and its gallery are there.",
+          title: "Make a gallery for the image",
+          body: "Azure's scale sets start with Trusted Launch, which takes images from an Azure Compute Gallery, here in a resource group of the image's own. The steps after it run in the same shell.",
           link: { href: `${v.site}/docs/runners-in-your-cloud/#7-on-azure`, label: "Azure, in the guide" },
           code: [
-            `git clone https://github.com/hyperstructure/fctl && cd fctl/deploy/cloud\npacker init . && packer build -only='azure-arm.fctl-runner' -var "fctl_version=${v.version}" \\\n  -var "azure_subscription=$SUBSCRIPTION" -var "azure_resource_group=$RG" -var "azure_location=$LOCATION" .`,
+            `export SUBSCRIPTION="$(az account show --query id -o tsv)" LOCATION=swedencentral RG=${name}-images\naz group create -n "$RG" -l "$LOCATION"\naz sig create -g "$RG" --gallery-name ${gallery}\naz sig image-definition create -g "$RG" --gallery-name ${gallery} --gallery-image-definition fctl-runner \\\n  --publisher fctl --offer fctl-runner --sku ubuntu-24-04 --os-type Linux --os-state Generalized \\\n  --hyper-v-generation V2 --features SecurityType=TrustedLaunchSupported`,
+          ],
+        },
+        {
+          title: "Build the image into it",
+          body: "With Packer, in fctl's deploy/cloud: about 20 minutes.",
+          code: [
+            `git clone https://github.com/hyperstructure/fctl && cd fctl/deploy/cloud\npacker init . && packer build -only='azure-arm.fctl-runner' -var "fctl_version=${version}" \\\n  -var "azure_subscription=$SUBSCRIPTION" -var "azure_resource_group=$RG" -var "azure_location=$LOCATION" \\\n  -var "azure_gallery=${gallery}" .`,
           ],
         },
         {
           title: "Fill in the example's values",
-          body: "In deploy/cloud/terraform/azure: a scale set whose machines size it every minute from what the pool needs, the token in Key Vault.",
+          body: "In deploy/cloud/terraform/azure: a scale set in a resource group of its own, whose machines size it every minute from what the pool needs, the token in Key Vault.",
           code: [
-            `cd terraform/azure && cat > terraform.tfvars <<'EOF'\n${hcl([
-              ["subscription_id", `"YOUR_SUBSCRIPTION"`],
+            `cd terraform/azure && cat > terraform.tfvars <<EOF\n${hcl([
+              ["subscription_id", `"$SUBSCRIPTION"`],
+              ["resource_group", `"${name}"`, "the scale set's, which it makes"],
+              ["location", `"$LOCATION"`],
               ["subnet_id", `"YOUR_SUBNET_ID"`, "with a NAT gateway"],
-              ["image_id", `"YOUR_IMAGE_VERSION_ID"`, "Packer's, in the gallery"],
-              ["vault_name", `"${name.slice(0, 24)}"`, "unique in Azure"],
+              [
+                "image_id",
+                `"/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Compute/galleries/${gallery}/images/fctl-runner/versions/${version}"`,
+              ],
+              ["vault_name", `"${name.slice(0, 24).replace(/-+$/, "")}"`, "unique in Azure"],
               ["admin_ssh_key", `"ssh-ed25519 …"`],
               ["name", `"${name}"`],
               ["fctl_server", `"${v.origin}"`],
@@ -224,6 +247,7 @@ export function setupSteps(place: PoolPlace, v: SetupValues): SetupStep[] {
           code: [`terraform init && TF_VAR_enrollment_token='${v.token}' terraform apply`],
         },
       ];
+    }
     case "kubernetes":
       return [
         {
