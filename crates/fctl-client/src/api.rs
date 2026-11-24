@@ -10,7 +10,7 @@ use fctl_proto::session::{Memory, Project, Session};
 use fctl_proto::tickets::{
     ConnectLinearRequest, LinearLink, LinearTeamList, MyLinear, ProjectTickets, WorkspaceLinear,
 };
-use fctl_proto::{ApiError, AttachmentId, ErrorCode};
+use fctl_proto::{ApiError, AttachmentId, ErrorCode, Millis};
 use futures::future::BoxFuture;
 use http::Method;
 use serde::Serialize;
@@ -2019,12 +2019,20 @@ impl Api {
 
     // ── Claude ──
 
-    pub async fn add_claude_token(&self, token: &str, label: Option<String>) -> Result<Me> {
+    /// Connects a long-lived token from `claude setup-token`; `made_at`,
+    /// when that made it, if you know, so that fctl knows when it runs out.
+    pub async fn add_claude_token(
+        &self,
+        token: &str,
+        label: Option<String>,
+        made_at: Option<Millis>,
+    ) -> Result<Me> {
         self.post(
             "/me/claude/token",
             &AddClaudeTokenRequest {
                 token: token.to_owned(),
                 label,
+                made_at,
             },
         )
         .await
@@ -2252,6 +2260,17 @@ impl Api {
         .await
     }
 
+    /// Unlinks someone's accounts of `provider` (`google`), for when theirs
+    /// was recreated or its address handed to someone else (admins).
+    pub async fn admin_unlink(&self, user_id: &str, provider: &str) -> Result<User> {
+        self.delete(&format!(
+            "/admin/users/{}/identities/{}",
+            enc(user_id),
+            enc(provider)
+        ))
+        .await
+    }
+
     pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
         self.delete(&format!("/admin/users/{}/two-factor", enc(user_id)))
             .await
@@ -2259,6 +2278,25 @@ impl Api {
 
     pub async fn instance_settings(&self) -> Result<InstanceSettings> {
         self.get("/admin/settings").await
+    }
+
+    /// How people sign in to the instance: its providers, the domains that
+    /// require one, and whom they cover (admins).
+    pub async fn sign_in_overview(&self) -> Result<SignInOverview> {
+        self.get("/admin/sign-in").await
+    }
+
+    /// What saving `rules` in place of the instance's sign-in rules would
+    /// do, before anything changes (admins). Saving them is
+    /// [`Self::update_instance_settings`] with `sign_in`.
+    pub async fn sign_in_preview(&self, rules: &[SignInRule]) -> Result<SignInPreview> {
+        self.post(
+            "/admin/sign-in/preview",
+            &SignInPreviewRequest {
+                rules: rules.to_vec(),
+            },
+        )
+        .await
     }
 
     /// Invites an address to the instance, and to workspaces you are an
@@ -2400,6 +2438,18 @@ impl Api {
 
     pub async fn workspace_members(&self, id: &str) -> Result<WorkspaceMemberList> {
         self.get(&format!("/workspaces/{}/members", enc(id))).await
+    }
+
+    /// What each member's sessions in a workspace run on, as much as its
+    /// admins see (its admins).
+    pub async fn workspace_claude(&self, id: &str) -> Result<ClaudeOverview> {
+        self.get(&format!("/workspaces/{}/claude", enc(id))).await
+    }
+
+    /// What every account's sessions run on (instance admins, where the
+    /// instance lets them see it).
+    pub async fn admin_claude(&self) -> Result<ClaudeOverview> {
+        self.get("/admin/claude").await
     }
 
     pub async fn invite_to_workspace(

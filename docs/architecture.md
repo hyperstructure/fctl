@@ -96,20 +96,24 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   [passkey](#passkeys). With [two-factor sign-in](#two-factor-sign-in), a
   code from an authenticator app follows the password. An account has one
   or more [email addresses](#email-addresses), and any of them signs in.
+  An instance's admins can require a provider of the people at some
+  domains ([Sign-in providers and domain rules](#sign-in-providers-and-domain-rules)).
 - **Google links to an account that exists only from its Settings**, in
   a browser that signed in within 15 minutes: linking by address would
-  let a Google account take over an account someone signs in to. The one
-  exception is an account with no way in at all (no password, passkey or
-  linked identity), as an admin token makes one (`api::provision`):
-  nobody has signed in to it, so its first Google sign-in links Google to
-  it, when the account is active and Google vouches for the address
-  (`fctl_domain::google::vouches_for`: Gmail, or a Workspace account's).
-  One statement checks again that it has no way in as it links
-  (`api::google::link_first`), the audit log records `identity.linked`
-  with `via: first_sign_in`, and fctl emails the account. Any other
-  account the address belongs to sends the person back to the sign-in
-  page, which names how that account signs in (`google_link_required`,
-  `google_link_passkey`, `google_link_other`).
+  let a Google account take over an account someone signs in to. There
+  are two exceptions, both where Google vouches for the address
+  (`fctl_domain::google::vouches_for`: Gmail, or a Workspace account's)
+  and the account is active. An account with no way in at all (no
+  password, passkey or linked identity), as an admin token makes one
+  (`api::provision`): nobody has signed in to it, so its first Google
+  sign-in links Google to it. And an account at a domain whose rule makes
+  Google its people's way in, whatever else it has: the rule says Google
+  is authoritative there. One statement checks again as it links
+  (`api::sign_in::link_first`), the audit log records `identity.linked`
+  with `via: first_sign_in` or `sign_in_rule`, and fctl emails the
+  account. Any other account the address belongs to sends the person back
+  to the sign-in page, which names how that account signs in
+  (`google_link_required`, `google_link_passkey`, `google_link_other`).
 - **Access is an allowlist.** Admins add exact emails or `*@domain` patterns.
   Signing up requires a matching entry; removing an exact entry disables that
   user. Inviting an address adds its entry, which revoking the invitation
@@ -301,7 +305,7 @@ can't turn it off (`two_factor::workspace_requires`,
 their whole account closed, not only the workspace; once the instance stops
 requiring it, each workspace's own choice applies again.
 
-Admins require it of everyone (Admin → Settings → Sign-in, or `fctl admin
+Admins require it of everyone (Admin → Sign-in, or `fctl admin
 set --require-two-factor on`): of every account that signs in with a
 password and, once Google sign-ins ask for codes too
 (`--two-factor-google`), of every account. There, a [passkey](#passkeys)
@@ -376,6 +380,68 @@ Adding and removing a passkey go in the audit log, and adding one emails
 the person when email is set up. A passkey that is the account's last way
 in, or the second factor the instance requires, can't be removed until
 another takes its place ([ADR 0023](adr/0023-passkeys-sign-in-on-their-own.md)).
+
+### Sign-in providers and domain rules
+
+Google is a sign-in provider; another OpenID Connect provider would be one
+too. A provider's own module checks what the provider sent (`api::google`:
+the token exchange, the ID token's issuer, audience, expiry and nonce, and
+which address Google vouches for), and hands the rest to `api::sign_in`,
+which knows no provider: the account its identity is linked to
+(`identities`, keyed by provider and subject), the account of the address
+it vouches for, or a new one. Rules, tokens and identities name a provider
+by its id, `google` ([ADR 0099](adr/0099-domains-require-signing-in-with-their-provider.md)).
+
+- **How each sign-in was made.** Every browser session keeps it
+  (`tokens.auth_method`: `password`, `passkey` or a provider's id; and
+  `auth_domain`, for a provider's, the domain of the address it vouched
+  for). A CLI's sign-in takes it from the browser session that approved
+  the device code, and an access token or an admin token
+  (`admin_tokens.auth_method`) from the sign-in that made it. A sign-in
+  that waits for its second factor keeps it in its challenge. Sign-ins
+  from before fctl kept it have none. A linked account keeps the domain
+  its provider vouched for at its last sign-in (`identities.vouched_domain`),
+  which says whether it can meet a rule: one that only shows an address
+  there can't.
+- **Rules** (`InstanceSettings::sign_in`, Admin → Sign-in, `fctl admin
+  sign-in require`): "acme.com and acme.dev: Google only". A rule covers an
+  account when any of its addresses is at one of its domains, a connected
+  address as much as the primary one (`fctl_domain::sign_in`). A covered
+  account signs in only with the rule's provider, as an address at one of
+  its domains, and with a passkey alone only where the rule allows that:
+  `admits` checks each sign-in as it is made (passwords, passkeys, reset
+  links, invitations, an admin token's password, a provider's account
+  that isn't the organization's, such as a personal Gmail), and every
+  request's token as `auth::authenticate` reads it, admin tokens' too.
+  Saving rules deletes the sign-ins of covered accounts they don't meet,
+  in one statement a table (`sign_in::revoke_unmet`), so that none comes
+  back when a rule goes. Each domain is in one rule at most; an account at
+  domains of two rules gets in with either one's provider.
+- **The way in while the provider is down.** The primary instance owner
+  keeps every way in whatever the rules say. An admin who saves rules that
+  would cover them is refused unless the sign-in they save them with meets
+  them (`SignInYou::SignsOut`), which shows the provider works for them
+  first.
+- **Moving off passwords.** A covered account's first sign-in that meets
+  its rule links the provider's account by address, unless another
+  account of the provider at the rule's domains is linked already (a
+  recycled address's new holder) or it is the primary instance owner's.
+  Once the sign-in is whole, its second factor included, it takes the
+  account's password, its reset links and the sign-ins made another way
+  (`api::sign_in::moved_over`), and emails the person. Saving a rule
+  emails everyone whose password or passkeys stop signing them in
+  (`api::sign_in::tell`), in batches of a hundred, paced to Resend's rate
+  limit; a batch that fails doesn't stop the rest. Their addresses at the
+  domain stay on their accounts: only an instance admin, or an admin
+  token, removes one. Saving rules that let anyone sign in another way
+  (a domain let go, passkeys let in, another provider) is a sensitive
+  action (`Sensitive::RelaxSignIn`). Closing someone's account at the
+  provider stops their next sign-in, not the sessions they have:
+  disabling their account here does that.
+- **Accounts only from the directory.** With `InstanceSettings::self_sign_up`
+  off, a provider's sign-in makes an account only for an address with an
+  allowlist entry of its own (an invitation's, or one an admin allowed):
+  a `*@domain` entry admits the accounts at its domain and makes none.
 
 ### Confirming it's you
 
@@ -1727,10 +1793,17 @@ must be that key: a runner names no other session's object), its size
 and its checksum. The instance's size limit doesn't hold there; the
 host's own does (`max_mb`, 2048 MiB unless set), also for what it
 downloads, which it hands to the agent a part at a time, as the link
-writes them. The commit's answer says where the session's snapshot
-before was (`SnapshotCommitted.replaced`), which the host deletes when it
-is in its own bucket; past its workspace's days, the control plane
-forgets one, and the bucket's lifecycle rules delete it. Hosts say their
+writes them. A request that S3 answers with a 5xx, a 429 or a
+`RequestTimeout`, or that breaks off, goes again, signed anew, up to
+four times in all, 1, 3 and 9 seconds apart. The commit's answer says
+where the session's snapshot before was (`SnapshotCommitted.replaced`,
+which D1 keeps as `replaced` so that a commit that comes again, its
+answer lost, says it too), which the host deletes when it is in its own
+bucket. A commit the control plane refuses deletes the new object; one
+that gets no answer leaves it, as D1 may name it, and the transcript says
+the snapshot may not have been saved. Past its workspace's days, the
+control plane forgets one, and the bucket's lifecycle rules delete it.
+Hosts say their
 bucket in their hello and heartbeats, with why the last upload or
 download failed while it does (`SnapshotStore`, which
 `Runner.snapshot_store` shows), and a host that can't read its `url`
@@ -1740,8 +1813,9 @@ FleetDO still sends a resume to the runner that has the session's
 sandbox, which has everything, but doesn't wait for it: where that runner
 is busy or away, a session with a snapshot to restore starts on another
 at once, rather than after ten minutes (`SessionWants.snapshot`), on a
-runner whose host restores snapshots, and has the snapshot's bucket for
-one in a bucket. While those are busy, it waits for one as long as it
+runner whose host restores snapshots, and, for one in a bucket, has that
+bucket under the prefix the snapshot is in (`Bucket::holds`). While
+those are busy, it waits for one as long as it
 would for its sandbox's runner, rather than start elsewhere without its
 conversation; after that, and where none could take it, it waits, or
 starts, as any other session does. The hourly job deletes the snapshots past their workspace's
@@ -2954,8 +3028,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    (`--only sessions,people,asks`, `?only=`; `brief_parts`), as the whole
    runs to tens of kilobytes that each wake would read again, and it has
    heard of the notes and answers of the parts it read. Its owner follows its own session, which
-   notifies only of what it asks, and of fctl pausing it after its sessions
-   kept failing ([Notifications](#notifications)).
+   notifies only of what it asks, and of its own sessions failing four
+   times in a row, and each day they go on failing, while fctl goes on
+   trying
+   ([Notifications](#notifications)).
 3. **Waking** (`crate::autopilots`). ScheduleObject's alarm, which starts
    schedules' runs, wakes autopilots too: at the earliest of the two, each
    wake claimed in D1 (`autopilots.wake_at`) as a run is. It wakes at its
@@ -2990,12 +3066,21 @@ sessions to do it, and sets up what the work needs, as far as they let it
    wrote to since, and people's sessions that ended a turn with a pull
    request open; those two wake it for nothing themselves
    (`fctl_domain::autopilot::wake_message`). While its owner's plan is at
-   its limit it waits for the reset. Its own session failing makes fctl
-   try again 5, 15 and 60 minutes later, then pauses it and says why;
-   its owner can no longer manage its project (or, for a workspace's, is
-   no longer an admin), has no Claude connection or is gone, its project
-   is archived, or its workspace turned autopilots off: fctl pauses it
-   at its next wake and says why (`Autopilot.problem` beforehand). It
+   its limit it waits for the reset. Its own session failing, or fctl
+   failing to wake it, makes fctl try again 5, 15 and 60 minutes later,
+   then every hour until it works, each in its log
+   (`fctl_domain::autopilot::retry_in`), rather than pause it: what fails
+   its sessions often mends by itself, a runner that lost its network
+   say, and it carries on then
+   ([ADR 0100](adr/0100-autopilots-keep-trying-after-their-sessions-fail.md)).
+   A retry takes the place of its check-in, so that it tries no more often
+   than that unless something else wakes it sooner. At the fourth failure
+   in a row those who follow its own session hear of it, and again every
+   24 failures while they go on. When its owner can no longer manage its project (or, for
+   a workspace's, is no longer an admin), has no Claude connection or is
+   gone, its project is archived, or its workspace turned autopilots off,
+   fctl pauses it at its next wake and says why (`Autopilot.problem`
+   beforehand). It
    pauses itself once its direction is done (`fctl autopilot pause
    --reason …`), and people pause, resume and take it off.
 
@@ -4246,10 +4331,11 @@ asks you", with the question and its answers), to those who want to hear
 when it waits. An autopilot's sessions notify only when they ask: its own
 session, and those it started while it is on, finish turns, pause and fail
 for the autopilot, which hears of them and goes on by itself
-(`notify::Audience`). When its own sessions keep failing, fctl pauses it
-and says so to those who follow its own session, as a failure
-(`notify::Kind::AutopilotPaused`). A review agent's finished turn is its
-review's.
+(`notify::Audience`). When its own sessions keep failing (four times in
+a row), fctl says so to those who follow its own session, as a failure
+(`notify::Kind::AutopilotFailing`), and again each day they go on, while
+it goes on trying every hour.
+A review agent's finished turn is its review's.
 Starting
 or resuming a session follows it, unless the person turned that off in
 Settings; anyone who can see a session can follow it (the bell on its page,
@@ -4702,6 +4788,77 @@ refuses requests (`rejected`), the limit is reached, and only then does a
 session's transcript say so. Claude's warning status (`allowed_warning`)
 doesn't count: Claude Code sends it when a limit goes faster than its window
 passes, as with a quarter of the week used in its first day.
+
+### Claude oversight
+
+Sessions run on each person's own subscription, often a Team or Enterprise
+seat their organization gives them, so fctl keeps what it learns of each
+connection: whether Claude takes it, when a long-lived token runs out, and
+how often sessions on it pause on usage limits. People see their own in
+Settings → Claude and `fctl claude status`; a workspace's admins see their
+members' on its People tab and with `fctl workspaces members --claude`, as
+much as the workspace and the instance let them; never a token, its account
+or the label its person gave it. The pure parts are
+`fctl_domain::claude_oversight`'s, the rest `crate::claude_oversight`'s.
+
+- **Answers and refusals.** SessionDO reads each Claude message it stores
+  (`claude_oversight::Seen`): an assistant message is an answer, unless
+  Claude Code made it of an error; one whose `error` is
+  `authentication_failed` is Claude refusing the credential, as it refuses
+  a revoked or expired token. It sets `claude_credentials.answered_at` at a
+  run's first answer, then at most every ten minutes, and a usage reading
+  (`usage::record`) sets it too. A refusal adds a row to `claude_refusals`,
+  one per connection and session; once Claude refused a connection in as
+  many sessions as the instance says (`InstanceSettings.claude_refusals`,
+  2 by default) since it last answered it, fctl marks it `invalid`, with
+  `ended_at`, as it marks a login Claude won't renew (`spec::refresh`), so
+  that a moment's trouble at Claude ends nothing. Agents and hosts need no
+  update: they already pass every Claude message on. Sessions then run on
+  the person's other connection, if one works (`api::sessions::
+  credential_for` takes only working ones); connecting the same token again
+  makes it work again.
+- **Expiry.** A long-lived token works until a year after `claude
+  setup-token` made it, which the token doesn't say. Connecting one takes
+  `made_at` (`AddClaudeTokenRequest`, the app's "When did you make it?",
+  `--made-at`); without it fctl counts the year from the connection and says
+  "around" (`expiry_estimated`). Connecting the same token again, as a
+  person or an admin token (`api::claude::same_token` compares the one fctl
+  holds), keeps the date it had, and for an admin token what Claude said of
+  it too. Logins have no such date (Claude renews them), nor do tokens kept
+  on runners, which fctl never reads.
+- **Limit pauses.** Each `rate_limit_event` that stops a session
+  (`BillingGuard::LimitReached`) adds a row to `claude_limit_pauses`: the
+  connection, the session, the limit and when it resets, one per session,
+  limit and reset so that a replayed report adds none. A workspace's view
+  counts those of its own sessions only.
+- **What admins see.** `GET /api/v1/workspaces/{id}/claude` (its admins)
+  lists each member with the connection their sessions there run on, picked
+  as `credential_for` does, or the one that ended when none works
+  (`fctl_domain::claude_oversight::member`): its state (none, unused, works,
+  ended), when its token runs out, whether their sessions wait for a limit
+  to reset now, and with `details` its kind, whether an admin token set it,
+  its plan (`ultra` from its limits, else the login's subscription type),
+  when Claude last answered it, and the limit pauses of 7 and 30 days. The
+  instance's admins choose the most a workspace's may see
+  (`InstanceSettings.claude_oversight`: `off`, `readiness` or `details`, the
+  default) and whether they see limit pauses; each workspace chooses within
+  it (`workspaces.claude_oversight`, NULL for the instance's), and its
+  members read what it chose (`Workspace.claude_oversight`). `GET
+  /api/v1/admin/claude` shows instance admins every active account's
+  default connection the same way, only where `claude_instance_view` is on.
+- **Telling people.** The hourly job warns each person whose long-lived
+  token runs out within 30 days, then within 7 (`warned_at`, one email at
+  each), and an ended connection is told at once, where the instance sends
+  email. A workspace's admins hear as it says (`workspaces.
+  claude_admin_email`): of each, with the same timing; once a week
+  (`claude_digest_at`), in one email that lists the tokens running out
+  within a month and the connections that stopped working, sent only when
+  there are any; or not by email. The app shows the same without email: an
+  amber line under the connection in Settings → Claude, the mark Settings
+  shows an ended one, and a card on the Agent Floor in a token's last week
+  or once nothing works.
+- **Retention.** Limit pauses and refusals go 30 days on; the rest goes with
+  the connection.
 
 ## Sandboxes and drivers
 

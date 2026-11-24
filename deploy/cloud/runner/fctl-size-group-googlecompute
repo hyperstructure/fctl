@@ -1,0 +1,13 @@
+#!/bin/sh
+# Sizes this machine's managed instance group to the runners its pool wants, never below MIN:
+# what fctl-size-group.timer runs every minute, as root, on each of the group's machines.
+set -eu
+. /etc/default/fctl-size-group # SERVER and MIN, from the startup script
+md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1"; }
+wanted=$(curl -sf -H "Authorization: Bearer $(cat /etc/fctl/enroll-token)" "$SERVER/api/v1/runner/enroll/demand" | jq .wanted)
+case "$wanted" in '' | *[!0-9]*) exit 1 ;; esac # no answer: the size stays as it is
+[ "$wanted" -ge "$MIN" ] || wanted=$MIN
+api="https://compute.googleapis.com/compute/v1/projects/$(md project/project-id)/$(md instance/attributes/created-by | sed 's|^projects/[^/]*/||')"
+access=$(md instance/service-accounts/default/token | jq -r .access_token)
+size=$(curl -sf -H "Authorization: Bearer $access" "$api" | jq .targetSize)
+[ "$size" = "$wanted" ] || curl -sf -X POST -H "Authorization: Bearer $access" -H 'Content-Length: 0' "$api/resize?size=$wanted" >/dev/null

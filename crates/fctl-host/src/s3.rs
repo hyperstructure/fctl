@@ -28,6 +28,13 @@ const PART_BYTES: usize = 16 * 1024 * 1024;
 const CREDENTIALS_FOR: Duration = Duration::from_secs(5 * 60);
 /// The largest snapshot a bucket keeps unless host.toml says otherwise.
 pub const DEFAULT_MAX_MB: u32 = 2048;
+/// How many times a request to the bucket is tried in all while it fails
+/// in a way that may pass ([`try_again`]): S3 asks clients to, and a 2 GiB
+/// snapshot takes some 130 requests.
+const TRIES: u32 = 4;
+/// How long the second try waits; each one after it three times as long
+/// (1, 3 and 9 seconds).
+const FIRST_WAIT: Duration = Duration::from_secs(1);
 
 /// Where requests go: the host (and, for path-style addressing, the
 /// bucket's name first in the path).
@@ -59,6 +66,8 @@ pub struct Store {
     cached: Mutex<Option<(Credentials, Instant)>>,
     /// What the host says of it in its hello and heartbeats.
     state: Mutex<SnapshotStore>,
+    /// How long a request waits before its second try ([`FIRST_WAIT`]).
+    first_wait: Duration,
 }
 
 impl std::fmt::Debug for Store {
@@ -116,6 +125,7 @@ impl Store {
             max_bytes,
             http,
             cached: Mutex::new(None),
+            first_wait: FIRST_WAIT,
         }))
     }
 
@@ -163,7 +173,7 @@ impl Store {
                 .await
                 .map_err(|e| format!("reading the snapshot: {e}"))?;
             let (status, _, answer) = self
-                .request(Method::PUT, key, &[], Some(body), sha256)
+                .request(Method::PUT, key, &[], Some(body.into()), sha256)
                 .await?;
             return expect_ok(status, &answer, "putting it in the bucket");
         }
@@ -173,7 +183,7 @@ impl Store {
                 Method::POST,
                 key,
                 &[("uploads", "")],
-                Some(Vec::new()),
+                Some(bytes::Bytes::new()),
                 sigv4::EMPTY_SHA256,
             )
             .await?;
@@ -190,7 +200,7 @@ impl Store {
                         Method::POST,
                         key,
                         &[("uploadId", upload.as_str())],
-                        Some(body.into_bytes()),
+                        Some(body.into_bytes().into()),
                         &hash,
                     )
                     .await;
@@ -242,7 +252,7 @@ impl Store {
             if len == 0 {
                 break;
             }
-            let part = buf.get(..len).unwrap_or_default().to_vec();
+            let part = bytes::Bytes::copy_from_slice(buf.get(..len).unwrap_or_default());
             let hash = hex::encode(Sha256::digest(&part));
             let number = (etags.len() + 1).to_string();
             let (status, headers, answer) = self
@@ -277,24 +287,45 @@ impl Store {
     }
 
     async fn get_inner(&self, key: &str, path: &Path, max_bytes: u64) -> Result<u64, String> {
-        let (url, signed) = self
-            .sign(&Method::GET, key, &[], sigv4::EMPTY_SHA256)
-            .await?;
-        let headers: Vec<(&str, &str)> = signed
-            .iter()
-            .map(|(n, v)| (n.as_str(), v.as_str()))
-            .collect();
-        self.http
-            .download_to(
-                &url,
-                None,
-                &headers,
-                path,
-                max_bytes,
-                Duration::from_secs(30 * 60),
-            )
-            .await
-            .map_err(|e| format!("getting it from the bucket failed: {e}"))
+        let mut wait = self.first_wait;
+        let mut tries = 1;
+        loop {
+            // Signed again for each try, as S3 takes a signature for 15
+            // minutes.
+            let (url, signed) = self
+                .sign(&Method::GET, key, &[], sigv4::EMPTY_SHA256)
+                .await?;
+            let headers: Vec<(&str, &str)> = signed
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_str()))
+                .collect();
+            let got = self
+                .http
+                .download_to(
+                    &url,
+                    None,
+                    &headers,
+                    path,
+                    max_bytes,
+                    Duration::from_secs(30 * 60),
+                )
+                .await;
+            match got {
+                Ok(size) => return Ok(size),
+                // A download that ran out of its time would again.
+                Err(e)
+                    if tries < TRIES
+                        && e.is_transient()
+                        && !matches!(e, fctl_client::Error::Timeout(_)) =>
+                {
+                    tracing::debug!("getting {key} from the bucket, again in {wait:?}: {e}");
+                }
+                Err(e) => return Err(format!("getting it from the bucket failed: {e}")),
+            }
+            tokio::time::sleep(wait).await;
+            wait *= 3;
+            tries += 1;
+        }
     }
 
     /// Deletes the object at `key`.
@@ -305,23 +336,44 @@ impl Store {
         expect_ok(status, &answer, "deleting it")
     }
 
+    /// Sends a request to `key`, again while it fails in a way that may
+    /// pass ([`try_again`]), signed anew and with its body each time: the
+    /// last answer, whatever its status.
     async fn request(
         &self,
         method: Method,
         key: &str,
         query: &[(&str, &str)],
-        body: Option<Vec<u8>>,
+        body: Option<bytes::Bytes>,
         sha256: &str,
     ) -> Result<(http::StatusCode, http::HeaderMap, bytes::Bytes), String> {
-        let (url, signed) = self.sign(&method, key, query, sha256).await?;
-        let headers: Vec<(&str, &str)> = signed
-            .iter()
-            .map(|(n, v)| (n.as_str(), v.as_str()))
-            .collect();
-        self.http
-            .send_with(method, &url, &headers, body)
-            .await
-            .map_err(|e| format!("the bucket didn't answer: {e}"))
+        let mut wait = self.first_wait;
+        let mut tries = 1;
+        loop {
+            let (url, signed) = self.sign(&method, key, query, sha256).await?;
+            let headers: Vec<(&str, &str)> = signed
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_str()))
+                .collect();
+            let sent = self
+                .http
+                .send_with(method.clone(), &url, &headers, body.clone())
+                .await;
+            let again = match &sent {
+                Ok((status, _, answer)) => try_again(*status, answer),
+                // A request that ran out of its 5 minutes isn't tried again:
+                // four of them would outlast the session's wait for its
+                // upload (`snapshots::UPLOAD_LIMIT`).
+                Err(e) => e.is_transient() && !matches!(e, fctl_client::Error::Timeout(_)),
+            };
+            if !again || tries >= TRIES {
+                return sent.map_err(|e| format!("the bucket didn't answer: {e}"));
+            }
+            tracing::debug!("{method} {key} in the bucket, again in {wait:?}");
+            tokio::time::sleep(wait).await;
+            wait *= 3;
+            tries += 1;
+        }
     }
 
     /// The URL of `key` with `query`, and the headers that sign a request
@@ -447,7 +499,7 @@ async fn imds_token(http: &HttpClient) -> Option<String> {
             Method::PUT,
             &format!("{IMDS}/api/token"),
             &[("x-aws-ec2-metadata-token-ttl-seconds", "300")],
-            Some(Vec::new()),
+            Some(bytes::Bytes::new()),
         )
         .await
         .ok()?;
@@ -516,7 +568,7 @@ async fn machine_credentials(http: &HttpClient, region: &str) -> Result<Credenti
                     ("content-type", "application/x-www-form-urlencoded"),
                     ("accept", "text/xml"),
                 ],
-                Some(form.into_bytes()),
+                Some(form.into_bytes().into()),
             )
             .await
             .map_err(|e| format!("asking STS for the role's keys: {e}"))?;
@@ -605,6 +657,21 @@ fn complete_body(etags: &[String]) -> String {
     format!("<CompleteMultipartUpload>{parts}</CompleteMultipartUpload>")
 }
 
+/// Whether an answer of the bucket says to try again: S3 asks for it with
+/// a 5xx or 429 (`SlowDown`, `InternalError`), with a 400 `RequestTimeout`
+/// when a body came too slowly, and with an `InternalError` in the 200 that
+/// answers an upload's completion.
+fn try_again(status: http::StatusCode, answer: &[u8]) -> bool {
+    if status.is_server_error() || status == http::StatusCode::TOO_MANY_REQUESTS {
+        return true;
+    }
+    answer.windows(7).any(|w| w == b"<Error>")
+        && matches!(
+            xml_text(answer, "Code").as_deref(),
+            Some("RequestTimeout" | "InternalError" | "SlowDown" | "ServiceUnavailable")
+        )
+}
+
 fn expect_ok(status: http::StatusCode, body: &[u8], doing: &str) -> Result<(), String> {
     if status.is_success() {
         return Ok(());
@@ -620,7 +687,9 @@ mod tests {
     /// A stand-in for S3: keeps objects by path, takes uploads in parts,
     /// and refuses requests that aren't signed with `AKID`'s key. It drops
     /// the connection that would complete an upload to a key with `drop`
-    /// in it. Its URL, and the requests it had (`METHOD target`).
+    /// in it, and asks a request to a key with `slow` in it to slow down
+    /// the first time it comes. Its URL, and the requests it had (`METHOD
+    /// target`).
     async fn stand_in() -> anyhow::Result<(String, std::sync::Arc<Mutex<Vec<String>>>)> {
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -630,10 +699,12 @@ mod tests {
         let objects: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::default();
         let parts: Arc<Mutex<HashMap<u32, Vec<u8>>>> = Arc::default();
         let had: Arc<Mutex<Vec<String>>> = Arc::default();
+        let slowed: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
         let log = had.clone();
         tokio::spawn(async move {
             while let Ok((mut conn, _)) = listener.accept().await {
-                let (objects, parts, log) = (objects.clone(), parts.clone(), log.clone());
+                let (objects, parts, log, slowed) =
+                    (objects.clone(), parts.clone(), log.clone(), slowed.clone());
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut chunk = vec![0u8; 1 << 16];
@@ -678,11 +749,21 @@ mod tests {
                     }
                     let signed = header("authorization")
                         .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256 Credential=AKID/"));
+                    let slow = path.contains("slow")
+                        && slowed
+                            .lock()
+                            .is_ok_and(|mut s| s.insert(format!("{method} {target}")));
                     let (status, etag, answer): (&str, Option<String>, Vec<u8>) = if !signed {
                         (
                             "403 Forbidden",
                             None,
                             b"<Error><Code>AccessDenied</Code></Error>".to_vec(),
+                        )
+                    } else if slow {
+                        (
+                            "503 Slow Down",
+                            None,
+                            b"<Error><Code>SlowDown</Code></Error>".to_vec(),
                         )
                     } else {
                         let Ok(mut objects) = objects.lock() else {
@@ -759,10 +840,16 @@ mod tests {
             c.endpoint = Some(endpoint.clone());
             c
         };
-        let store = Store::open(&open("AKID"))
+        let mut store = Store::open(&open("AKID"))
             .await?
             .ok_or_else(|| anyhow::anyhow!("no store"))?;
         assert_eq!(store.max_bytes, 2048 * 1024 * 1024);
+        store.first_wait = Duration::from_millis(5);
+        let tries = |request: &str| {
+            had.lock()
+                .map(|h| h.iter().filter(|r| r.as_str() == request).count())
+                .unwrap_or(0)
+        };
         for (name, size) in [
             ("small", 1000usize),
             ("large", (SINGLE_PUT_MAX as usize) + PART_BYTES / 2),
@@ -786,17 +873,57 @@ mod tests {
             assert!(store.get(&key, &back, size as u64).await.is_err());
         }
         assert_eq!(store.report().error, None);
-        // An upload in parts whose completion gets no answer is let go of,
-        // so that its parts don't stay in the bucket.
+        // A bucket that asks it to slow down gets each request again, the
+        // body with it, and nothing fails.
+        for (name, size) in [
+            ("slow-small", 1000usize),
+            ("slow-large", (SINGLE_PUT_MAX as usize) + PART_BYTES / 2),
+        ] {
+            let path = dir.path().join(name);
+            let bytes: Vec<u8> = (0..size).map(|i| (i % 241) as u8).collect();
+            std::fs::write(&path, &bytes)?;
+            let key = store.bucket.key("ses_1", name);
+            store
+                .put(&key, &path, &hex::encode(Sha256::digest(&bytes)))
+                .await
+                .map_err(anyhow::Error::msg)?;
+            let back = dir.path().join(format!("{name}.back"));
+            let got = store
+                .get(&key, &back, size as u64)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            assert_eq!(got, size as u64);
+            assert_eq!(std::fs::read(&back)?, bytes, "{name}");
+            store.delete(&key).await.map_err(anyhow::Error::msg)?;
+        }
+        assert_eq!(store.report().error, None);
+        for request in [
+            "PUT /acme-fctl/sessions/ses_1/slow-small",
+            "GET /acme-fctl/sessions/ses_1/slow-small",
+            "DELETE /acme-fctl/sessions/ses_1/slow-small",
+            "POST /acme-fctl/sessions/ses_1/slow-large?uploads",
+            "PUT /acme-fctl/sessions/ses_1/slow-large?partNumber=2&uploadId=u1",
+            "POST /acme-fctl/sessions/ses_1/slow-large?uploadId=u1",
+            "GET /acme-fctl/sessions/ses_1/slow-large",
+        ] {
+            assert_eq!(tries(request), 2, "{request}");
+        }
+        // An upload in parts whose completion gets no answer, however many
+        // times it asks, is let go of, so that its parts don't stay in the
+        // bucket.
         let large = dir.path().join("large");
         let dropped = store
             .put("sessions/ses_1/drop", &large, sigv4::EMPTY_SHA256)
             .await;
         assert!(dropped.is_err_and(|e| e.contains("didn't answer")));
-        assert!(had.lock().is_ok_and(|h| {
-            h.iter()
-                .any(|r| r == "DELETE /acme-fctl/sessions/ses_1/drop?uploadId=u1")
-        }));
+        assert_eq!(
+            tries("POST /acme-fctl/sessions/ses_1/drop?uploadId=u1"),
+            TRIES as usize
+        );
+        assert_eq!(
+            tries("DELETE /acme-fctl/sessions/ses_1/drop?uploadId=u1"),
+            1
+        );
         // Another key: refused, and said.
         let wrong = Store::open(&open("OTHER"))
             .await?
@@ -806,6 +933,8 @@ mod tests {
             .put("sessions/ses_1/x", &path, sigv4::EMPTY_SHA256)
             .await;
         assert!(refused.is_err_and(|e| e.contains("AccessDenied")));
+        // A refusal isn't asked again.
+        assert_eq!(tries("PUT /acme-fctl/sessions/ses_1/x"), 1);
         assert!(
             wrong
                 .report()
@@ -817,6 +946,43 @@ mod tests {
         bad.url = Some("s3://Not A Bucket".into());
         assert!(Store::open(&bad).await.is_err());
         Ok(())
+    }
+
+    #[test]
+    fn tries_again_what_the_bucket_asks_it_to() {
+        use http::StatusCode;
+        for (status, answer) in [
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                &b"<Error><Code>SlowDown</Code></Error>"[..],
+            ),
+            (StatusCode::INTERNAL_SERVER_ERROR, b""),
+            (StatusCode::TOO_MANY_REQUESTS, b""),
+            (
+                StatusCode::BAD_REQUEST,
+                b"<Error><Code>RequestTimeout</Code></Error>",
+            ),
+            (StatusCode::OK, b"<Error><Code>InternalError</Code></Error>"),
+        ] {
+            assert!(try_again(status, answer), "{status}");
+        }
+        for (status, answer) in [
+            (
+                StatusCode::FORBIDDEN,
+                &b"<Error><Code>AccessDenied</Code></Error>"[..],
+            ),
+            (
+                StatusCode::NOT_FOUND,
+                b"<Error><Code>NoSuchKey</Code></Error>",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                b"<Error><Code>InvalidDigest</Code></Error>",
+            ),
+            (StatusCode::OK, b"<CompleteMultipartUploadResult/>"),
+        ] {
+            assert!(!try_again(status, answer), "{status}");
+        }
     }
 
     #[test]

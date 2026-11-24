@@ -70,6 +70,18 @@ owner and purpose), so a value copied between rows does not decrypt.
   projects, so its members' agents reach the repositories of the projects
   the admins made and opened to them, not every one its GitHub accounts
   cover.
+- **Claude connections** are their person's: nobody else sees a token,
+  the Claude account it belongs to or the label its person gave it. A
+  workspace's admins see facts about the connection each member's
+  sessions there run on, as much as the instance and the workspace let
+  them ([Claude seats](organizations.md#claude-seats)): whether they have
+  one and whether Claude still takes it, when its token runs out, whether
+  their sessions wait for a usage limit to reset, and, with `details`, its
+  kind and who set it, its plan, when Claude last answered it and how often
+  their sessions in the workspace paused on limits. Each member reads in
+  the workspace's Settings → You what its admins see. Instance admins see
+  everyone's the same way only where the instance turns it on
+  (`claude_instance_view`, off by default).
 - Browser sessions are `__Host-` cookies (`Secure`, `HttpOnly`,
   `SameSite=Lax`). An instance served over plain http at an address other
   than localhost, which only [a control plane of your own](#the-control-plane-without-cloudflare)
@@ -111,6 +123,25 @@ owner and purpose), so a value copied between rows does not decrypt.
   that has one, so a stolen session can't add a way in, even with the
   password, and emails the person.
   Where two-factor is required, a passkey also counts as the second factor.
+- **A domain's provider.** Where an instance's admins require one for a
+  domain (Admin → Sign-in, `fctl admin sign-in require`; Google today),
+  the accounts with an address there sign in only with that provider, as
+  an address there that it vouches for: Google only where it hosts the
+  address (a Google Workspace account's, never a personal account's that
+  shows it). Each browser session keeps how it was made, and a CLI's, an
+  access token's and an admin token's take it from the sign-in that made
+  them, so that every request checks it: passwords, passkeys alone
+  (unless the admins allow them) and reset links stop working, and saving
+  the rule deletes the sign-ins made otherwise, before it too. A covered
+  account's first whole sign-in with the provider takes its password; a
+  second account of the provider at the domain doesn't link to an account
+  that has one; and its people can't disconnect an address there. The
+  primary instance owner keeps their password and passkeys, the way in
+  while the provider is down; an admin can't save a rule their own
+  sign-in doesn't meet, and letting a domain go, or passkeys in, is a
+  sensitive action. Closing someone's account at the provider stops their
+  next sign-in, not the sessions they have: disable their account here
+  too.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
@@ -899,6 +930,10 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   made it (signing out, revoking or expiry), or when its push service says
   it is gone. A person's notifications wait in their Durable Object for at
   most a minute and are deleted once sent.
+- Each session's pauses on Claude's usage limits, and Claude's refusals
+  of the connection it ran on, are deleted after 30 days; when Claude last
+  answered each connection, and when its token runs out, go with the
+  connection.
 - Deleting a workspace deletes its projects, as deleting each would, its
   audit log, its enrollment tokens and the runners that enrolled with them,
   its service accounts and people's answers to them;

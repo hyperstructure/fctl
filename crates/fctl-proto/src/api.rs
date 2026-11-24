@@ -33,6 +33,43 @@ pub struct InstanceInfo {
     /// No owner yet: the setup link must be used first.
     pub setup_required: bool,
     pub features: Features,
+    /// How people sign in here: the providers' buttons, the domains whose
+    /// people sign in with one only, and whether signing in makes
+    /// accounts. Absent from control planes before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sign_in: Option<SignInInfo>,
+}
+
+/// What the sign-in page shows ([`InstanceInfo::sign_in`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInInfo {
+    /// The providers people sign in with, in the order the page shows
+    /// their buttons.
+    pub providers: Vec<SignInProvider>,
+    /// Domains whose people sign in with a provider only
+    /// ([`InstanceSettings::sign_in`]): an address at one turns the page's
+    /// form into that provider's button.
+    pub rules: Vec<SignInRule>,
+    /// Signing in makes accounts where the allowlist admits the address
+    /// ([`InstanceSettings::self_sign_up`]). Off, the page tells people
+    /// without an account to ask an admin.
+    pub self_sign_up: bool,
+}
+
+/// A provider people sign in with: Google, or (later) another OpenID
+/// Connect provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInProvider {
+    /// As tokens, identities and rules name it: `google`.
+    pub id: String,
+    /// What its button says after "Continue with": `Google`.
+    pub name: String,
+    /// The path its sign-in starts at (`/api/v1/auth/google/start`), which
+    /// takes `intent` (`login` or `link`), `return_to` and `login_hint`.
+    pub start: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -205,6 +242,11 @@ pub struct User {
     /// How many workspaces it is a member of (for instance admins).
     #[serde(default)]
     pub workspaces: u32,
+    /// The providers whose accounts sign in to it (`google`), once each
+    /// (for instance admins; empty elsewhere, and from control planes
+    /// before it).
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 impl User {
@@ -226,6 +268,10 @@ pub struct Identity {
     /// `google`.
     pub provider: String,
     pub email: Option<String>,
+    /// The domain of `email`, where the provider vouched for it at its last
+    /// sign-in (Google: one it hosts). Only then does it sign in where a
+    /// domain requires the provider ([`SignInRule`]).
+    pub domain: Option<String>,
     pub name: Option<String>,
     pub avatar_url: Option<String>,
     pub created_at: Millis,
@@ -278,6 +324,30 @@ pub struct Me {
     /// How often you can export your data, and when you can next. Absent
     /// for limited tokens, and from control planes before it.
     pub export: Option<DataExport>,
+    /// The provider you sign in with only, where the instance requires one
+    /// of the people at a domain of one of your addresses
+    /// ([`InstanceSettings::sign_in`]). Absent where none does.
+    pub sign_in: Option<SignInRequirement>,
+}
+
+/// How someone signs in, as a domain of one of their addresses requires
+/// ([`Me::sign_in`]).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInRequirement {
+    /// The provider's id (`google`) and name (`Google`).
+    pub provider: String,
+    pub provider_name: String,
+    /// Their domains it requires it of (`acme.com`): they sign in with it
+    /// as an address at one of these.
+    pub domains: Vec<String>,
+    /// A passkey alone signs them in too.
+    pub passkeys: bool,
+    /// They are the primary instance owner: their password and passkeys
+    /// sign them in whatever the rule says, as the instance's way in while
+    /// the provider is down.
+    pub exempt: bool,
 }
 
 /// Exporting your data (`GET /api/v1/me/export`), which the instance allows
@@ -1045,6 +1115,11 @@ pub struct TokenInfo {
     /// What an access token is limited to. Absent: it does everything its
     /// person may (browser sessions and the CLI's sign-ins always do).
     pub scope: Option<TokenScope>,
+    /// How the sign-in it comes from was made: `password`, `passkey`, or a
+    /// provider's id (`google`). A CLI's sign-in takes the method of the
+    /// browser that approved it, and an access token that of the sign-in
+    /// that made it. Absent for those from before fctl recorded it.
+    pub method: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1292,6 +1367,18 @@ pub struct AdminClaudeToken {
     pub is_default: bool,
     pub created_at: Millis,
     pub updated_at: Millis,
+    /// When it runs out: a year after `claude setup-token` made it, or,
+    /// with `expiry_estimated`, after it was set, as nobody said when it
+    /// was made. Setting the same token again keeps it. Absent from control
+    /// planes before it.
+    pub expires_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub expiry_estimated: bool,
+    /// When Claude last answered it.
+    pub answered_at: Option<Millis>,
+    /// When fctl found it ended: Claude refused it.
+    pub ended_at: Option<Millis>,
 }
 
 /// `PUT /api/v1/admin/users/{user}/workspaces/{workspace}` (admin tokens):
@@ -1649,7 +1736,230 @@ pub struct InstanceSettings {
     /// conversation's images out, then its uncommitted work, then saves
     /// none. [`DEFAULT_MAX_SNAPSHOT_MB`] by default.
     pub max_snapshot_mb: u32,
+    /// Domains whose people sign in with a provider only: "acme.com and
+    /// acme.dev: Google only" ([`SignInRule`]). A rule covers an account
+    /// when any of its addresses is at one of its domains. Passwords, other
+    /// providers and sign-ins made before stop working for it, and passkeys
+    /// too unless the rule allows them; the primary instance owner keeps
+    /// every way in. None by default.
+    pub sign_in: Vec<SignInRule>,
+    /// Signing in with a provider makes an account for an address the
+    /// allowlist admits, `*@domain` entries included. Off, only
+    /// invitations, addresses admins allow one by one and admin tokens
+    /// make accounts: a domain's entry admits the accounts at it, and makes
+    /// none. On by default.
+    pub self_sign_up: bool,
+    /// The most a workspace's admins may see of their members' Claude
+    /// connections ([`ClaudeOversightSettings`]), never a token, its
+    /// account or its label: each workspace chooses within it.
+    /// [`ClaudeOversight::Details`] by default; lowering it lowers the
+    /// workspaces that chose more.
+    pub claude_oversight: ClaudeOversight,
+    /// Workspace admins may see how often their members' sessions paused
+    /// on usage limits, in the last 7 and 30 days. Whatever it says, they
+    /// see whose sessions wait for a limit to reset now. On by default.
+    pub claude_limit_pauses: bool,
+    /// Instance admins see every account's Claude connection in Admin →
+    /// People (`GET /api/v1/admin/claude`), as workspace admins see their
+    /// members', with its limit pauses: for instances that set people's
+    /// seats with admin tokens. Off by default.
+    pub claude_instance_view: bool,
+    /// In how many sessions Claude must refuse a long-lived token, since
+    /// it last answered it, before fctl marks it ended, so that a moment's
+    /// trouble at Claude doesn't: [`DEFAULT_CLAUDE_REFUSALS`] by default,
+    /// 1 to [`MAX_CLAUDE_REFUSALS`].
+    pub claude_refusals: u32,
 }
+
+/// How the people at some domains sign in ([`InstanceSettings::sign_in`]):
+/// with `provider` only, as an address at one of `domains` that the
+/// provider vouches for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInRule {
+    /// Lowercase, without `*@`: `acme.com`. A domain is in one rule at
+    /// most.
+    pub domains: Vec<String>,
+    /// The provider's id ([`SignInProvider::id`]): `google`.
+    pub provider: String,
+    /// A passkey alone signs its people in too. Quick, but past the
+    /// provider's checks (its two-step verification, device checks,
+    /// offboarding). Off by default; passkeys still stand in for codes
+    /// after the provider's sign-in, and confirm sensitive actions.
+    #[serde(default)]
+    pub passkeys: bool,
+}
+
+/// `GET /api/v1/admin/sign-in`: how people sign in to the instance.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInOverview {
+    /// The providers the instance knows, those its deployment didn't set
+    /// up included.
+    pub providers: Vec<SignInProviderStatus>,
+    /// [`InstanceSettings::sign_in`].
+    pub rules: Vec<SignInRule>,
+    /// For each of `rules`, in order: whom it covers.
+    pub coverage: Vec<SignInCoverage>,
+    /// [`InstanceSettings::self_sign_up`].
+    pub self_sign_up: bool,
+    /// Active accounts.
+    pub active: u32,
+    /// Of them, those with a password.
+    pub passwords: u32,
+    /// Those with a passkey.
+    pub passkeys: u32,
+    /// Those with no way to sign in yet: admin tokens made them, and
+    /// nobody has signed in to them.
+    pub no_way_in: u32,
+    /// The primary instance owner, who keeps their password and passkeys
+    /// whatever the rules say.
+    pub owner: Option<SignInPerson>,
+    /// How your sign-in, the one this request comes with, was made
+    /// ([`TokenInfo::method`]), and the domain of the address a provider
+    /// vouched for in it: a rule for that domain and provider would keep
+    /// you signed in.
+    pub method: Option<String>,
+    pub method_domain: Option<String>,
+    /// The instance sends email: people hear when a rule changes how they
+    /// sign in.
+    pub email: bool,
+}
+
+/// A provider as instance admins see it ([`SignInOverview::providers`]).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInProviderStatus {
+    /// `google`.
+    pub id: String,
+    /// `Google`.
+    pub name: String,
+    /// The instance's deployment set it up: for Google, `GOOGLE_CLIENT_ID`
+    /// and `GOOGLE_CLIENT_SECRET`. Rules require only providers that are.
+    pub configured: bool,
+    /// What sets it up: `GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET`.
+    pub setup: String,
+    /// Where the provider sends people back after they sign in: its OAuth
+    /// client takes it as an authorized redirect URI.
+    pub redirect_url: String,
+    /// Active accounts that one of its accounts signs in to.
+    pub people: u32,
+}
+
+/// Whom a rule covers ([`SignInOverview::coverage`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInCoverage {
+    /// Active accounts with an address at one of its domains.
+    pub people: u32,
+    /// Of them, those an account of its provider, as an address at one of
+    /// its domains, signs in to already.
+    pub linked: u32,
+    /// Those who still have a password, which doesn't sign them in: it
+    /// goes at their next sign-in with the provider. The primary instance
+    /// owner's, which stays, doesn't count.
+    pub passwords: u32,
+}
+
+/// Someone a change to how people sign in concerns.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInPerson {
+    pub id: UserId,
+    pub name: String,
+    pub email: String,
+    pub avatar_url: Option<String>,
+}
+
+/// `POST /api/v1/admin/sign-in/preview`: what saving `rules` in place of
+/// the instance's would do, before anything changes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SignInPreviewRequest {
+    pub rules: Vec<SignInRule>,
+}
+
+/// The answer to [`SignInPreviewRequest`]. The lists name at most
+/// [`SignInPreview::LIMIT`] people each; the counts are whole.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SignInPreview {
+    /// Active accounts the rules would cover.
+    pub covered: u32,
+    /// Of them, those whose password would stop working: it goes at their
+    /// next sign-in with the provider.
+    pub passwords: Vec<SignInPerson>,
+    pub password_count: u32,
+    /// Those whose passkeys would stop signing them in alone. They still
+    /// stand in for codes after the provider's sign-in, and confirm
+    /// sensitive actions.
+    pub passkeys: Vec<SignInPerson>,
+    pub passkey_count: u32,
+    /// Their CLI sign-ins and access tokens made with another way in,
+    /// which saving deletes: they make new ones after signing in with the
+    /// provider.
+    #[serde(default)]
+    pub access_tokens: u32,
+    /// Their admin tokens made with another way in, which stop working
+    /// (a program that provisions people with one needs a new one).
+    #[serde(default)]
+    pub admin_tokens: u32,
+    /// Those an account of the provider, as an address at a covered
+    /// domain, signs in to already.
+    pub linked: u32,
+    /// Those with no way to sign in yet (admin tokens made them): their
+    /// first sign-in with the provider links it.
+    pub first: u32,
+    /// Accounts the rules cover now and would no longer: they sign in as
+    /// they did before (those who still have a password, with it).
+    pub released: u32,
+    /// Active accounts the rules wouldn't cover: nothing changes for them.
+    pub others: u32,
+    /// The primary instance owner, when the rules would cover them: they
+    /// keep their password and passkeys, the way in while the provider is
+    /// down.
+    pub owner: Option<SignInPerson>,
+    /// What the change does to your own sign-in.
+    pub you: SignInYou,
+    /// The instance sends email: those whose password or passkeys stop
+    /// working hear of it.
+    pub email: bool,
+}
+
+impl SignInPreview {
+    pub const LIMIT: usize = 200;
+}
+
+/// What a change to how people sign in does to the sign-in of the admin
+/// who makes it ([`SignInPreview::you`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum SignInYou {
+    /// No rule would cover you.
+    Outside,
+    /// You are the primary instance owner: every way in stays yours.
+    Owner,
+    /// A rule would cover you, and the sign-in you made this change with
+    /// meets it.
+    Meets,
+    /// A rule would cover you, and your sign-in doesn't meet it: the
+    /// change waits until you sign in with its provider, as an address at
+    /// one of its domains, so that it signs nobody out who can't sign in
+    /// again.
+    SignsOut,
+}
+
+/// In how many sessions Claude refuses a long-lived token before fctl marks
+/// it ended, until an instance's admins choose another number
+/// ([`InstanceSettings::claude_refusals`]).
+pub const DEFAULT_CLAUDE_REFUSALS: u32 = 2;
+/// The most they may choose.
+pub const MAX_CLAUDE_REFUSALS: u32 = 5;
 
 /// How many MiB one session snapshot may take until an instance's admins
 /// choose another limit ([`InstanceSettings::max_snapshot_mb`]).
@@ -1675,6 +1985,12 @@ impl Default for InstanceSettings {
             max_workspaces: DEFAULT_MAX_WORKSPACES,
             snapshots: true,
             max_snapshot_mb: DEFAULT_MAX_SNAPSHOT_MB,
+            sign_in: Vec::new(),
+            self_sign_up: true,
+            claude_oversight: ClaudeOversight::Details,
+            claude_limit_pauses: true,
+            claude_instance_view: false,
+            claude_refusals: DEFAULT_CLAUDE_REFUSALS,
         }
     }
 }
@@ -1699,6 +2015,15 @@ pub struct UpdateInstanceSettingsRequest {
     pub snapshots: Option<bool>,
     /// 1 to [`MAX_SNAPSHOT_MB`].
     pub max_snapshot_mb: Option<u32>,
+    /// Replaces the domains' rules: `[]` for none. One that would sign out
+    /// the admin who saves it is refused ([`SignInYou::SignsOut`]).
+    pub sign_in: Option<Vec<SignInRule>>,
+    pub self_sign_up: Option<bool>,
+    pub claude_oversight: Option<ClaudeOversight>,
+    pub claude_limit_pauses: Option<bool>,
+    pub claude_instance_view: Option<bool>,
+    /// 1 to [`MAX_CLAUDE_REFUSALS`].
+    pub claude_refusals: Option<u32>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -1822,6 +2147,10 @@ pub struct Workspace {
     /// it goes, and the session resumes elsewhere from its task and branch.
     /// Absent from control planes before snapshots.
     pub snapshot_days: Option<u32>,
+    /// What its admins see of its members' Claude connections, and how
+    /// they hear of those that run out or stop working: its members read it
+    /// too. Absent from control planes before it.
+    pub claude_oversight: Option<ClaudeOversightSettings>,
     /// Its own autopilot, which works in all its projects: the project it
     /// works from, and how it stands. Absent while it has none.
     pub autopilot: Option<WorkspaceAutopilot>,
@@ -1938,6 +2267,15 @@ pub struct UpdateWorkspaceRequest {
     pub snapshots: Option<bool>,
     /// See [`Workspace::snapshot_days`].
     pub snapshot_days: Option<u32>,
+    /// What its admins see of members' Claude connections: no more than
+    /// the instance lets them ([`ClaudeOversightSettings::most`]).
+    pub claude_oversight: Option<ClaudeOversight>,
+    /// Its admins see how often members' sessions paused on usage limits,
+    /// where the instance lets them.
+    pub claude_limit_pauses: Option<bool>,
+    /// How its admins hear by email of members' Claude connections that
+    /// run out or stop working.
+    pub claude_admin_email: Option<ClaudeAdminEmail>,
 }
 
 /// What a workspace's sessions' snapshots take now
@@ -4913,6 +5251,241 @@ pub struct ClaudeCredentialInfo {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub on_runners: bool,
+    /// When Claude last answered it: a session's first answer from Claude,
+    /// or a usage reading, either of which means Claude accepted it.
+    /// Absent until a session runs on it, and from control planes before
+    /// it.
+    pub answered_at: Option<Millis>,
+    /// For a long-lived token, `expires_at` is when it runs out: a year
+    /// after `claude setup-token` made it. This says fctl counted the
+    /// year from when the token was connected, as nobody said when it was
+    /// made, so it runs out around then, maybe sooner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub expiry_estimated: bool,
+    /// When fctl found it ended (`status` is `invalid`): Claude refused the
+    /// token in sessions, or the login in renewing it.
+    pub ended_at: Option<Millis>,
+    /// An admin token set it (`PUT /api/v1/admin/users/{user}/claude`):
+    /// their admins set the next one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub provisioned: bool,
+}
+
+/// How much a workspace's admins see of its members' Claude connections,
+/// never a token, its account or the label its person gave it. Ordered from
+/// least to most: an instance's admins choose the most
+/// ([`InstanceSettings::claude_oversight`]), and each workspace's within it
+/// ([`ClaudeOversightSettings::oversight`]).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeOversight {
+    /// Nothing of them.
+    Off,
+    /// Whether each member's sessions there can run: whether they have a
+    /// connection, whether Claude still takes it, when its token runs out,
+    /// and whether their sessions wait for a usage limit to reset.
+    Readiness,
+    /// Also what kind of connection it is and who set it, its plan, and
+    /// when Claude last answered it.
+    #[default]
+    Details,
+}
+
+impl ClaudeOversight {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Readiness => "readiness",
+            Self::Details => "details",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "readiness" => Some(Self::Readiness),
+            "details" => Some(Self::Details),
+            _ => None,
+        }
+    }
+}
+
+/// How a workspace's admins hear by email, where the instance sends email,
+/// of members' Claude connections that run out or stop working. The People
+/// tab shows them whatever it says, and each member hears of their own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeAdminEmail {
+    /// Not by email.
+    Off,
+    /// As each member hears: 30 and 7 days before their token runs out,
+    /// and as soon as one stops working.
+    Each,
+    /// One email a week, while a member's token runs out within 30 days or
+    /// stopped working.
+    #[default]
+    Weekly,
+}
+
+impl ClaudeAdminEmail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Each => "each",
+            Self::Weekly => "weekly",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "each" => Some(Self::Each),
+            "weekly" => Some(Self::Weekly),
+            _ => None,
+        }
+    }
+}
+
+/// What a workspace's admins see of its members' Claude connections, and
+/// how they hear of them ([`Workspace::claude_oversight`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClaudeOversightSettings {
+    /// What its admins see: its own choice, within `most`.
+    pub oversight: ClaudeOversight,
+    /// The most the instance lets them see.
+    pub most: ClaudeOversight,
+    /// Its admins see how often members' sessions paused on usage limits
+    /// (with [`ClaudeOversight::Details`]).
+    pub limit_pauses: bool,
+    /// The instance lets them ([`InstanceSettings::claude_limit_pauses`]).
+    pub limit_pauses_allowed: bool,
+    pub admin_email: ClaudeAdminEmail,
+}
+
+/// `GET /api/v1/workspaces/{id}/claude` (its admins), and `GET
+/// /api/v1/admin/claude` (instance admins, where the instance lets them):
+/// what each person's sessions run on, as much of it as they see.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClaudeOverview {
+    /// How much they see: with [`ClaudeOversight::Off`], nobody is listed.
+    pub oversight: ClaudeOversight,
+    /// They see [`MemberClaude::pauses`].
+    pub limit_pauses: bool,
+    /// The instance takes admin tokens, which set people's Claude tokens
+    /// (`fctl admin users set … --claude-token`).
+    pub admin_tokens: bool,
+    pub members: Vec<MemberClaude>,
+}
+
+/// Whether someone's sessions can run on Claude, there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeState {
+    /// No Claude connection: their sessions can't start.
+    None,
+    /// Connected, and no session ran on it yet.
+    Unused,
+    /// Claude takes it.
+    Works,
+    /// Claude refused it, or ended the login, and they have no other
+    /// connection: their sessions can't run.
+    Ended,
+}
+
+/// One person's Claude connection, as their admins see it: the one their
+/// sessions run on there (the one they chose for the workspace, else their
+/// default, else their newest that works), or, when none works, the one
+/// that ended.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct MemberClaude {
+    pub user: UserRef,
+    /// The address they are a member as (their primary one in Admin →
+    /// People).
+    pub email: String,
+    pub state: ClaudeState,
+    /// When its long-lived token runs out. Absent for logins, which Claude
+    /// renews, and for tokens kept on runners, which fctl never reads.
+    pub runs_out_at: Option<Millis>,
+    /// `runs_out_at` is a year after the token was connected, as nobody
+    /// said when `claude setup-token` made it: around then, maybe sooner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub runs_out_estimated: bool,
+    /// When fctl found it ended (`state` is `ended`).
+    pub ended_at: Option<Millis>,
+    /// Their sessions there wait for a usage limit to reset, until then.
+    pub paused_until: Option<Millis>,
+    /// Which limit: Claude's name for it (`five_hour`, `seven_day`,
+    /// `seven_day_opus`, …).
+    pub paused_limit: Option<String>,
+    /// With [`ClaudeOversight::Details`].
+    pub connection: Option<MemberClaudeConnection>,
+    /// Where they see them ([`ClaudeOverview::limit_pauses`]).
+    pub pauses: Option<LimitPauses>,
+}
+
+/// What kind of Claude connection someone's sessions run on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeConnectionKind {
+    /// A long-lived token from `claude setup-token`, which fctl keeps.
+    Token,
+    /// A full Claude login, which Claude renews.
+    Login,
+    /// A long-lived token kept on their runners, never given to fctl.
+    OnRunners,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct MemberClaudeConnection {
+    pub kind: ClaudeConnectionKind,
+    /// An admin token set it (`PUT /api/v1/admin/users/{user}/claude`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub set_by_admin_token: bool,
+    /// They chose it for this workspace; otherwise it is their default, or
+    /// their newest.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub chosen_here: bool,
+    /// Its plan: `pro`, `max`, `team`, `enterprise`, as its login said, or
+    /// `ultra`, as its limits show. Absent while unknown: a long-lived
+    /// token says none.
+    pub plan: Option<String>,
+    pub connected_at: Millis,
+    /// When Claude last answered it.
+    pub answered_at: Option<Millis>,
+    /// When a session last took it.
+    pub used_at: Option<Millis>,
+}
+
+/// How often someone's sessions paused on a Claude usage limit, as fctl
+/// counts them for 30 days.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct LimitPauses {
+    /// In the last 7 days.
+    pub week: u32,
+    /// In the last 30 days.
+    pub month: u32,
+    pub last_at: Option<Millis>,
+    /// The limit of the last one (`five_hour`, `seven_day`, …).
+    pub last_limit: Option<String>,
 }
 
 /// Where a Claude plan limit stands, as Claude reported it for the limit
@@ -4976,6 +5549,11 @@ pub struct AddClaudeTokenRequest {
     /// The output of `claude setup-token` (`sk-ant-oat01-…`).
     pub token: String,
     pub label: Option<String>,
+    /// When `claude setup-token` made it, if the person knows: it runs out
+    /// a year on. Absent, fctl counts the year from now and says it runs
+    /// out around then ([`ClaudeCredentialInfo::expiry_estimated`]). The
+    /// same token connected again keeps the date it had.
+    pub made_at: Option<Millis>,
 }
 
 /// `POST /api/v1/me/claude/on-runners`: connects the Claude token the

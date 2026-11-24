@@ -544,7 +544,7 @@ itself.
 | `GET /api/v1/admin/users/{user}` | one person |
 | `PATCH /api/v1/admin/users/{user}` | `{"given_name", "family_name", "name", "preferred_name", "email", "commit_email", "status"}`: a new `email` becomes their primary address, and the one it replaces stops signing in; `""` clears `family_name`, `preferred_name` and `commit_email`; `"status": "disabled"` signs them out and stops the sessions on their subscription, `"active"` lets them in again |
 | `PUT`, `DELETE /api/v1/admin/users/{user}/avatar` | their picture, a PNG, JPEG, GIF or WebP image of at most 256 KB as `application/octet-stream`; or their initials again |
-| `PUT`, `DELETE /api/v1/admin/users/{user}/claude` | the Claude token their sessions run on, `{"token": "sk-ant-oat01-…", "label": "Acme seat"}` from `claude setup-token`: setting it again replaces it, and the first becomes their default; their own Claude connections stay theirs |
+| `PUT`, `DELETE /api/v1/admin/users/{user}/claude` | the Claude token their sessions run on, `{"token": "sk-ant-oat01-…", "label": "Acme seat", "made_at": 1795435200000}` from `claude setup-token`: setting it again replaces it, and the first becomes their default; their own Claude connections stay theirs. `made_at`, when `claude setup-token` made it, says when it runs out, a year on; without it fctl counts the year from now and the answer's `claude.expiry_estimated` says so. Setting the same token again keeps the date it had |
 | `PUT /api/v1/admin/users/{user}/workspaces/{workspace}` | makes them a workspace's member, `{"role": "member"}`, or admin, `"admin"`, as their primary address, or gives them that role there |
 | `DELETE /api/v1/admin/users/{user}/workspaces/{workspace}` | takes them out of it, with its projects; their sessions there stop |
 | `PUT`, `DELETE /api/v1/admin/users/{user}/projects/{project}` | makes a member of its workspace a project's `viewer`, `editor`, `maintainer` or `owner` (`{"role": "editor"}`), or takes them out of it |
@@ -600,6 +600,56 @@ sessions' snapshots take now: `{"instance": true, "max_mb": 200, "kept":
 {"count", "bytes"}, "buckets": [{"bucket": "s3://acme-fctl", "count",
 "bytes"}]}`, the ones the control plane keeps and those in its runners'
 own buckets, within the workspace's days.
+
+A workspace's admins read what each member's sessions there run on with
+`GET /api/v1/workspaces/{id}/claude`
+([`ClaudeOverview`](../crates/fctl-proto/src/api.rs)): each member's
+state (`none`, `unused`, `works`, `ended`), when their long-lived token
+runs out (`runs_out_at`, `runs_out_estimated`), whether their sessions
+wait for a usage limit to reset (`paused_until`), and, as much as they
+see, the connection's kind, plan and last answer and the limit pauses of
+7 and 30 days; never a token, its account or its label. They choose how
+much they see and how they hear by email (`claude_oversight`,
+`claude_limit_pauses`, `claude_admin_email` in `PATCH
+/api/v1/workspaces/{id}`), within what the instance's admins let them
+(`claude_oversight`, `claude_limit_pauses` in `PATCH
+/api/v1/admin/settings`, with `claude_instance_view`, which opens `GET
+/api/v1/admin/claude` to them, and `claude_refusals`)
+([Claude seats](organizations.md#claude-seats)). People connect a
+long-lived token with `POST /api/v1/me/claude/token`, `{"token", "label",
+"made_at"}`.
+
+## Sign-in rules
+
+An instance's admins require a provider of the people at some domains
+([Requiring Google for your domains](self-hosting.md#requiring-google-for-your-domains)).
+`GET /api/v1/admin/sign-in` says how people sign in: the providers (with
+the redirect URI each one's OAuth client lists), the rules and whom each
+covers, how many people have a password, a passkey or no way in yet, and
+how the caller's own sign-in was made. `POST
+/api/v1/admin/sign-in/preview` with `{"rules": […]}` says what saving those
+rules would do, changing nothing: whose passwords and passkeys would stop
+working, who signs in with the provider already, and whether it would sign
+the caller out (`"you": "signs_out"`). Saving them is `PATCH
+/api/v1/admin/settings` with `sign_in`, the whole list:
+
+```sh
+curl -sS -X PATCH "$FCTL_SERVER/api/v1/admin/settings" -H "Authorization: Bearer $FCTL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sign_in": [{"domains": ["acme.com", "acme.dev"], "provider": "google", "passkeys": false}]}'
+```
+
+It answers `409` (`conflict`) where it would sign out the caller, whose
+sign-in doesn't meet it, and asks them to confirm it's them
+(`verification_required`) where it lets anyone sign in another way. A CLI's
+or an access token's request whose sign-in a rule doesn't meet answers
+`401` (`unauthorized`), with what to do. `self_sign_up` in the same request
+says whether signing in makes accounts. `DELETE
+/api/v1/admin/users/{user}/identities/google` unlinks someone's Google
+account, for when theirs was recreated or its address handed on. Each token in `GET
+/api/v1/auth/tokens` says how its sign-in was made (`method`: `password`,
+`passkey` or `google`), and `GET /api/v1/auth/me` the rule that covers you
+(`sign_in`).
 
 ## Runner pools
 

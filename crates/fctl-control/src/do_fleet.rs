@@ -261,17 +261,16 @@ fn pick_runner(
     wait: bool,
 ) -> std::result::Result<(String, String), Wait> {
     if want.snapshot {
-        // One in a bucket of its runner's own, a runner with that bucket.
-        let bucket = want
-            .snapshot_location
-            .as_deref()
-            .and_then(fctl_domain::snapshots::bucket_of);
+        // One in a bucket of its runner's own, a runner whose host reads it
+        // there: with that bucket, under the same prefix.
+        let location = want.snapshot_location.as_deref();
         let restoring: Vec<&Candidate> = candidates
             .iter()
             .filter(|c| {
                 home == Some(c.id.as_str())
                     || (c.snapshots
-                        && bucket.is_none_or(|b| c.snapshot_bucket.as_deref() == Some(b)))
+                        && location
+                            .is_none_or(|l| c.snapshot_bucket.as_ref().is_some_and(|b| b.holds(l))))
             })
             .collect();
         match pick_from(&restoring, want, labels, home, false) {
@@ -312,9 +311,9 @@ struct Candidate {
     /// Its pool packs sessions onto the busiest runner with room.
     packed: bool,
     /// Its host restores session snapshots ([`FEATURE_SNAPSHOTS`]), and the
-    /// bucket it keeps them in, if it has one of its own.
+    /// bucket it keeps them in, under its prefix, if it has one of its own.
     snapshots: bool,
-    snapshot_bucket: Option<String>,
+    snapshot_bucket: Option<fctl_domain::snapshots::Bucket>,
 }
 
 /// Whose sessions a runner runs, and the pool it is in, as D1 had it at
@@ -2712,8 +2711,7 @@ impl FleetObject {
                     snapshot_bucket: hello
                         .snapshot_store
                         .as_ref()
-                        .and_then(|s| fctl_domain::snapshots::Bucket::parse(&s.url).ok())
-                        .map(|b| b.name),
+                        .and_then(|s| fctl_domain::snapshots::Bucket::parse(&s.url).ok()),
                     serves,
                 })
             })
@@ -3363,7 +3361,7 @@ impl FleetObject {
                     worker::Delay::from(std::time::Duration::from_millis(250)).await;
                 }
                 self.refreshing.borrow_mut().insert(cred_id.clone());
-                let result = spec::claude_credential(&db, &keys, &cred_id, now).await;
+                let result = spec::claude_credential(&cfg, &db, &keys, &cred_id, now).await;
                 self.refreshing.borrow_mut().remove(&cred_id);
                 Ok(Credentials {
                     claude: Some(result.map_err(|e| e.0)?),
@@ -4172,7 +4170,7 @@ mod tests {
             },
             packed: false,
             snapshots,
-            snapshot_bucket: bucket.map(str::to_owned),
+            snapshot_bucket: bucket.and_then(|b| fctl_domain::snapshots::Bucket::parse(b).ok()),
         }
     }
 
@@ -4200,8 +4198,8 @@ mod tests {
     fn a_resume_waits_a_while_for_a_runner_with_its_snapshots_bucket() {
         let want = resume(Some("s3://acme/fctl/ses_1/snp_1"));
         let busy = [
-            runner("rnr_bucket", 1, true, Some("acme")),
-            runner("rnr_other", 0, true, Some("other")),
+            runner("rnr_bucket", 1, true, Some("s3://acme/fctl")),
+            runner("rnr_other", 0, true, Some("s3://other/fctl")),
             runner("rnr_none", 0, true, None),
         ];
         // The runner with its bucket is busy: it waits for it, while it
@@ -4211,13 +4209,30 @@ mod tests {
         assert!(picked(&busy, &want, false).is_ok_and(|id| id != "rnr_bucket"));
         // With room there, it goes there.
         let room = [
-            runner("rnr_other", 0, true, Some("other")),
-            runner("rnr_bucket", 0, true, Some("acme")),
+            runner("rnr_other", 0, true, Some("s3://other/fctl")),
+            runner("rnr_bucket", 0, true, Some("s3://acme/fctl")),
         ];
         assert_eq!(picked(&room, &want, true).as_deref(), Ok("rnr_bucket"));
         // With no runner online that has its bucket, it doesn't wait.
-        let none = [runner("rnr_other", 0, true, Some("other"))];
+        let none = [runner("rnr_other", 0, true, Some("s3://other/fctl"))];
         assert_eq!(picked(&none, &want, true).as_deref(), Ok("rnr_other"));
+    }
+
+    /// Runners on one bucket under different prefixes read only their own
+    /// snapshots: a resume waits for one under its snapshot's.
+    #[wasm_bindgen_test]
+    fn a_resume_waits_for_a_runner_under_its_snapshots_prefix() {
+        let want = resume(Some("s3://acme/team-a/ses_1/snp_1"));
+        let busy = [
+            runner("rnr_a", 1, true, Some("s3://acme/team-a")),
+            runner("rnr_b", 0, true, Some("s3://acme/team-b")),
+        ];
+        assert_eq!(picked(&busy, &want, true), Err(Wait::Busy));
+        let room = [
+            runner("rnr_b", 0, true, Some("s3://acme/team-b")),
+            runner("rnr_a", 0, true, Some("s3://acme/team-a")),
+        ];
+        assert_eq!(picked(&room, &want, true).as_deref(), Ok("rnr_a"));
     }
 
     #[wasm_bindgen_test]

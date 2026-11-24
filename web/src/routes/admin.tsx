@@ -16,6 +16,7 @@ import {
   Globe,
   History,
   Inbox,
+  KeyRound,
   LayoutGrid,
   Link2,
   Mail,
@@ -25,6 +26,7 @@ import {
   ShieldCheck,
   ShieldOff,
   Trash2,
+  Unlink,
   Users as UsersIcon,
   X,
 } from "lucide-react";
@@ -35,6 +37,7 @@ import { GithubAvatar } from "@/components/github-avatar";
 import { PageTabs, TabCount } from "@/components/page-tabs";
 import { DriverLine } from "@/components/runner-driver";
 import { SnapshotStoreLine } from "@/components/runner-snapshots";
+import { SignInAdmin } from "@/components/sign-in/admin";
 import {
   Avatar,
   AvatarStack,
@@ -53,6 +56,7 @@ import {
   Section,
   Select,
   type SelectOption,
+  Skeleton,
   Switch,
   toast,
 } from "@/components/ui";
@@ -61,6 +65,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import type { AuditNames } from "@/lib/audit";
+import { summary as claudeSummary, facts, factsText, OVERSIGHT } from "@/lib/claude-oversight";
 import { cn } from "@/lib/cn";
 import { exportEvery } from "@/lib/data-export";
 import { invitationMail, ordered, requestState } from "@/lib/early-access";
@@ -81,7 +86,16 @@ import { installCommand } from "@/lib/install";
 import { keys, queryClient, useInstance, useMe, useRunners, useWorkspaces } from "@/lib/queries";
 import { maxWorkspacesWords } from "@/lib/workspaces";
 
-type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "early-access" | "settings" | "audit";
+type Tab =
+  | "people"
+  | "workspaces"
+  | "github"
+  | "runners"
+  | "access"
+  | "sign-in"
+  | "early-access"
+  | "settings"
+  | "audit";
 
 const TABS: { tab: Tab; label: string }[] = [
   { tab: "people", label: "People" },
@@ -89,6 +103,7 @@ const TABS: { tab: Tab; label: string }[] = [
   { tab: "github", label: "GitHub" },
   { tab: "runners", label: "Runners" },
   { tab: "access", label: "Access" },
+  { tab: "sign-in", label: "Sign-in" },
   // Where the instance takes requests for early access.
   { tab: "early-access", label: "Early access" },
   { tab: "settings", label: "Settings" },
@@ -97,8 +112,9 @@ const TABS: { tab: Tab; label: string }[] = [
 
 /**
  * Each tab's icon, as the rest of the app draws what it holds: people, the grid Settings draws
- * workspaces with, GitHub's mark, the chip runners are, a door for who gets in, the inbox requests
- * land in, the sidebar's gear, and a clock turning back for what happened.
+ * workspaces with, GitHub's mark, the chip runners are, a door for who gets in, a key for how they
+ * sign in, the inbox requests land in, the sidebar's gear, and a clock turning back for what
+ * happened.
  */
 const ICONS: Record<Tab, (className: string) => ReactNode> = {
   people: (className) => <UsersIcon className={className} aria-hidden="true" />,
@@ -106,6 +122,7 @@ const ICONS: Record<Tab, (className: string) => ReactNode> = {
   github: (className) => <GithubIcon className={className} />,
   runners: (className) => <Cpu className={className} aria-hidden="true" />,
   access: (className) => <DoorOpen className={className} aria-hidden="true" />,
+  "sign-in": (className) => <KeyRound className={className} aria-hidden="true" />,
   "early-access": (className) => <Inbox className={className} aria-hidden="true" />,
   settings: (className) => <Settings className={className} aria-hidden="true" />,
   audit: (className) => <History className={className} aria-hidden="true" />,
@@ -144,6 +161,7 @@ export function Admin() {
         {tab === "workspaces" && <Workspaces />}
         {tab === "github" && <Github />}
         {tab === "access" && <Access />}
+        {tab === "sign-in" && <SignInTab />}
         {tab === "early-access" && early && <EarlyAccess />}
         {tab === "runners" && <Runners />}
         {tab === "settings" && <InstanceSettings />}
@@ -588,8 +606,23 @@ function Users() {
     onError: (e) => toast(e.message, "error"),
   });
   const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
+  // Where the instance lets its admins see them, what everyone's sessions run on.
+  const seesClaude = !!settings.data?.claude_instance_view;
+  const claude = useQuery({ queryKey: keys.adminClaude, queryFn: api.adminClaude, enabled: seesClaude });
+  const claudeOf = new Map(claude.data?.members.map((m) => [m.user.id, m]));
+  const instanceName = useInstance().data?.name ?? "this instance";
   const [reset, setReset] = useState<string | null>(null);
   const [resetTwoFactor, setResetTwoFactor] = useState<G.User | null>(null);
+  const [unlinking, setUnlinking] = useState<G.User | null>(null);
+  const unlink = useMutation({
+    mutationFn: (u: G.User) => api.adminUnlink(u.id, "google"),
+    onSuccess: (u) => {
+      setUnlinking(null);
+      void users.refetch();
+      toast(`Unlinked ${u.name}'s Google account: their next Google sign-in links the one they sign in with`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
   const forget = useMutation({
     mutationFn: (id: string) => api.resetTwoFactor(id),
     onSuccess: (u) => {
@@ -625,6 +658,30 @@ function Users() {
         </Button>
       </div>
       <InviteDialog open={inviting} onClose={() => setInviting(false)} />
+      {seesClaude &&
+        (claude.isError ? (
+          <p className="mb-3 text-[12.5px] text-ink-3">
+            <span className="text-danger">Claude connections didn't load:</span> {claude.error.message}{" "}
+            <button
+              type="button"
+              className="underline underline-offset-2"
+              onClick={() => void claude.refetch()}
+            >
+              Try again
+            </button>
+          </p>
+        ) : claude.data ? (
+          <p className="mb-3 text-[13px] text-ink-2">
+            {claudeSummary(
+              claude.data.members.filter(
+                (m) => users.data?.users.some((u) => u.id === m.user.id && u.status === "active") ?? true,
+              ),
+              instanceName,
+            )}
+          </p>
+        ) : (
+          <Skeleton className="mb-3 h-4 w-80" />
+        ))}
       <ul className="border-t border-line">
         {users.data?.users.map((u) => (
           <li
@@ -668,6 +725,13 @@ function Users() {
                     <span className="text-amber"> · sets up two-factor before anything else</span>
                   )}
                 </div>
+                {seesClaude && (
+                  <AdminClaudeLine
+                    member={claudeOf.get(u.id)}
+                    loading={claude.isPending}
+                    place={instanceName}
+                  />
+                )}
               </div>
               <div className="-ml-1 flex shrink-0 flex-wrap items-center gap-1 sm:ml-0">
                 {u.role === "owner" ? (
@@ -710,6 +774,16 @@ function Users() {
                           onClick={() => setResetTwoFactor(u)}
                         >
                           Reset two-factor
+                        </Button>
+                      )}
+                      {u.providers.includes("google") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<Unlink className="size-3.5" />}
+                          onClick={() => setUnlinking(u)}
+                        >
+                          Unlink Google
                         </Button>
                       )}
                       <Button
@@ -759,6 +833,32 @@ function Users() {
         {reset && <CodeBox value={reset} />}
       </Dialog>
       <Dialog
+        open={!!unlinking}
+        onClose={() => setUnlinking(null)}
+        title={unlinking ? `Unlink ${unlinking.name}'s Google account?` : "Unlink their Google account?"}
+        description="For when their Google account was recreated, or its address handed to someone else: an account of theirs that is gone keeps the new one from linking where their domain signs in with Google."
+      >
+        <div className="flex flex-col gap-5">
+          <p className="text-[13.5px] leading-relaxed text-ink-2">
+            Google stops signing them in, and they are emailed about it when email is set up. Where their
+            domain signs in with Google, whoever next signs in with Google as their address there links to
+            their account: make sure that will be them.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setUnlinking(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              loading={unlink.isPending}
+              onClick={() => unlinking && unlink.mutate(unlinking)}
+            >
+              Unlink Google
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+      <Dialog
         open={!!resetTwoFactor}
         onClose={() => setResetTwoFactor(null)}
         title={`Reset ${resetTwoFactor?.name ?? "their"} two-factor sign-in?`}
@@ -788,6 +888,34 @@ function Users() {
           </div>
         </div>
       </Dialog>
+    </div>
+  );
+}
+
+/** Under someone in Admin → People: what their sessions run on, the whole of it where the pointer rests. */
+function AdminClaudeLine({
+  member,
+  loading,
+  place,
+}: {
+  member: G.MemberClaude | undefined;
+  loading: boolean;
+  place: string;
+}) {
+  if (loading) return <Skeleton className="mt-1.5 h-3 w-64" />;
+  if (!member) return null;
+  return (
+    <div className="mt-0.5 text-[12px] leading-snug text-ink-3" title={factsText(member, place)}>
+      <span className="sr-only">Claude: </span>
+      {facts(member, place).map((f, i) => (
+        <span
+          key={f.text}
+          className={f.tone === "warn" ? "text-amber" : f.tone === "danger" ? "text-danger" : ""}
+        >
+          {i > 0 && <span className="text-ink-4"> · </span>}
+          {f.text}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1682,7 +1810,8 @@ function RunnerImages({ runner: r }: { runner: G.Runner }) {
   );
 }
 
-function InstanceSettings() {
+/** The instance's settings, and saving a change to them with a toast that says what it did. */
+function useInstanceSettings() {
   const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
   const save = useMutation({
     mutationFn: (b: G.UpdateInstanceSettingsRequest) => api.updateInstanceSettings(b),
@@ -1692,18 +1821,45 @@ function InstanceSettings() {
       void queryClient.invalidateQueries({ queryKey: keys.me });
       void queryClient.invalidateQueries({ queryKey: keys.users });
       // The workspace list says how many you can be in and whether you create them.
-      if (b.max_workspaces !== undefined || b.members_create_workspaces !== undefined)
+      if (
+        b.max_workspaces !== undefined ||
+        b.members_create_workspaces !== undefined ||
+        b.claude_oversight !== undefined ||
+        b.claude_limit_pauses !== undefined
+      ) {
         void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+        void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+      }
+      if (b.claude_instance_view !== undefined)
+        void queryClient.invalidateQueries({ queryKey: keys.adminClaude });
+      // How people sign in says whether signing in makes accounts.
+      if (b.self_sign_up !== undefined) void queryClient.invalidateQueries({ queryKey: keys.signIn });
       toast(settingsSaved(s, b));
     },
     onError: (e) => toast(e.message, "error"),
   });
+  return { settings, save };
+}
+
+/** Admin → Sign-in: how people sign in, the providers and the domains that require one, then two-factor sign-in. */
+function SignInTab() {
+  const { settings, save } = useInstanceSettings();
+  return (
+    <>
+      <SignInAdmin save={(b) => save.mutate(b)} saving={save.isPending} />
+      <SignInSettings settings={settings.data} save={(b) => save.mutate(b)} saving={save.isPending} />
+    </>
+  );
+}
+
+function InstanceSettings() {
+  const { settings, save } = useInstanceSettings();
   const s = settings.data;
   return (
     <>
-      <SignInSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <SensitiveActions settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <ServiceAccountSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
+      <ClaudeOversightSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <SnapshotSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <Section title="Agents" description="What projects may let their agents do on this instance.">
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
@@ -2048,6 +2204,10 @@ function SnapshotSettings({
 
 /** What changed, for the toast. */
 function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest): string {
+  if (b.self_sign_up !== undefined)
+    return s.self_sign_up
+      ? "Signing in makes accounts again, where the allowlist admits the address"
+      : "Only invitations, addresses you allow and admin tokens make accounts now";
   if (b.snapshots !== undefined)
     return s.snapshots
       ? "Sessions save snapshots again"
@@ -2083,9 +2243,129 @@ function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest
     return s.members_create_workspaces
       ? "Everyone can create workspaces"
       : "Only instance admins can create workspaces now";
+  if (b.claude_oversight !== undefined)
+    return {
+      details: "Workspace admins can see the details of their members' Claude connections",
+      readiness: "Workspace admins see only whether their members' sessions can run on Claude",
+      off: "Workspace admins see nothing of their members' Claude connections now",
+    }[s.claude_oversight];
+  if (b.claude_limit_pauses !== undefined)
+    return s.claude_limit_pauses
+      ? "Workspace admins can see how often their members' sessions paused on limits"
+      : "Workspace admins no longer see their members' limit pauses";
+  if (b.claude_instance_view !== undefined)
+    return s.claude_instance_view
+      ? "Admin → People shows everyone's Claude connection"
+      : "Admin → People no longer shows Claude connections";
+  if (b.claude_refusals !== undefined)
+    return `fctl marks a token ended once Claude refused it in ${refusalsWords(s.claude_refusals)}`;
   return s.publish_screenshots
     ? "Projects can now publish screenshots"
     : "Published screenshots are off and offline";
+}
+
+/** "1 session", "2 sessions". */
+const refusalsWords = (n: number) => (n === 1 ? "1 session" : `${n} sessions`);
+
+/**
+ * What workspace admins may see of their members' Claude connections, whether this instance's admins
+ * see everyone's, and how sure fctl is before it marks a token ended. Never the tokens.
+ */
+function ClaudeOversightSettings({
+  settings: s,
+  save,
+  saving,
+}: {
+  settings?: G.InstanceSettings;
+  save: (b: G.UpdateInstanceSettingsRequest) => void;
+  saving: boolean;
+}) {
+  const oversight = s?.claude_oversight ?? "details";
+  return (
+    <Section
+      title="Claude connections"
+      description="What admins see of the Claude subscriptions people's sessions run on: never a token, its account or its label."
+    >
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Workspace admins see
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              {oversight === "details"
+                ? "On each workspace's People tab: what kind of connection each member's sessions run on, its plan, when Claude last answered it and when it runs out."
+                : oversight === "readiness"
+                  ? "On each workspace's People tab: whether each member's sessions can run, and when their token runs out. Not the kind of connection or its plan."
+                  : "Nothing of their members' Claude connections, and fctl emails them nothing of them."}{" "}
+              The most they may: each workspace chooses within it, and lowering it lowers those that chose
+              more.
+            </span>
+          </span>
+          <Select
+            size="sm"
+            aria-label="What workspace admins see of their members' Claude connections"
+            className="shrink-0"
+            value={s && oversight}
+            disabled={!s || saving}
+            options={OVERSIGHT}
+            onChange={(v) => save({ claude_oversight: v })}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Limit pauses
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              {oversight === "details"
+                ? "Workspace admins see how often their members' sessions paused on usage limits, in the last 7 and 30 days, so that they know whose plan runs short. Either way they see whose sessions wait for a limit to reset now."
+                : "Only where workspace admins see the details. Either way they see whose sessions wait for a limit to reset now."}
+            </span>
+          </span>
+          <Switch
+            checked={(s?.claude_limit_pauses ?? true) && oversight === "details"}
+            disabled={!s || saving || oversight !== "details"}
+            onChange={(v) => save({ claude_limit_pauses: v })}
+            label="Limit pauses"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Admin → People shows everyone's
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              This instance's admins see each account's Claude connection there, with its plan, when it runs
+              out and its limit pauses: for an instance that sets people's seats with admin tokens.
+            </span>
+          </span>
+          <Switch
+            checked={s?.claude_instance_view ?? false}
+            disabled={!s || saving}
+            onChange={(v) => save({ claude_instance_view: v })}
+            label="Admin → People shows everyone's Claude connection"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Refusals before a token ends
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              In how many sessions Claude must refuse a token since it last answered it before fctl marks it
+              ended and tells its person: more than one, so that a moment's trouble at Claude doesn't.
+            </span>
+          </span>
+          <Select
+            size="sm"
+            aria-label="Refusals before fctl marks a token ended"
+            className="shrink-0"
+            value={s && String(s.claude_refusals)}
+            disabled={!s || saving}
+            options={[1, 2, 3, 4, 5].map((n) => ({
+              value: String(n),
+              label: refusalsWords(n),
+              description: n === 2 ? "The default" : n === 1 ? "At the first refusal" : undefined,
+            }))}
+            onChange={(v) => save({ claude_refusals: Number(v) })}
+          />
+        </div>
+      </div>
+    </Section>
+  );
 }
 
 /**
@@ -2184,6 +2464,12 @@ function SignInSettings({
     max_workspaces: 5,
     snapshots: true,
     max_snapshot_mb: 200,
+    sign_in: [],
+    self_sign_up: true,
+    claude_oversight: "details",
+    claude_limit_pauses: true,
+    claude_instance_view: false,
+    claude_refusals: 2,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);
@@ -2201,8 +2487,8 @@ function SignInSettings({
   const google = confirm?.body.two_factor_google !== undefined;
   return (
     <Section
-      title="Sign-in"
-      description="How people prove it's them. Everyone can turn on two-factor sign-in for themselves in Settings."
+      title="Two-factor sign-in"
+      description="A second factor after a password or Google. Everyone can turn it on for themselves in Settings."
     >
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">

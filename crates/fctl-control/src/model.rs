@@ -77,7 +77,15 @@ pub struct UserRow {
     /// When they last exported their data.
     #[serde(deserialize_with = "opt_int", default)]
     pub exported_at: Option<i64>,
+    /// The providers whose accounts sign in to theirs (JSON array), where
+    /// a query asks for them ([`PROVIDERS_COLUMN`]).
+    #[serde(default)]
+    pub providers: Option<String>,
 }
+
+/// The column of the providers linked to the account of the users table
+/// aliased `u`, for [`UserRow::providers`].
+pub const PROVIDERS_COLUMN: &str = "(SELECT json_group_array(DISTINCT i.provider) FROM identities i WHERE i.user_id = u.id) AS providers";
 
 impl UserRow {
     pub fn role(&self) -> InstanceRole {
@@ -90,6 +98,42 @@ impl UserRow {
 
     pub fn is_active(&self) -> bool {
         self.status == "active"
+    }
+
+    /// The primary instance owner's: it keeps every way in whatever the
+    /// sign-in rules say.
+    pub fn is_owner(&self) -> bool {
+        self.role() == InstanceRole::Owner
+    }
+
+    /// All their addresses: the primary one, then those connected to it.
+    pub fn addresses(&self) -> Vec<String> {
+        let mut all = vec![self.email.clone()];
+        all.extend(self.other_emails());
+        all
+    }
+
+    /// What the instance's sign-in rules require of them, where one covers
+    /// a domain of theirs: never of the primary instance owner.
+    pub fn sign_in_required(
+        &self,
+        settings: &fctl_proto::api::InstanceSettings,
+    ) -> Option<fctl_domain::sign_in::Required> {
+        let addresses = self.addresses();
+        let addresses: Vec<&str> = addresses.iter().map(String::as_str).collect();
+        fctl_domain::sign_in::required(&settings.sign_in, &addresses, self.is_owner())
+    }
+
+    /// Whether a sign-in made `how` lets them in under the instance's
+    /// sign-in rules; else what the rules require.
+    pub fn admits(
+        &self,
+        settings: &fctl_proto::api::InstanceSettings,
+        how: &fctl_domain::sign_in::SignedIn,
+    ) -> Result<(), fctl_domain::sign_in::Required> {
+        let addresses = self.addresses();
+        let addresses: Vec<&str> = addresses.iter().map(String::as_str).collect();
+        fctl_domain::sign_in::admits(&settings.sign_in, &addresses, self.is_owner(), how)
     }
 
     pub fn has_password(&self) -> bool {
@@ -179,6 +223,12 @@ impl UserRow {
             last_active_at: self.last_active_at,
             emails: self.other_emails(),
             workspaces: self.workspace_count.max(0) as u32,
+            providers: self
+                .providers
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<Option<String>>>(j).ok())
+                .map(|v| v.into_iter().flatten().collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -264,6 +314,8 @@ pub struct IdentityRow {
     pub id: String,
     pub provider: String,
     pub email: Option<String>,
+    #[serde(default)]
+    pub vouched_domain: Option<String>,
     pub name: Option<String>,
     pub avatar_url: Option<String>,
     #[serde(deserialize_with = "int")]
@@ -276,6 +328,7 @@ impl IdentityRow {
             id: IdentityId(self.id.clone()),
             provider: self.provider.clone(),
             email: self.email.clone(),
+            domain: self.vouched_domain.clone(),
             name: self.name.clone(),
             avatar_url: self.avatar_url.clone(),
             created_at: self.created_at,
@@ -1389,6 +1442,22 @@ pub struct CredentialRow {
     /// and its sessions run only on those of their runners that keep one.
     #[serde(deserialize_with = "int_bool", default)]
     pub on_runners: bool,
+    /// An admin token set it.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub provisioned: bool,
+    /// When Claude last answered it.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub answered_at: Option<i64>,
+    /// When `claude setup-token` made its long-lived token, as its person
+    /// said: `expires_at` is a year on. None: an estimate.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub made_at: Option<i64>,
+    /// When fctl last warned its person that it runs out.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub warned_at: Option<i64>,
+    /// When fctl marked it ended.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub ended_at: Option<i64>,
 }
 
 /// A credential's plan usage as one JSON array of its `claude_usage` rows,
@@ -1449,6 +1518,64 @@ impl CredentialRow {
             expires_at: self.expires_at,
             usage: plan_usage(self.usage.as_deref()),
             on_runners: self.on_runners,
+            answered_at: self.answered_at,
+            expiry_estimated: self.long_lived() && self.made_at.is_none(),
+            ended_at: self.ended_at.filter(|_| self.status != "active"),
+            provisioned: self.provisioned,
+        }
+    }
+
+    /// A long-lived token fctl keeps, which runs out a year after it was
+    /// made: not a login, which Claude renews, nor one kept on runners.
+    pub fn long_lived(&self) -> bool {
+        self.kind() == ClaudeCredentialKind::SetupToken && !self.on_runners
+    }
+
+    /// When its long-lived token runs out, and whether that is an estimate.
+    pub fn runs_out(&self) -> Option<(i64, bool)> {
+        if !self.long_lived() {
+            return None;
+        }
+        Some(match self.expires_at {
+            Some(at) => (at, self.made_at.is_none()),
+            None => fctl_domain::claude_oversight::runs_out(self.made_at, self.created_at),
+        })
+    }
+
+    /// Its plan, where known: `ultra` when its limits show it, else what
+    /// its login said.
+    pub fn plan(&self) -> Option<String> {
+        let usage = plan_usage(self.usage.as_deref());
+        if fctl_domain::usage::is_ultra(
+            self.subscription_type.as_deref(),
+            self.rate_limit_tier.as_deref(),
+            &usage,
+        ) {
+            return Some("ultra".into());
+        }
+        self.subscription_type.clone()
+    }
+
+    /// What a workspace's admins may know of it
+    /// (`fctl_domain::claude_oversight::member`).
+    pub fn to_connection(&self) -> fctl_domain::claude_oversight::Connection {
+        fctl_domain::claude_oversight::Connection {
+            id: self.id.clone(),
+            kind: if self.on_runners {
+                fctl_proto::api::ClaudeConnectionKind::OnRunners
+            } else if self.kind() == ClaudeCredentialKind::Oauth {
+                fctl_proto::api::ClaudeConnectionKind::Login
+            } else {
+                fctl_proto::api::ClaudeConnectionKind::Token
+            },
+            active: self.status == "active",
+            provisioned: self.provisioned,
+            created_at: self.created_at,
+            answered_at: self.answered_at,
+            used_at: self.last_used_at,
+            runs_out: self.runs_out(),
+            ended_at: self.ended_at,
+            plan: self.plan(),
         }
     }
 }

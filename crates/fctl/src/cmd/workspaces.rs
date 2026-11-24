@@ -156,8 +156,8 @@ pub enum WorkspacesCmd {
     },
     /// Change a workspace's name, address, avatar, rules or setup (admins).
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites", "autopilots", "snapshots", "snapshot_days"])),
-        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set --color '#2a9d8f'           # a color of its own\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites", "autopilots", "snapshots", "snapshot_days", "claude_oversight", "claude_limit_pauses", "claude_admin_email"])),
+        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set --color '#2a9d8f'           # a color of its own\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on\n  fctl workspaces set -w acme --claude-oversight readiness   # less for its admins\n  fctl workspaces set -w acme --claude-admin-email each      # an email for each, not weekly"
     )]
     Set {
         /// The workspace (slug or id); default from `fctl workspaces use`,
@@ -204,6 +204,23 @@ pub enum WorkspacesCmd {
         /// (30 by default).
         #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(1..=365))]
         snapshot_days: Option<u32>,
+        /// What its admins see of members' Claude connections, never a
+        /// token: `details` (the default, where the instance allows it),
+        /// `readiness` (only whether their sessions can run and when their
+        /// token runs out) or `off`. Members see what it is in their
+        /// settings.
+        #[arg(long, value_enum, value_name = "LEVEL")]
+        claude_oversight: Option<super::claude_overview::Oversight>,
+        /// Whether its admins see how often members' sessions paused on
+        /// usage limits in the last 7 and 30 days, where the instance lets
+        /// them (on by default).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        claude_limit_pauses: Option<bool>,
+        /// How its admins hear by email, where the instance sends email, of
+        /// members' tokens that run out or stop working: `each`, `weekly`
+        /// (the default) or `off`.
+        #[arg(long, value_enum, value_name = "HOW")]
+        claude_admin_email: Option<super::claude_overview::AdminEmail>,
     },
     /// Use this workspace by default.
     Use {
@@ -221,12 +238,31 @@ pub enum WorkspacesCmd {
         #[arg(required = true, value_name = "WORKSPACE")]
         workspaces: Vec<String>,
     },
-    /// The people in a workspace, and the invitations nobody answered yet.
+    /// The people in a workspace, and the invitations nobody answered yet;
+    /// with --claude, what each member's sessions there run on (admins).
+    #[command(
+        after_help = "Examples:\n  fctl workspaces members -w acme\n  fctl workspaces members -w acme --claude              # each member's Claude connection\n  fctl workspaces members -w acme --claude --problems   # those whose sessions can't run soon\n  fctl workspaces members -w acme --claude --expiring 7d --json"
+    )]
     Members {
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
+        /// Each member's Claude connection there, as much as its admins see
+        /// (`fctl workspaces set --claude-oversight`): its kind and who set
+        /// it, its plan, when Claude last answered it, when its token runs
+        /// out and how often their sessions paused on usage limits. Never
+        /// the token, its account or its label. For its admins.
+        #[arg(long)]
+        claude: bool,
+        /// Only those whose token runs out within this long: 30d, 2w, 12h.
+        #[arg(long, value_name = "DURATION", requires = "claude", value_parser = super::claude_overview::within)]
+        expiring: Option<i64>,
+        /// Only those whose sessions can't run there (no connection, or one
+        /// that stopped working) or whose token runs out within 30 days (or
+        /// --expiring).
+        #[arg(long, requires = "claude")]
+        problems: bool,
     },
     /// Invite someone to a workspace, by an address they sign in with (admins).
     Invite {
@@ -742,6 +778,10 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     }
                 );
             }
+            // Control planes before it say nothing of it.
+            if let Some(c) = &w.claude_oversight {
+                println!("claude:   {}", super::claude_overview::settings_line(c));
+            }
             if w.blocked {
                 println!(
                     "{}",
@@ -796,6 +836,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             autopilots,
             snapshots,
             snapshot_days,
+            claude_oversight,
+            claude_limit_pauses,
+            claude_admin_email,
         } => {
             let w = resolve(&api, workspace).await?;
             let mut out = w.clone();
@@ -808,6 +851,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 || autopilots.is_some()
                 || snapshots.is_some()
                 || snapshot_days.is_some()
+                || claude_oversight.is_some()
+                || claude_limit_pauses.is_some()
+                || claude_admin_email.is_some()
             {
                 let (color, hex) = color.as_ref().map(Color::request).unzip();
                 out = api
@@ -824,6 +870,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                             autopilots,
                             snapshots,
                             snapshot_days,
+                            claude_oversight: claude_oversight.map(Into::into),
+                            claude_limit_pauses,
+                            claude_admin_email: claude_admin_email.map(Into::into),
                         },
                     )
                     .await?;
@@ -840,6 +889,19 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 return style::print_json(&out);
             }
             println!("{} Saved {}", style::accent("✓"), style::bold(&out.slug));
+            if (claude_oversight.is_some()
+                || claude_limit_pauses.is_some()
+                || claude_admin_email.is_some())
+                && let Some(c) = &out.claude_oversight
+            {
+                println!(
+                    "  {}",
+                    style::dim(&format!(
+                        "Claude: {}",
+                        super::claude_overview::settings_line(c)
+                    ))
+                );
+            }
         }
         WorkspacesCmd::Order { workspaces } => {
             let list = api.order_workspaces(&workspaces).await?;
@@ -864,7 +926,42 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 style::bold(&w.slug)
             );
         }
-        WorkspacesCmd::Members { workspace } => {
+        WorkspacesCmd::Members {
+            workspace,
+            claude: true,
+            expiring,
+            problems,
+        } => {
+            let w = resolve(&api, workspace).await?;
+            if !w.role.is_admin() {
+                bail!(
+                    "Only {}'s admins see its members' Claude connections. Your own: `fctl claude status`.",
+                    w.name
+                );
+            }
+            let overview = api
+                .workspace_claude(w.id.as_str())
+                .await
+                .map_err(|e| super::claude_overview::refused(e, "workspace"))?;
+            let filter = super::claude_overview::Filter { expiring, problems };
+            let now = style::now_ms();
+            let overview = filter.apply(overview, now);
+            if json {
+                return style::print_json(&overview);
+            }
+            for line in super::claude_overview::lines(
+                &overview,
+                super::claude_overview::Place {
+                    workspace: Some(&w.name),
+                    slug: Some(&w.slug),
+                },
+                filter,
+                now,
+            ) {
+                println!("{line}");
+            }
+        }
+        WorkspacesCmd::Members { workspace, .. } => {
             let w = resolve(&api, workspace).await?;
             let list = api.workspace_members(w.id.as_str()).await?;
             if json {

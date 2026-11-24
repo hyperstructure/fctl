@@ -272,14 +272,55 @@ function TokenFlow({ onRunners, onConnected }: { onRunners: boolean; onConnected
   );
 }
 
-/** Making a long-lived token and giving it to fctl. */
+/** When `claude setup-token` made the token being pasted: just now, on a day, or nobody knows. */
+type Made = "now" | "earlier" | "unknown";
+
+const MADE: { value: Made; label: string }[] = [
+  { value: "now", label: "Just now" },
+  { value: "earlier", label: "Earlier" },
+  { value: "unknown", label: "I don't know" },
+];
+
+const YEAR = 365 * 86_400_000;
+
+/** The day an `<input type="date">` holds, at its start in the browser's time zone. */
+const dayStart = (value: string) => {
+  const [y, m, d] = value.split("-").map(Number);
+  return y && m && d ? new Date(y, m - 1, d).getTime() : undefined;
+};
+
+/** `YYYY-MM-DD` of a time, in the browser's time zone, for an `<input type="date">`. */
+const dateValue = (ms: number) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+/** What the token's date comes to, under the choice. */
+function madeHint(made: Made, day: number | undefined, now: number): string {
+  const long = (ms: number) =>
+    new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  if (made === "unknown")
+    return `fctl counts a year from today and says it runs out around ${long(now + YEAR)}: it may be sooner.`;
+  const from = made === "now" ? now : day;
+  if (from === undefined) return "The day claude setup-token printed it: it runs out a year on.";
+  return `It runs out on ${long(from + YEAR)}, a year on. fctl tells you a month and a week before.`;
+}
+
+/** Making a long-lived token and giving it to fctl, and when it was made, which says when it runs out. */
 function PasteSteps({ onConnected }: { onConnected: () => void }) {
   const [token, setToken] = useState("");
+  const [made, setMade] = useState<Made>("now");
+  const [day, setDay] = useState("");
+  const name = useId();
+  const now = Date.now();
+  const madeAt = made === "now" ? now : made === "earlier" ? dayStart(day) : undefined;
   const add = useMutation({
-    mutationFn: () => api.claudeToken({ token: token.trim() }),
+    mutationFn: () => api.claudeToken({ token: token.trim(), made_at: made === "now" ? Date.now() : madeAt }),
     onSuccess: (m) => {
       queryClient.setQueryData(keys.me, m);
       setToken("");
+      setMade("now");
+      setDay("");
       toast("Claude connected: new sessions run on the token");
       onConnected();
     },
@@ -313,11 +354,51 @@ function PasteSteps({ onConnected }: { onConnected: () => void }) {
             variant="primary"
             size="field"
             loading={add.isPending}
-            disabled={!token.trim()}
+            disabled={!token.trim() || (made === "earlier" && madeAt === undefined)}
           >
             Connect
           </Button>
         </form>
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-2 text-[12.5px] text-ink-2">When did claude setup-token make it?</legend>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-lg border border-line bg-sunken p-0.5">
+              {MADE.map((o) => (
+                <label
+                  key={o.value}
+                  className={cn(
+                    "cursor-pointer rounded-md px-3 py-1.5 text-[12.5px] whitespace-nowrap transition-colors has-[:focus-visible]:shadow-[0_0_0_2px_var(--c-accent-soft)]",
+                    made === o.value
+                      ? "bg-raised text-ink shadow-[0_1px_2px_rgb(0_0_0/0.25)]"
+                      : "text-ink-3 hover:text-ink",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name={name}
+                    value={o.value}
+                    checked={made === o.value}
+                    onChange={() => setMade(o.value)}
+                    className="sr-only"
+                  />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+            {made === "earlier" && (
+              <Input
+                type="date"
+                aria-label="The day claude setup-token made it"
+                value={day}
+                min={dateValue(now - YEAR + 86_400_000)}
+                max={dateValue(now)}
+                onChange={(e) => setDay(e.target.value)}
+                className="w-auto"
+              />
+            )}
+          </div>
+          <p className="text-[12.5px] leading-relaxed text-ink-3">{madeHint(made, madeAt, now)}</p>
+        </fieldset>
         {add.error && (
           <p className="text-[12.5px] text-danger" role="alert">
             {add.error.message}
@@ -500,8 +581,7 @@ function SignInFlow({ onConnected }: { onConnected: () => void }) {
 
 /**
  * Under a login Claude ended, which sessions can't run on: signing in again, or connecting a
- * long-lived token, which doesn't end for a year. Only logins end: Claude refuses to refresh them.
- * Tokens from `claude setup-token` aren't refreshed, so fctl never finds one ended.
+ * long-lived token, which doesn't end for a year. Claude ends a login by refusing to renew it.
  */
 export function EndedLogin({ onReconnect }: { onReconnect: (way: Way) => void }) {
   return (
@@ -521,6 +601,49 @@ export function EndedLogin({ onReconnect }: { onReconnect: (way: Way) => void })
         </Button>
         <Button size="sm" variant="ghost" onClick={() => onReconnect("login")}>
           Sign in again
+        </Button>
+      </div>
+    </Banner>
+  );
+}
+
+/**
+ * Under a long-lived token Claude refused in sessions (revoked, or a year old), which fctl marked
+ * ended: making a new one and connecting it. One kept on runners goes on the runners first.
+ */
+export function EndedToken({
+  endedAt,
+  onRunners,
+  provisioned,
+  onReconnect,
+}: {
+  endedAt?: number;
+  onRunners?: boolean;
+  /** Their admins set it with an admin token: they set the next one. */
+  provisioned?: boolean;
+  onReconnect: (way: Way) => void;
+}) {
+  const on = endedAt
+    ? ` on ${new Date(endedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+    : "";
+  return (
+    <Banner tone="error">
+      <p>
+        Claude refused this token{on}, so sessions can't run on it: it was revoked, or its year ran out.{" "}
+        {onRunners
+          ? "Make a new one with claude setup-token, keep it on your runners with fctl host claude set-token, and use it here again."
+          : provisioned
+            ? "Your admins set this token: ask them for a new one, or make one of your own with claude setup-token and connect it here."
+            : "Make a new one with claude setup-token and connect it here."}
+      </p>
+      <div className="mt-2.5 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          icon={<KeyRound className="size-3.5" />}
+          onClick={() => onReconnect("token")}
+        >
+          Connect a new token
         </Button>
       </div>
     </Banner>

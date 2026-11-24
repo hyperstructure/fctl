@@ -196,19 +196,27 @@ impl HttpClient {
         body: Option<Vec<u8>>,
         content_type: Option<&str>,
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
-        let req = request(method, url, token, body, content_type, &self.headers(&[]))?;
+        let req = request(
+            method,
+            url,
+            token,
+            body.map(Bytes::from),
+            content_type,
+            &self.headers(&[]),
+        )?;
         self.finish(url, req).await
     }
 
     /// Sends a request with `headers` besides the usual ones, which they
-    /// replace (a signed `Authorization`, say), and `body`: status, headers
+    /// replace (a signed `Authorization`, say), and `body`, which a caller
+    /// that tries again sends again without copying it: status, headers
     /// and body, whatever the status.
     pub async fn send_with(
         &self,
         method: Method,
         url: &str,
         headers: &[(&str, &str)],
-        body: Option<Vec<u8>>,
+        body: Option<Bytes>,
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
         let req = request(method, url, None, body, None, &self.headers(headers))?;
         self.finish(url, req).await
@@ -495,7 +503,7 @@ fn request(
     method: Method,
     url: &str,
     token: Option<&str>,
-    body: Option<Vec<u8>>,
+    body: Option<Bytes>,
     content_type: Option<&str>,
     headers: &[(&str, &str)],
 ) -> Result<Request<Full<Bytes>>> {
@@ -527,7 +535,7 @@ fn request(
             }
         }
     }
-    req.body(Full::new(Bytes::from(body.unwrap_or_default())))
+    req.body(Full::new(body.unwrap_or_default()))
         .map_err(|e| Error::Other(e.to_string()))
 }
 
