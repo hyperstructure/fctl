@@ -178,6 +178,51 @@ mod tests {
         );
     }
 
+    /// What a Markdown text's fenced code blocks hold, each as a file
+    /// would, with its last newline.
+    fn fenced_blocks(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut block: Option<String> = None;
+        for line in text.lines() {
+            if line.trim_start().starts_with("```") {
+                match block.take() {
+                    Some(b) => out.push(b),
+                    None => block = Some(String::new()),
+                }
+            } else if let Some(b) = block.as_mut() {
+                b.push_str(line);
+                b.push('\n');
+            }
+        }
+        out
+    }
+
+    /// The cloud guide shows the files fctl's repository keeps for it in
+    /// deploy/cloud (which the reference deployments build on) as they
+    /// are, so that the two never say different things.
+    #[test]
+    fn the_cloud_guide_shows_deploy_clouds_files_as_they_are() {
+        let root = root();
+        let guide = std::fs::read_to_string(root.join("docs/runners-in-your-cloud.md")).unwrap();
+        let blocks = fenced_blocks(&guide);
+        let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("deploy/cloud/runner"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        files.push(root.join("deploy/cloud/fctl-runner.pkr.hcl"));
+        files.sort();
+        assert!(files.len() > 10);
+        let differ: Vec<String> = files
+            .iter()
+            .filter(|f| !blocks.contains(&std::fs::read_to_string(f).unwrap()))
+            .map(|f| f.strip_prefix(&root).unwrap_or(f).display().to_string())
+            .collect();
+        assert!(
+            differ.is_empty(),
+            "docs/runners-in-your-cloud.md doesn't show these as they are: {differ:?}"
+        );
+    }
+
     /// llms.txt has the shape https://llmstxt.org asks for: the name as its
     /// heading, then a summary in a quote, and absolute links throughout,
     /// since it is served at fctl.sh, every instance and GitHub alike.

@@ -53,6 +53,7 @@ import {
   Section,
   Select,
   type SelectOption,
+  Skeleton,
   Switch,
   toast,
 } from "@/components/ui";
@@ -61,6 +62,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import type { AuditNames } from "@/lib/audit";
+import { summary as claudeSummary, facts, factsText, OVERSIGHT } from "@/lib/claude-oversight";
 import { cn } from "@/lib/cn";
 import { exportEvery } from "@/lib/data-export";
 import { invitationMail, ordered, requestState } from "@/lib/early-access";
@@ -588,6 +590,11 @@ function Users() {
     onError: (e) => toast(e.message, "error"),
   });
   const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
+  // Where the instance lets its admins see them, what everyone's sessions run on.
+  const seesClaude = !!settings.data?.claude_instance_view;
+  const claude = useQuery({ queryKey: keys.adminClaude, queryFn: api.adminClaude, enabled: seesClaude });
+  const claudeOf = new Map(claude.data?.members.map((m) => [m.user.id, m]));
+  const instanceName = useInstance().data?.name ?? "this instance";
   const [reset, setReset] = useState<string | null>(null);
   const [resetTwoFactor, setResetTwoFactor] = useState<G.User | null>(null);
   const forget = useMutation({
@@ -625,6 +632,30 @@ function Users() {
         </Button>
       </div>
       <InviteDialog open={inviting} onClose={() => setInviting(false)} />
+      {seesClaude &&
+        (claude.isError ? (
+          <p className="mb-3 text-[12.5px] text-ink-3">
+            <span className="text-danger">Claude connections didn't load:</span> {claude.error.message}{" "}
+            <button
+              type="button"
+              className="underline underline-offset-2"
+              onClick={() => void claude.refetch()}
+            >
+              Try again
+            </button>
+          </p>
+        ) : claude.data ? (
+          <p className="mb-3 text-[13px] text-ink-2">
+            {claudeSummary(
+              claude.data.members.filter(
+                (m) => users.data?.users.some((u) => u.id === m.user.id && u.status === "active") ?? true,
+              ),
+              instanceName,
+            )}
+          </p>
+        ) : (
+          <Skeleton className="mb-3 h-4 w-80" />
+        ))}
       <ul className="border-t border-line">
         {users.data?.users.map((u) => (
           <li
@@ -668,6 +699,13 @@ function Users() {
                     <span className="text-amber"> · sets up two-factor before anything else</span>
                   )}
                 </div>
+                {seesClaude && (
+                  <AdminClaudeLine
+                    member={claudeOf.get(u.id)}
+                    loading={claude.isPending}
+                    place={instanceName}
+                  />
+                )}
               </div>
               <div className="-ml-1 flex shrink-0 flex-wrap items-center gap-1 sm:ml-0">
                 {u.role === "owner" ? (
@@ -788,6 +826,34 @@ function Users() {
           </div>
         </div>
       </Dialog>
+    </div>
+  );
+}
+
+/** Under someone in Admin → People: what their sessions run on, the whole of it where the pointer rests. */
+function AdminClaudeLine({
+  member,
+  loading,
+  place,
+}: {
+  member: G.MemberClaude | undefined;
+  loading: boolean;
+  place: string;
+}) {
+  if (loading) return <Skeleton className="mt-1.5 h-3 w-64" />;
+  if (!member) return null;
+  return (
+    <div className="mt-0.5 text-[12px] leading-snug text-ink-3" title={factsText(member, place)}>
+      <span className="sr-only">Claude: </span>
+      {facts(member, place).map((f, i) => (
+        <span
+          key={f.text}
+          className={f.tone === "warn" ? "text-amber" : f.tone === "danger" ? "text-danger" : ""}
+        >
+          {i > 0 && <span className="text-ink-4"> · </span>}
+          {f.text}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1692,8 +1758,17 @@ function InstanceSettings() {
       void queryClient.invalidateQueries({ queryKey: keys.me });
       void queryClient.invalidateQueries({ queryKey: keys.users });
       // The workspace list says how many you can be in and whether you create them.
-      if (b.max_workspaces !== undefined || b.members_create_workspaces !== undefined)
+      if (
+        b.max_workspaces !== undefined ||
+        b.members_create_workspaces !== undefined ||
+        b.claude_oversight !== undefined ||
+        b.claude_limit_pauses !== undefined
+      ) {
         void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+        void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+      }
+      if (b.claude_instance_view !== undefined)
+        void queryClient.invalidateQueries({ queryKey: keys.adminClaude });
       toast(settingsSaved(s, b));
     },
     onError: (e) => toast(e.message, "error"),
@@ -1704,6 +1779,7 @@ function InstanceSettings() {
       <SignInSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <SensitiveActions settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <ServiceAccountSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
+      <ClaudeOversightSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <Section title="Agents" description="What projects may let their agents do on this instance.">
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
           <span>
@@ -1978,9 +2054,129 @@ function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest
     return s.members_create_workspaces
       ? "Everyone can create workspaces"
       : "Only instance admins can create workspaces now";
+  if (b.claude_oversight !== undefined)
+    return {
+      details: "Workspace admins can see the details of their members' Claude connections",
+      readiness: "Workspace admins see only whether their members' sessions can run on Claude",
+      off: "Workspace admins see nothing of their members' Claude connections now",
+    }[s.claude_oversight];
+  if (b.claude_limit_pauses !== undefined)
+    return s.claude_limit_pauses
+      ? "Workspace admins can see how often their members' sessions paused on limits"
+      : "Workspace admins no longer see their members' limit pauses";
+  if (b.claude_instance_view !== undefined)
+    return s.claude_instance_view
+      ? "Admin → People shows everyone's Claude connection"
+      : "Admin → People no longer shows Claude connections";
+  if (b.claude_refusals !== undefined)
+    return `fctl marks a token ended once Claude refused it in ${refusalsWords(s.claude_refusals)}`;
   return s.publish_screenshots
     ? "Projects can now publish screenshots"
     : "Published screenshots are off and offline";
+}
+
+/** "1 session", "2 sessions". */
+const refusalsWords = (n: number) => (n === 1 ? "1 session" : `${n} sessions`);
+
+/**
+ * What workspace admins may see of their members' Claude connections, whether this instance's admins
+ * see everyone's, and how sure fctl is before it marks a token ended. Never the tokens.
+ */
+function ClaudeOversightSettings({
+  settings: s,
+  save,
+  saving,
+}: {
+  settings?: G.InstanceSettings;
+  save: (b: G.UpdateInstanceSettingsRequest) => void;
+  saving: boolean;
+}) {
+  const oversight = s?.claude_oversight ?? "details";
+  return (
+    <Section
+      title="Claude connections"
+      description="What admins see of the Claude subscriptions people's sessions run on: never a token, its account or its label."
+    >
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Workspace admins see
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              {oversight === "details"
+                ? "On each workspace's People tab: what kind of connection each member's sessions run on, its plan, when Claude last answered it and when it runs out."
+                : oversight === "readiness"
+                  ? "On each workspace's People tab: whether each member's sessions can run, and when their token runs out. Not the kind of connection or its plan."
+                  : "Nothing of their members' Claude connections, and fctl emails them nothing of them."}{" "}
+              The most they may: each workspace chooses within it, and lowering it lowers those that chose
+              more.
+            </span>
+          </span>
+          <Select
+            size="sm"
+            aria-label="What workspace admins see of their members' Claude connections"
+            className="shrink-0"
+            value={s && oversight}
+            disabled={!s || saving}
+            options={OVERSIGHT}
+            onChange={(v) => save({ claude_oversight: v })}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Limit pauses
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              {oversight === "details"
+                ? "Workspace admins see how often their members' sessions paused on usage limits, in the last 7 and 30 days, so that they know whose plan runs short. Either way they see whose sessions wait for a limit to reset now."
+                : "Only where workspace admins see the details. Either way they see whose sessions wait for a limit to reset now."}
+            </span>
+          </span>
+          <Switch
+            checked={(s?.claude_limit_pauses ?? true) && oversight === "details"}
+            disabled={!s || saving || oversight !== "details"}
+            onChange={(v) => save({ claude_limit_pauses: v })}
+            label="Limit pauses"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Admin → People shows everyone's
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              This instance's admins see each account's Claude connection there, with its plan, when it runs
+              out and its limit pauses: for an instance that sets people's seats with admin tokens.
+            </span>
+          </span>
+          <Switch
+            checked={s?.claude_instance_view ?? false}
+            disabled={!s || saving}
+            onChange={(v) => save({ claude_instance_view: v })}
+            label="Admin → People shows everyone's Claude connection"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Refusals before a token ends
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              In how many sessions Claude must refuse a token since it last answered it before fctl marks it
+              ended and tells its person: more than one, so that a moment's trouble at Claude doesn't.
+            </span>
+          </span>
+          <Select
+            size="sm"
+            aria-label="Refusals before fctl marks a token ended"
+            className="shrink-0"
+            value={s && String(s.claude_refusals)}
+            disabled={!s || saving}
+            options={[1, 2, 3, 4, 5].map((n) => ({
+              value: String(n),
+              label: refusalsWords(n),
+              description: n === 2 ? "The default" : n === 1 ? "At the first refusal" : undefined,
+            }))}
+            onChange={(v) => save({ claude_refusals: Number(v) })}
+          />
+        </div>
+      </div>
+    </Section>
+  );
 }
 
 /**
@@ -2079,6 +2275,10 @@ function SignInSettings({
     max_workspaces: 5,
     snapshots: true,
     max_snapshot_mb: 200,
+    claude_oversight: "details",
+    claude_limit_pauses: true,
+    claude_instance_view: false,
+    claude_refusals: 2,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

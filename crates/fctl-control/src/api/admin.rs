@@ -37,6 +37,19 @@ pub async fn users(ctx: &Ctx) -> AppResult<Response> {
     })
 }
 
+/// `GET /api/v1/admin/claude` (instance admins, where the instance lets
+/// them see it): every active account's Claude connection, as workspace
+/// admins see their members'.
+pub async fn claude(ctx: &Ctx) -> AppResult<Response> {
+    ctx.admin()?;
+    if !ctx.settings().claude_instance_view {
+        return Err(forbidden(
+            "This instance shows its admins nobody's Claude connections. Turn it on in Admin → Settings (fctl admin set --claude-instance-view on).",
+        ));
+    }
+    http::ok(&crate::claude_oversight::instance(ctx).await?)
+}
+
 /// Someone on the instance, by their user id or any of their addresses.
 async fn user(ctx: &Ctx, who: &str) -> AppResult<UserRow> {
     let found = if who.contains('@') {
@@ -1059,6 +1072,29 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
             ));
         }
         settings.max_snapshot_mb = mb;
+    }
+    // Lowering it lowers the workspaces that chose more: they see what it
+    // lets them (`fctl_domain::claude_oversight::effective`).
+    if let Some(o) = body.claude_oversight {
+        settings.claude_oversight = o;
+    }
+    if let Some(on) = body.claude_limit_pauses {
+        settings.claude_limit_pauses = on;
+    }
+    if let Some(on) = body.claude_instance_view {
+        settings.claude_instance_view = on;
+    }
+    if let Some(n) = body.claude_refusals {
+        if !(1..=fctl_proto::api::MAX_CLAUDE_REFUSALS).contains(&n) {
+            return Err(validation(
+                "claude_refusals",
+                &format!(
+                    "fctl marks a token ended after Claude refused it in 1 to {} sessions",
+                    fctl_proto::api::MAX_CLAUDE_REFUSALS
+                ),
+            ));
+        }
+        settings.claude_refusals = n;
     }
     crate::instance::save(&ctx.db, &settings).await?;
     if gravatar_off {

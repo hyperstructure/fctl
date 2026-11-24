@@ -3363,7 +3363,7 @@ impl FleetObject {
                     worker::Delay::from(std::time::Duration::from_millis(250)).await;
                 }
                 self.refreshing.borrow_mut().insert(cred_id.clone());
-                let result = spec::claude_credential(&db, &keys, &cred_id, now).await;
+                let result = spec::claude_credential(&cfg, &db, &keys, &cred_id, now).await;
                 self.refreshing.borrow_mut().remove(&cred_id);
                 Ok(Credentials {
                     claude: Some(result.map_err(|e| e.0)?),

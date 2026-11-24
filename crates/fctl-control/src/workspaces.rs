@@ -11,8 +11,8 @@ use fctl_domain::github::Binding;
 use fctl_domain::repos::Scope;
 use fctl_domain::workspace as policy;
 use fctl_proto::api::{
-    BaseRole, GithubConnection, GithubConnectionStatus, InstanceSettings, Workspace,
-    WorkspaceInvitation,
+    BaseRole, ClaudeAdminEmail, ClaudeOversight, ClaudeOversightSettings, GithubConnection,
+    GithubConnectionStatus, InstanceSettings, Workspace, WorkspaceInvitation,
 };
 use fctl_proto::session::{UserRef, WorkspaceRef, WorkspaceRole};
 use fctl_proto::{ApiError, CredentialId, ErrorCode, UserId, WorkspaceInviteId};
@@ -40,6 +40,11 @@ macro_rules! successor {
     };
 }
 
+/// For columns whose default is on.
+fn yes() -> bool {
+    true
+}
+
 /// SELECT for workspaces with the caller's membership (`wm`) and what lists
 /// show of them. Bind: `?1` = caller user id.
 pub const WORKSPACE_SELECT: &str = concat!(
@@ -54,6 +59,8 @@ pub const WORKSPACE_SELECT: &str = concat!(
     (SELECT json_group_array(g.account) FROM workspace_github g WHERE g.workspace_id = w.id AND g.status = 'active') AS github, \
     pu.id AS primary_id, pu.name AS primary_name, pu.avatar_url AS primary_avatar, pu.status AS primary_status, \
     w.autopilots AS autopilots, w.snapshots AS snapshots, w.snapshot_days AS snapshot_days, \
+    w.claude_oversight AS claude_oversight, w.claude_limit_pauses AS claude_limit_pauses, \
+    w.claude_admin_email AS claude_admin_email, \
     wa.project_id AS autopilot_project_id, wap.slug AS autopilot_project_slug, \
     wap.name AS autopilot_project_name, wa.state AS autopilot_state, \
     CASE WHEN COALESCE(wm.role, '') IN ('owner', 'admin') \
@@ -112,6 +119,15 @@ pub struct WorkspaceRow {
     pub snapshots: bool,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     pub snapshot_days: Option<i64>,
+    /// What its admins see of members' Claude connections (NULL: the most
+    /// the instance lets them), whether limit pauses too, and how they hear
+    /// by email (`crate::claude_oversight`).
+    #[serde(default)]
+    pub claude_oversight: Option<String>,
+    #[serde(deserialize_with = "int_bool", default = "yes")]
+    pub claude_limit_pauses: bool,
+    #[serde(default)]
+    pub claude_admin_email: Option<String>,
     #[serde(default)]
     pub autopilot_project_id: Option<String>,
     #[serde(default)]
@@ -218,6 +234,7 @@ impl WorkspaceRow {
                     .and_then(|d| u32::try_from(d).ok())
                     .unwrap_or(fctl_domain::snapshots::DEFAULT_DAYS),
             ),
+            claude_oversight: Some(self.claude_oversight(settings)),
             autopilot: self.autopilot(),
             service_accounts: crate::service_accounts::briefs(
                 self.service_accounts.as_deref(),
@@ -232,6 +249,26 @@ impl WorkspaceRow {
                 self.role().is_some_and(|r| r.is_admin()),
             ),
             created_at: self.created_at,
+        }
+    }
+
+    /// What its admins see of members' Claude connections, within what the
+    /// instance lets them, and how they hear of them.
+    pub fn claude_oversight(&self, settings: &InstanceSettings) -> ClaudeOversightSettings {
+        let chosen = self
+            .claude_oversight
+            .as_deref()
+            .and_then(ClaudeOversight::parse);
+        ClaudeOversightSettings {
+            oversight: fctl_domain::claude_oversight::effective(settings.claude_oversight, chosen),
+            most: settings.claude_oversight,
+            limit_pauses: self.claude_limit_pauses && settings.claude_limit_pauses,
+            limit_pauses_allowed: settings.claude_limit_pauses,
+            admin_email: self
+                .claude_admin_email
+                .as_deref()
+                .and_then(ClaudeAdminEmail::parse)
+                .unwrap_or_default(),
         }
     }
 
