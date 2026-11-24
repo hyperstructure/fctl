@@ -1,4 +1,4 @@
-# 0098: Autopilots keep trying after their sessions fail
+# 0100: Autopilots keep trying after their sessions fail
 
 2026-11-23 · accepted
 

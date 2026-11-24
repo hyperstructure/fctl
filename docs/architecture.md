@@ -2969,7 +2969,7 @@ sessions to do it, and sets up what the work needs, as far as they let it
    (`fctl_domain::autopilot::retry_in`), rather than pause it: what fails
    its sessions often mends by itself, a runner that lost its network
    say, and it carries on then
-   ([ADR 0098](adr/0098-autopilots-keep-trying-after-their-sessions-fail.md)).
+   ([ADR 0100](adr/0100-autopilots-keep-trying-after-their-sessions-fail.md)).
    A retry takes the place of its check-in, so that it tries no more often
    than that unless something else wakes it sooner. At the fourth failure
    in a row those who follow its own session hear of it, and again every
@@ -4685,6 +4685,77 @@ refuses requests (`rejected`), the limit is reached, and only then does a
 session's transcript say so. Claude's warning status (`allowed_warning`)
 doesn't count: Claude Code sends it when a limit goes faster than its window
 passes, as with a quarter of the week used in its first day.
+
+### Claude oversight
+
+Sessions run on each person's own subscription, often a Team or Enterprise
+seat their organization gives them, so fctl keeps what it learns of each
+connection: whether Claude takes it, when a long-lived token runs out, and
+how often sessions on it pause on usage limits. People see their own in
+Settings → Claude and `fctl claude status`; a workspace's admins see their
+members' on its People tab and with `fctl workspaces members --claude`, as
+much as the workspace and the instance let them; never a token, its account
+or the label its person gave it. The pure parts are
+`fctl_domain::claude_oversight`'s, the rest `crate::claude_oversight`'s.
+
+- **Answers and refusals.** SessionDO reads each Claude message it stores
+  (`claude_oversight::Seen`): an assistant message is an answer, unless
+  Claude Code made it of an error; one whose `error` is
+  `authentication_failed` is Claude refusing the credential, as it refuses
+  a revoked or expired token. It sets `claude_credentials.answered_at` at a
+  run's first answer, then at most every ten minutes, and a usage reading
+  (`usage::record`) sets it too. A refusal adds a row to `claude_refusals`,
+  one per connection and session; once Claude refused a connection in as
+  many sessions as the instance says (`InstanceSettings.claude_refusals`,
+  2 by default) since it last answered it, fctl marks it `invalid`, with
+  `ended_at`, as it marks a login Claude won't renew (`spec::refresh`), so
+  that a moment's trouble at Claude ends nothing. Agents and hosts need no
+  update: they already pass every Claude message on. Sessions then run on
+  the person's other connection, if one works (`api::sessions::
+  credential_for` takes only working ones); connecting the same token again
+  makes it work again.
+- **Expiry.** A long-lived token works until a year after `claude
+  setup-token` made it, which the token doesn't say. Connecting one takes
+  `made_at` (`AddClaudeTokenRequest`, the app's "When did you make it?",
+  `--made-at`); without it fctl counts the year from the connection and says
+  "around" (`expiry_estimated`). Connecting the same token again, as a
+  person or an admin token (`api::claude::same_token` compares the one fctl
+  holds), keeps the date it had, and for an admin token what Claude said of
+  it too. Logins have no such date (Claude renews them), nor do tokens kept
+  on runners, which fctl never reads.
+- **Limit pauses.** Each `rate_limit_event` that stops a session
+  (`BillingGuard::LimitReached`) adds a row to `claude_limit_pauses`: the
+  connection, the session, the limit and when it resets, one per session,
+  limit and reset so that a replayed report adds none. A workspace's view
+  counts those of its own sessions only.
+- **What admins see.** `GET /api/v1/workspaces/{id}/claude` (its admins)
+  lists each member with the connection their sessions there run on, picked
+  as `credential_for` does, or the one that ended when none works
+  (`fctl_domain::claude_oversight::member`): its state (none, unused, works,
+  ended), when its token runs out, whether their sessions wait for a limit
+  to reset now, and with `details` its kind, whether an admin token set it,
+  its plan (`ultra` from its limits, else the login's subscription type),
+  when Claude last answered it, and the limit pauses of 7 and 30 days. The
+  instance's admins choose the most a workspace's may see
+  (`InstanceSettings.claude_oversight`: `off`, `readiness` or `details`, the
+  default) and whether they see limit pauses; each workspace chooses within
+  it (`workspaces.claude_oversight`, NULL for the instance's), and its
+  members read what it chose (`Workspace.claude_oversight`). `GET
+  /api/v1/admin/claude` shows instance admins every active account's
+  default connection the same way, only where `claude_instance_view` is on.
+- **Telling people.** The hourly job warns each person whose long-lived
+  token runs out within 30 days, then within 7 (`warned_at`, one email at
+  each), and an ended connection is told at once, where the instance sends
+  email. A workspace's admins hear as it says (`workspaces.
+  claude_admin_email`): of each, with the same timing; once a week
+  (`claude_digest_at`), in one email that lists the tokens running out
+  within a month and the connections that stopped working, sent only when
+  there are any; or not by email. The app shows the same without email: an
+  amber line under the connection in Settings → Claude, the mark Settings
+  shows an ended one, and a card on the Agent Floor in a token's last week
+  or once nothing works.
+- **Retention.** Limit pauses and refusals go 30 days on; the rest goes with
+  the connection.
 
 ## Sandboxes and drivers
 

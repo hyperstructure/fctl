@@ -817,7 +817,8 @@ async fn start(ctx: &Ctx, user: &UserRow, slot: Slot) -> AppResult<Export> {
         "claude_connections".into(),
         rows(
             ctx,
-            "SELECT kind, label, account_email, subscription_type, rate_limit_tier, status, on_runners, created_at, last_used_at, expires_at FROM claude_credentials WHERE user_id = ? ORDER BY created_at",
+            "SELECT kind, label, account_email, subscription_type, rate_limit_tier, status, on_runners, provisioned, created_at, last_used_at, \
+             answered_at, made_at, expires_at, warned_at, ended_at FROM claude_credentials WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,
@@ -828,6 +829,28 @@ async fn start(ctx: &Ctx, user: &UserRow, slot: Slot) -> AppResult<Export> {
             ctx,
             "SELECT c.account_email, c.label, u.window, u.utilization, u.resets_at, u.status, u.observed_at \
              FROM claude_usage u JOIN claude_credentials c ON c.id = u.credential_id WHERE c.user_id = ? ORDER BY c.created_at, u.window",
+            &me(),
+        )
+        .await?,
+    );
+    // What fctl keeps 30 days of each connection: its sessions' pauses on
+    // usage limits, and Claude's refusals of it.
+    doc.insert(
+        "claude_limit_pauses".into(),
+        rows(
+            ctx,
+            "SELECT c.account_email, c.label, p.session_id, p.window, p.resets_at, p.at \
+             FROM claude_limit_pauses p JOIN claude_credentials c ON c.id = p.credential_id WHERE c.user_id = ? ORDER BY p.at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "claude_refusals".into(),
+        rows(
+            ctx,
+            "SELECT c.account_email, c.label, r.session_id, r.at \
+             FROM claude_refusals r JOIN claude_credentials c ON c.id = r.credential_id WHERE c.user_id = ? ORDER BY r.at",
             &me(),
         )
         .await?,

@@ -1388,6 +1388,22 @@ pub struct CredentialRow {
     /// and its sessions run only on those of their runners that keep one.
     #[serde(deserialize_with = "int_bool", default)]
     pub on_runners: bool,
+    /// An admin token set it.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub provisioned: bool,
+    /// When Claude last answered it.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub answered_at: Option<i64>,
+    /// When `claude setup-token` made its long-lived token, as its person
+    /// said: `expires_at` is a year on. None: an estimate.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub made_at: Option<i64>,
+    /// When fctl last warned its person that it runs out.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub warned_at: Option<i64>,
+    /// When fctl marked it ended.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub ended_at: Option<i64>,
 }
 
 /// A credential's plan usage as one JSON array of its `claude_usage` rows,
@@ -1448,6 +1464,64 @@ impl CredentialRow {
             expires_at: self.expires_at,
             usage: plan_usage(self.usage.as_deref()),
             on_runners: self.on_runners,
+            answered_at: self.answered_at,
+            expiry_estimated: self.long_lived() && self.made_at.is_none(),
+            ended_at: self.ended_at.filter(|_| self.status != "active"),
+            provisioned: self.provisioned,
+        }
+    }
+
+    /// A long-lived token fctl keeps, which runs out a year after it was
+    /// made: not a login, which Claude renews, nor one kept on runners.
+    pub fn long_lived(&self) -> bool {
+        self.kind() == ClaudeCredentialKind::SetupToken && !self.on_runners
+    }
+
+    /// When its long-lived token runs out, and whether that is an estimate.
+    pub fn runs_out(&self) -> Option<(i64, bool)> {
+        if !self.long_lived() {
+            return None;
+        }
+        Some(match self.expires_at {
+            Some(at) => (at, self.made_at.is_none()),
+            None => fctl_domain::claude_oversight::runs_out(self.made_at, self.created_at),
+        })
+    }
+
+    /// Its plan, where known: `ultra` when its limits show it, else what
+    /// its login said.
+    pub fn plan(&self) -> Option<String> {
+        let usage = plan_usage(self.usage.as_deref());
+        if fctl_domain::usage::is_ultra(
+            self.subscription_type.as_deref(),
+            self.rate_limit_tier.as_deref(),
+            &usage,
+        ) {
+            return Some("ultra".into());
+        }
+        self.subscription_type.clone()
+    }
+
+    /// What a workspace's admins may know of it
+    /// (`fctl_domain::claude_oversight::member`).
+    pub fn to_connection(&self) -> fctl_domain::claude_oversight::Connection {
+        fctl_domain::claude_oversight::Connection {
+            id: self.id.clone(),
+            kind: if self.on_runners {
+                fctl_proto::api::ClaudeConnectionKind::OnRunners
+            } else if self.kind() == ClaudeCredentialKind::Oauth {
+                fctl_proto::api::ClaudeConnectionKind::Login
+            } else {
+                fctl_proto::api::ClaudeConnectionKind::Token
+            },
+            active: self.status == "active",
+            provisioned: self.provisioned,
+            created_at: self.created_at,
+            answered_at: self.answered_at,
+            used_at: self.last_used_at,
+            runs_out: self.runs_out(),
+            ended_at: self.ended_at,
+            plan: self.plan(),
         }
     }
 }

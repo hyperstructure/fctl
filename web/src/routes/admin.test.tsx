@@ -286,3 +286,136 @@ describe("the admin's reserved addresses", () => {
     expect(page.rows().map((r) => r.split("reserved")[0])).toEqual(["me"]);
   });
 });
+
+/** Admin's settings, as the instance has them: the defaults with these changed. */
+const instanceSettings = (s: Partial<G.InstanceSettings> = {}): G.InstanceSettings => ({
+  publish_screenshots: false,
+  require_two_factor: false,
+  two_factor_google: false,
+  verify_sensitive_actions: false,
+  gravatar: true,
+  export_interval_hours: 168,
+  service_account_consent: true,
+  members_create_workspaces: true,
+  max_workspaces: 5,
+  snapshots: true,
+  max_snapshot_mb: 200,
+  claude_oversight: "details",
+  claude_limit_pauses: true,
+  claude_instance_view: false,
+  claude_refusals: 2,
+  ...s,
+});
+
+/** A tab of Admin with these in the cache. */
+function adminTab(tab: string, fill: (client: QueryClient) => void) {
+  search.tab = tab;
+  const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+  client.setQueryData(keys.me, {
+    user: { id: "usr_ada", name: "Ada Lovelace", role: "owner" },
+    claude: [],
+    passkeys: [],
+  });
+  fill(client);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <Admin />
+      </QueryClientProvider>,
+    ),
+  );
+  roots.push(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+  return container;
+}
+
+describe("what admins see of Claude connections, for the whole instance", () => {
+  const section = (page: HTMLElement) =>
+    [...page.querySelectorAll("section")].find(
+      (s) => s.querySelector("h2")?.textContent === "Claude connections",
+    );
+
+  it("says what workspace admins see at most, and that limit pauses go with the details", () => {
+    const page = adminTab("settings", (c) =>
+      c.setQueryData(keys.instanceSettings, instanceSettings({ claude_oversight: "readiness" })),
+    );
+    const s = section(page);
+    expect(s?.textContent).toContain(
+      "On each workspace's People tab: whether each member's sessions can run, and when their token runs out.",
+    );
+    const pauses = s?.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Limit pauses"]');
+    expect(pauses?.disabled).toBe(true);
+    expect(s?.textContent).toContain("Only where workspace admins see the details.");
+    expect(s?.textContent).toContain(
+      "In how many sessions Claude must refuse a token since it last answered it before fctl marks it ended",
+    );
+  });
+
+  it("lets its admins see everyone's in Admin → People", async () => {
+    let asked: G.UpdateInstanceSettingsRequest | undefined;
+    answers.updateInstanceSettings = async (b: G.UpdateInstanceSettingsRequest) => {
+      asked = b;
+      return instanceSettings({ claude_instance_view: true });
+    };
+    const page = adminTab("settings", (c) => c.setQueryData(keys.instanceSettings, instanceSettings()));
+    const toggle = section(page)?.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="Admin → People shows everyone\'s Claude connection"]',
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => toggle?.click());
+    expect(asked).toEqual({ claude_instance_view: true });
+    delete answers.updateInstanceSettings;
+  });
+
+  it("shows each person's connection in Admin → People where the instance lets its admins see them", () => {
+    const user = (id: string, name: string): G.User =>
+      ({
+        id,
+        name,
+        email: `${id}@acme.dev`,
+        emails: [],
+        role: "member",
+        status: "active",
+        workspaces: 1,
+        passkeys: 0,
+        two_factor: false,
+        created_at: 0,
+      }) as unknown as G.User;
+    const fill = (view: boolean) => (c: QueryClient) => {
+      c.setQueryData(keys.instanceSettings, instanceSettings({ claude_instance_view: view }));
+      c.setQueryData(keys.users, {
+        users: [user("usr_grace", "Grace Hopper"), user("usr_linus", "Linus Lee")],
+      });
+      c.setQueryData<G.ClaudeOverview>(keys.adminClaude, {
+        oversight: "details",
+        limit_pauses: true,
+        admin_tokens: true,
+        members: [
+          {
+            user: { id: "usr_grace", name: "Grace Hopper" },
+            email: "grace@acme.dev",
+            state: "works",
+            connection: { kind: "token", set_by_admin_token: true, connected_at: NOW - 30 * DAY },
+          },
+          { user: { id: "usr_linus", name: "Linus Lee" }, email: "linus@acme.dev", state: "none" },
+        ],
+      });
+      c.setQueryData(keys.instance, { name: "Acme fctl", features: {} });
+    };
+    const page = adminTab("people", fill(true));
+    expect(page.textContent).toContain("1 of 2 people has Claude connected for Acme fctl");
+    const [grace, linus] = [...page.querySelectorAll("li")].map((li) => li.textContent ?? "");
+    expect(grace).toContain(
+      "Long-lived token, set by an admin token · plan unknown · no session ran on it yet",
+    );
+    expect(linus).toContain("No Claude connection for Acme fctl: their sessions here can't start");
+    // Off, nothing of it.
+    const off = adminTab("people", fill(false));
+    expect(off.textContent).not.toContain("Long-lived token");
+  });
+});

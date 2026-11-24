@@ -383,7 +383,7 @@ pub async fn build(
     if !credential_serves(db, &cred_id, &row.id).await? {
         return Err(credential_not_lent());
     }
-    let claude = claude_credential(db, keys, &cred_id, now).await?;
+    let claude = claude_credential(cfg, db, keys, &cred_id, now).await?;
     if let Some(review) = crate::reviews::of_session(db, &row.id).await? {
         return review_spec(db, cfg, &row, &project, &review, claude, now).await;
     }
@@ -955,6 +955,7 @@ fn unreachable_notice(cfg: &Config, g: &RepoGrant) -> String {
 /// connection whose token its owner keeps on their runners, one without a
 /// token (`on_runners`), which the host of the runner fills in.
 pub async fn claude_credential(
+    cfg: &Config,
     db: &D1Database,
     keys: &Keys,
     id: &str,
@@ -1018,7 +1019,7 @@ pub async fn claude_credential(
             .expires_at
             .is_some_and(|e| e - now < REFRESH_MARGIN_MS)
     {
-        secret = refresh(db, keys, &row, &secret, now).await?;
+        secret = refresh(cfg, db, keys, &row, &secret, now).await?;
     }
     q(
         db,
@@ -1041,6 +1042,7 @@ pub async fn claude_credential(
 }
 
 async fn refresh(
+    cfg: &Config,
     db: &D1Database,
     keys: &Keys,
     row: &CredentialRow,
@@ -1071,14 +1073,9 @@ async fn refresh(
     let status = res.status_code();
     let v: serde_json::Value = res.json().await.unwrap_or(serde_json::Value::Null);
     if status == 400 || status == 401 {
-        // invalid_grant: the login was revoked or used elsewhere.
-        q(
-            db,
-            "UPDATE claude_credentials SET status = 'invalid', updated_at = ? WHERE id = ?",
-            &[n(now), s(&row.id)],
-        )?
-        .run()
-        .await?;
+        // invalid_grant: the login was revoked or used elsewhere. Its
+        // person hears of it, and the admins who hear of each.
+        crate::claude_oversight::end(cfg, db, &row.id, now).await?;
         return Err(AppError(ApiError::new(
             ErrorCode::NotConfigured,
             "Claude rejected the stored login. Connect Claude again in Settings.",
