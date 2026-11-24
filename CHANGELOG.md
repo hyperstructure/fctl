@@ -2,6 +2,34 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.38.0 (2026-11-24)
+
+### Features
+
+- **control:** Add runner pools with labels, placement and demand ([#634](https://github.com/hyperstructure/fctl/pull/634))
+- **host:** Retire idle machines and drain within a cloud's deadline ([#635](https://github.com/hyperstructure/fctl/pull/635))
+- **agent:** Resume sessions elsewhere with their conversation and work ([#636](https://github.com/hyperstructure/fctl/pull/636))
+- Show admins who has Claude connected and whose token runs out ([#640](https://github.com/hyperstructure/fctl/pull/640))
+- Add Terraform reference deployments for runner pools ([#639](https://github.com/hyperstructure/fctl/pull/639))
+- **control:** Let domains require signing in with Google ([#642](https://github.com/hyperstructure/fctl/pull/642))
+- **host:** Keep sessions' snapshots in an organization's own bucket ([#641](https://github.com/hyperstructure/fctl/pull/641))
+- **web:** Show where snapshots go, their settings and a session's ([#643](https://github.com/hyperstructure/fctl/pull/643))
+- **web:** Show pools on the Runners tab, and choose one in a project ([#644](https://github.com/hyperstructure/fctl/pull/644))
+- **web:** Make a pool step by step, with what each cloud needs ([#645](https://github.com/hyperstructure/fctl/pull/645))
+
+### Fixes
+
+- **host:** Keep sandboxes off cloud metadata services ([#631](https://github.com/hyperstructure/fctl/pull/631))
+- **control:** Let accounts that admin tokens make sign in with Google ([#632](https://github.com/hyperstructure/fctl/pull/632))
+- **host:** Restart Apple's container when its sandboxes lose the network ([#637](https://github.com/hyperstructure/fctl/pull/637))
+- **control:** Keep autopilots trying after their sessions fail ([#638](https://github.com/hyperstructure/fctl/pull/638))
+- **control:** Sign people out when an admin unlinks their Google account ([#647](https://github.com/hyperstructure/fctl/pull/647))
+- **web:** Keep members' pools out of projects, and pass on pool capacity ([#648](https://github.com/hyperstructure/fctl/pull/648))
+
+### Documentation
+
+- Add guides for organizations that run fctl in their own cloud ([#633](https://github.com/hyperstructure/fctl/pull/633))
+
 ## 0.37.1 (2026-11-22)
 
 ### Features
