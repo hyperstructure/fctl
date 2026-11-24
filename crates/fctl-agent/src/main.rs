@@ -15,6 +15,9 @@
 //!   (src/net_filter.rs), and `keep-off-metadata`, in a helper container
 //!   beside a Docker sandbox, makes them unreachable from the sandbox's
 //!   network (src/metadata.rs).
+//! - `fctl-agent reach` says whether the sandbox reaches the network, for
+//!   the host, which restarts Apple's `container` when its sandboxes don't
+//!   (src/reach.rs).
 //!
 //! See docs/architecture.md and crates/fctl-proto/src/agent.rs.
 
@@ -37,6 +40,7 @@ mod orphan;
 mod prompt;
 #[cfg(target_os = "linux")]
 mod protected;
+mod reach;
 mod refresh;
 mod relay;
 #[cfg(target_os = "linux")]
@@ -51,6 +55,7 @@ mod workspace;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -110,6 +115,16 @@ enum Command {
         dir: PathBuf,
         #[arg(long)]
         socket: PathBuf,
+    },
+    /// Say whether this sandbox reaches HOST:PORT: its name resolves, and
+    /// a TCP connection to it opens (for the host, which asks).
+    #[command(hide = true)]
+    Reach {
+        /// `github.com:443`.
+        target: String,
+        /// How long it may take, in seconds.
+        #[arg(long, default_value_t = 10)]
+        within: u64,
     },
     /// Make the cloud metadata services unreachable from this network
     /// namespace (in a helper container that shares a Docker sandbox's).
@@ -199,6 +214,7 @@ fn main() -> anyhow::Result<()> {
             r
         }
         Command::Attach { socket } => runtime()?.block_on(link::attach(&socket)),
+        Command::Reach { target, within } => reach::run(&target, Duration::from_secs(within)),
         #[cfg(target_os = "linux")]
         Command::VmServe => {
             // To the VM's console, which the host keeps in a file.

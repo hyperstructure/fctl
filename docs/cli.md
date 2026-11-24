@@ -1279,6 +1279,23 @@ runners` and the Runners tab say which container it is and the command
 that stops it. `fctl host doctor` names every running container whose
 VM doesn't answer within 10 seconds, with that command.
 
+Apple's sandboxes can also lose the network, all at once, while the Mac's
+own works on: lookups in them run out of time (`Could not resolve host:
+github.com`), or their connections go nowhere, after the Mac's network
+changed or a VPN came or went, until Apple's `container` restarts. Before
+fctl-agent starts in a sandbox, and every minute while sessions run, the
+host asks the sandbox whether it reaches github.com. When it doesn't, and
+a fresh sandbox doesn't either while the Mac does, the host restarts
+Apple's `container` itself (`container system stop`, `container system
+start`) and starts again the containers that ran, its sandboxes and any
+other of yours. What ran in them is gone: a session at work has its turn
+cut off, and its agent carries on. It restarts it at most once every 30
+minutes: while sandboxes still don't reach the network, the apple driver
+isn't ready, saying why, and sessions wait rather than fail. A VPN, or a
+program that holds port 53 (`sudo lsof -i :53` names it), can keep them
+so; restarting the Mac brings them back. `fctl host doctor` starts a
+fresh sandbox to say whether sandboxes reach github.com.
+
 If `container` commands still wait, restart Apple's `container`. This
 stops every sandbox; their sessions fail, and resuming each starts its
 sandbox again:
