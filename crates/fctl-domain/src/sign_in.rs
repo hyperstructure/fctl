@@ -334,6 +334,33 @@ pub fn admits(
     }
 }
 
+/// Whether an instance admin whose role is `actor` may unlink the provider
+/// accounts of someone whose role is `target` (`own`: their own). Their own
+/// they unlink in Settings, where they keep another way in; nobody the
+/// primary instance owner's; and only the primary instance owner an
+/// admin's, as with reset links.
+pub fn check_unlink(
+    actor: fctl_proto::session::InstanceRole,
+    target: fctl_proto::session::InstanceRole,
+    own: bool,
+) -> Result<(), ApiError> {
+    use fctl_proto::session::InstanceRole::{Admin, Owner};
+    if own {
+        return Err(ApiError::conflict(
+            "Unlink your own in Settings → Security, where you keep another way in.",
+        ));
+    }
+    match (actor, target) {
+        (_, Owner) => Err(ApiError::forbidden(
+            "Only the primary instance owner unlinks their own, in Settings",
+        )),
+        (a, Admin) if a != Owner => Err(ApiError::forbidden(
+            "Only the primary instance owner can unlink an admin's sign-in",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// "acme.com", "acme.com and acme.dev", "acme.com, acme.dev and acme.io".
 pub fn domains_words(domains: &[String]) -> String {
     match domains {
@@ -733,6 +760,32 @@ mod tests {
         );
         assert!(without(&two, &owned(&["acme.com", "@acme.dev"])).is_empty());
         assert_eq!(without(&two, &owned(&["beta.io"])), two);
+    }
+
+    #[test]
+    fn admins_unlink_members_and_only_the_owner_unlinks_admins() {
+        use fctl_proto::session::InstanceRole::{Admin, Member, Owner};
+        assert!(check_unlink(Admin, Member, false).is_ok());
+        assert!(check_unlink(Owner, Member, false).is_ok());
+        assert!(check_unlink(Owner, Admin, false).is_ok());
+        let refused = |actor, target, own| check_unlink(actor, target, own).err().map(|e| e.code);
+        // An admin's, only the owner; the owner's, nobody; one's own, in Settings.
+        assert_eq!(
+            refused(Admin, Admin, false),
+            Some(fctl_proto::ErrorCode::Forbidden)
+        );
+        assert_eq!(
+            refused(Admin, Owner, false),
+            Some(fctl_proto::ErrorCode::Forbidden)
+        );
+        assert_eq!(
+            refused(Owner, Owner, true),
+            Some(fctl_proto::ErrorCode::Conflict)
+        );
+        assert_eq!(
+            refused(Admin, Admin, true),
+            Some(fctl_proto::ErrorCode::Conflict)
+        );
     }
 
     #[test]

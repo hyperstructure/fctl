@@ -399,6 +399,22 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     ctx.rate_limit(&format!("2fa-user:{}", row.user_id)).await?;
     let user = active_user(ctx, &row.user_id).await?;
     let reason = ChallengeReason::parse(&row.reason).ok_or_else(expired)?;
+    // A domain's rule saved while it waited may not take this sign-in: it
+    // ends here, before any code is tried, counted against them or used up,
+    // and before a reset's password is set.
+    let how = row.how(reason);
+    let settings = crate::instance::settings(&ctx.db).await?;
+    if let Err(required) = user.admits(&settings, &how) {
+        q(
+            &ctx.db,
+            "DELETE FROM sign_in_challenges WHERE hash = ?",
+            &[s(&hash)],
+        )?
+        .run()
+        .await?;
+        clear_cookie(ctx);
+        return Err(AppError(crate::sign_in::refused(&required, &how)));
+    }
     // A passkey is checked and used up here; a code only checked, and used
     // up once the challenge is claimed.
     let valid = match (&body.passkey, body.code.as_deref()) {
@@ -421,13 +437,6 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         return Err(expired());
     }
     clear_cookie(ctx);
-    // A domain's rule saved while it waited for its code may not take it:
-    // before the code is used up, or a reset's password set.
-    let how = row.how(reason);
-    let settings = crate::instance::settings(&ctx.db).await?;
-    if let Err(required) = user.admits(&settings, &how) {
-        return Err(AppError(crate::sign_in::refused(&required, &how)));
-    }
     let used = use_code(ctx, &user, valid).await?;
     if reason == ChallengeReason::PasswordReset {
         apply_reset(ctx, &user, &row).await?;

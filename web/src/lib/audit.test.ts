@@ -97,6 +97,17 @@ describe("an audit log entry in words", () => {
     ).toBe("drained the runner turnip");
   });
 
+  it("says whose Google account an admin unlinked, and that it signed them out", () => {
+    const unlinked = (data: object) =>
+      said(describeAudit(entry("identity.unlinked", "usr_kofi", { provider: "google", ...data }), names));
+    expect(unlinked({ by_admin: true, count: 1, signed_out: true })).toBe(
+      "unlinked the Google account of Kofi Mensah and signed them out everywhere",
+    );
+    // Before unlinking signed people out, it didn't say so.
+    expect(unlinked({ by_admin: true, count: 1 })).toBe("unlinked the Google account of Kofi Mensah");
+    expect(unlinked({})).toBe("unlinked a sign-in");
+  });
+
   it("falls back to what the entry holds when the page doesn't know an id", () => {
     // A project the page doesn't list may be archived or gone: named, not linked.
     expect(said(describeAudit(entry("project.created", "prj_new", { slug: "bookings" })))).toBe(

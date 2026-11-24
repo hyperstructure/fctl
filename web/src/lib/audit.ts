@@ -472,6 +472,15 @@ function sentence(e: G.AuditEntry, names: AuditNames): AuditPart[] {
         d.provider === "google" ? "Google" : named(d.provider, "a provider"),
       ];
     case "identity.unlinked":
+      // An admin's unlink signs its person out everywhere since it says so.
+      if (d.by_admin)
+        return [
+          "unlinked the ",
+          d.provider === "google" ? "Google" : named(d.provider, "provider's"),
+          " account of ",
+          user(t),
+          d.signed_out ? " and signed them out everywhere" : "",
+        ];
       return ["unlinked a sign-in"];
     case "device.approved":
       return ["signed in ", named(d.client, "a device"), " with a code"];

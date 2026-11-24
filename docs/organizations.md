@@ -275,7 +275,9 @@ What can go wrong:
 - **"Another Google account signs in to the account with this email…"**
   Ada's Workspace account was recreated, and the old one is still linked:
   `fctl admin unlink ada@acme.dev` (or **Admin → People → Unlink
-  Google**), and Ada's next sign-in links the new one.
+  Google**) signs Ada out everywhere, and Ada's next sign-in links the new
+  one. If the address went to someone else, disable the account instead
+  (step 6): unlinking would give the new holder Ada's account.
 - **"Google can't vouch for this address, as it doesn't host it…"**
   Ada's address isn't a Google Workspace or Gmail one, so Google doesn't
   sign Ada in: send a link (step 5).

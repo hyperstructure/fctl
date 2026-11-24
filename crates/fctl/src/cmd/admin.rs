@@ -208,11 +208,13 @@ pub enum AdminCmd {
         /// Any of their email addresses, or their user id.
         user: String,
     },
-    /// Unlink someone's Google account, for when theirs was recreated or
-    /// its address handed to someone else: where their domain signs in with
-    /// Google, their next Google sign-in links the account they sign in
-    /// with. Only the primary instance owner unlinks an admin's. Takes
-    /// confirming it's you, where the instance asks for that.
+    /// Unlink someone's Google account, for when theirs was recreated at the
+    /// same address: where their domain signs in with Google, their next
+    /// Google sign-in links the account they sign in with. It signs them out
+    /// everywhere (browsers, CLIs, access tokens, admin tokens). If the
+    /// address went to someone else, disable their account instead (fctl
+    /// admin disable). Only the primary instance owner unlinks an admin's.
+    /// Takes confirming it's you, where the instance asks for that.
     #[command(after_help = "Examples:\n  fctl admin unlink ada@acme.com")]
     Unlink {
         /// Any of their email addresses, or their user id.
@@ -1543,7 +1545,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&updated);
             }
             println!(
-                "{} Unlinked the {} account of {} <{}>: their next sign-in with it links the account they sign in with, where their domain requires it.",
+                "{} Unlinked the {} account of {} <{}> and signed them out everywhere: their next sign-in with it links the account they sign in with, where their domain requires it.",
                 style::accent("✓"),
                 if provider == fctl_domain::sign_in::GOOGLE {
                     "Google"
