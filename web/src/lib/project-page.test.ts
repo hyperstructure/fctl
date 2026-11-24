@@ -97,6 +97,7 @@ describe("a project's page", () => {
       "agents",
       "pull-requests",
       "tickets",
+      "runners",
       "sandbox",
       "secrets",
       "identity",

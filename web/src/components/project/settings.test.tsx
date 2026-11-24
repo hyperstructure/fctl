@@ -145,6 +145,7 @@ describe("a project's Settings", () => {
       "Agents",
       "Pull requests",
       "Tickets",
+      "Runners",
       "Sandbox",
       "Secrets",
       "Identity OIDC",
@@ -419,5 +420,118 @@ describe("a project's Settings", () => {
     expect(s.button("Save")).toBeUndefined();
     type("NODE_ENV=production");
     expect(s.button("Save")).toBeDefined();
+  });
+});
+
+describe("a project's Runners page", () => {
+  const acme = { id: "wsp_acme", slug: "acme", name: "Acme" } as G.WorkspaceRef;
+  const runner = (r: Partial<G.Runner> & { id: string }): G.Runner =>
+    ({
+      name: r.id,
+      status: "online",
+      drivers: [],
+      capacity: 4,
+      active_sessions: 0,
+      labels: [],
+      created_at: 0,
+      workspaces: [],
+      yours: false,
+      personal: [],
+      ...r,
+    }) as G.Runner;
+  const pool: G.PoolDemand = {
+    pool: { id: "enr_large", name: "AWS large", labels: ["aws", "large"], placement: "packed" },
+    runners: { online: 4, busy: 2, draining: 0, pending: 0, starting: 0, offline: 0 },
+    slots: { capacity: 16, busy: 5, free: 11 },
+    waiting: { sessions: 0 },
+    wanted: 2,
+    shape: { capacity: 4, cpus: 16, memory_mb: 65536, driver: "docker", version: "0.38.0", seen_at: 0 },
+    at: 0,
+  };
+
+  /** The page, with Acme's runners and pools as its admins read them. */
+  function runners(labels: string[], fallback?: number) {
+    queryClient.setQueryData(keys.workspace("wsp_acme"), {
+      ...acme,
+      primary: { id: "usr_ada", name: "Ada" },
+    } as G.Workspace);
+    queryClient.setQueryData<G.RunnerList>(keys.workspaceRunners("wsp_acme"), {
+      runners: [
+        runner({ id: "rnr_1", labels: ["aws", "large"], pool: { id: "enr_large", name: "AWS large" } }),
+        runner({ id: "rnr_mac", name: "studio-mac" }),
+      ],
+    });
+    queryClient.setQueryData<G.WorkspaceDemand>(keys.workspaceDemand("wsp_acme"), {
+      pools: [pool],
+      waiting: { sessions: 0 },
+      unpooled: 0,
+      at: 0,
+    });
+    return open(
+      "runners",
+      project({
+        workspace: acme,
+        settings: { ...settings, runner_labels: labels, runner_fallback_minutes: fallback ?? null },
+      }),
+    );
+  }
+  const shown = (s: ReturnType<typeof open>, n = 0) =>
+    s.container
+      .querySelectorAll('[role="combobox"]')
+      [n]?.querySelector("span:not([aria-hidden]) > span:not([aria-hidden])")?.textContent;
+
+  it("offers any runner, or a pool by its name with what its runners give", () => {
+    vi.useFakeTimers();
+    try {
+      const s = runners([]);
+      expect(s.heading()).toBe("Runners");
+      expect(shown(s)).toBe("Any runner");
+      act(() => (s.container.querySelector('[role="combobox"]') as HTMLElement).click());
+      const options = [...s.container.querySelectorAll<HTMLElement>('[role="option"]')].map(
+        (o) => o.textContent,
+      );
+      expect(options).toContain("AWS large4 runners with 16 CPUs and 64 GiB · aws, large");
+      const large = [...s.container.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+        o.textContent?.startsWith("AWS large"),
+      );
+      act(() => large?.click());
+      act(() => vi.advanceTimersByTime(1000));
+      expect((s.container.querySelector("input.font-mono") as HTMLInputElement).value).toBe("aws, large");
+      expect(s.button("Save")).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("names the pool a project's labels choose, and how long its sessions wait for it", () => {
+    const s = runners(["large", "aws"], 15);
+    expect(shown(s)).toBe("AWS large");
+    expect(shown(s, 1)).toBe("After 15 minutes, any runner");
+    expect(s.container.textContent).toContain(
+      "Its sessions wait for one of those runners, then go to any of Acme's.",
+    );
+    expect(s.container.querySelector(".text-amber")).toBeNull();
+  });
+
+  it("says in amber when no runner has its labels, and who adds one", () => {
+    const s = runners(["gpu"]);
+    expect(shown(s)).toBe("Runners with labels you choose");
+    expect(s.container.querySelector(".text-amber")?.textContent).toBe(
+      "No runner of Acme has the label gpu: its sessions wait until one does. Ada and its other admins add runners and pools on its Runners tab.",
+    );
+  });
+
+  it("saves the labels and the wait, for sessions that start from then on", async () => {
+    const s = runners(["gpu"]);
+    const input = s.container.querySelector("input.font-mono") as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "gpu, Large");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => s.button("Save").click());
+    expect(updates.at(-1)?.body.settings).toMatchObject({
+      runner_labels: ["gpu", "large"],
+      runner_fallback_minutes: null,
+    });
   });
 });

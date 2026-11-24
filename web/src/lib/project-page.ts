@@ -7,6 +7,7 @@ import { compactGist } from "./context";
 import { identityGist } from "./identity";
 import { imageSource } from "./images";
 import { effortLabel, modelLabel } from "./models";
+import { runnersGist } from "./pools";
 import { TRACKERS, trackerOf } from "./tickets";
 
 /** The tabs under the project's header, in their order: what its agents do, who and what it has, its settings. */
@@ -28,6 +29,7 @@ export const SETTINGS_PAGES = [
   "agents",
   "pull-requests",
   "tickets",
+  "runners",
   "sandbox",
   "secrets",
   "identity",
@@ -81,6 +83,7 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
     { page: "tickets", label: "Tickets" },
   ],
   [
+    { page: "runners", label: "Runners" },
     { page: "sandbox", label: "Sandbox" },
     { page: "secrets", label: "Secrets" },
     { page: "identity", label: "Identity OIDC" },
@@ -190,6 +193,7 @@ export function settingsGists(
     agents: agentsGist(s),
     "pull-requests": pullRequestsGist(s),
     tickets: ticketsGist(s),
+    runners: runnersGist(s),
     sandbox: sandboxGist(s),
     identity: identityGist(s),
     secrets:

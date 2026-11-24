@@ -13,7 +13,6 @@ import {
   Folders,
   History,
   ImageUp,
-  KeyRound,
   LogOut,
   MailPlus,
   Pencil,
@@ -32,8 +31,6 @@ import { GithubAvatar } from "@/components/github-avatar";
 import { PageTabs, TabCount } from "@/components/page-tabs";
 import { ExperimentalPill, TokenHungry } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
-import { DriverLine } from "@/components/runner-driver";
-import { SnapshotStoreLine } from "@/components/runner-snapshots";
 import { ServiceAccountsPanel } from "@/components/service-accounts/panel";
 import { SessionRow } from "@/components/session/row";
 import {
@@ -65,7 +62,8 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { WorkspaceColorField } from "@/components/workspace/color-field";
 import { LinearTab } from "@/components/workspace/linear";
 import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
-import { EnrollmentTokens, ManageRunner, WaitingRunners } from "@/components/workspace/runners";
+import { RunnerRow } from "@/components/workspace/runner-row";
+import { EnrollmentTokens, WaitingRunners } from "@/components/workspace/runners";
 import { SnapshotSettings, SnapshotsSection } from "@/components/workspace/snapshots";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
@@ -73,8 +71,8 @@ import type { AuditNames } from "@/lib/audit";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
-import { approvedBy, minutesText } from "@/lib/enrollment";
-import { ago, agoShort, driverProblem } from "@/lib/format";
+import { approvedBy } from "@/lib/enrollment";
+import { ago, agoShort } from "@/lib/format";
 import { goTo } from "@/lib/history";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
 import {
@@ -924,6 +922,13 @@ function Runners({ w }: { w: G.Workspace }) {
   // The ones that wait for approval show apart, for its admins.
   const waiting = (list.data?.runners ?? []).filter((r) => r.pending_until);
   const runners = (list.data?.runners ?? []).filter((r) => !r.pending_until);
+  // Those that enrolled with a token you see show under its pool, further down.
+  const tokens = useQuery({
+    queryKey: keys.enrollmentTokens(w.id),
+    queryFn: () => workspaces.enrollmentTokens(w.id),
+  });
+  const pooled = new Set(tokens.data?.tokens.map((t) => t.id));
+  const unpooled = runners.filter((r) => !(r.enrollment?.token_id && pooled.has(r.enrollment.token_id)));
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
@@ -1029,92 +1034,11 @@ function Runners({ w }: { w: G.Workspace }) {
           </Field>
         )}
       </div>
-      {runners.length > 0 && (
+      {unpooled.length > 0 && (
         <ul className="mt-6 border-t border-line">
-          {runners.map((r) => {
-            const others = (r.workspaces ?? []).filter((x) => x.id !== w.id);
-            // It enrolled here: the workspace's own, which its admins manage, or a member's for
-            // their own sessions, which they manage and which goes when it is taken out.
-            const enrolled = r.workspace?.id === w.id;
-            const own = enrolled && !r.created_by;
-            return (
-              <li key={r.id} className="flex items-center gap-4 border-b border-line py-4">
-                <span
-                  className={cn(
-                    "size-2 shrink-0 rounded-full",
-                    r.status === "disabled"
-                      ? "bg-danger"
-                      : r.drain || driverProblem(r)
-                        ? "bg-amber"
-                        : r.status === "online"
-                          ? "bg-accent shadow-[0_0_10px_var(--c-accent)]"
-                          : "bg-ink-4",
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[14px] text-ink">
-                    {r.name}{" "}
-                    <span className="ml-1 text-[12px] text-ink-4">
-                      {r.status === "online" && r.drain
-                        ? "draining"
-                        : driverProblem(r)
-                          ? "driver not ready"
-                          : r.status}
-                    </span>
-                    {r.personal?.includes(w.id) && (
-                      <span className="ml-2 inline-block whitespace-nowrap rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
-                        {r.yours
-                          ? "Only your sessions"
-                          : `Only ${r.created_by?.name ?? "its owner"}'s sessions`}
-                      </span>
-                    )}
-                    {r.yours && (live.get(r.id) ?? r).claude_token?.saved_at && (
-                      <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-accent-soft px-2 py-px align-middle text-[11.5px] text-ink-2">
-                        <ShieldCheck className="size-3 text-accent" />
-                        Keeps your Claude token
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 truncate text-[12px] text-ink-4">
-                    {own ? `${w.name}'s` : r.created_by ? `${r.created_by.name}'s` : "A"}{" "}
-                    {r.driver ? `${r.driver} runner` : "runner"} · {r.active_sessions}/{r.capacity} sessions
-                    {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
-                  </div>
-                  <DriverLine runner={r} />
-                  <SnapshotStoreLine runner={r} />
-                  {enrolled && (r.enrollment?.token_name || r.remove_offline_after_minutes) && (
-                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-ink-4">
-                      {r.enrollment?.token_name && (
-                        <span className="inline-flex items-center gap-1 text-ink-3">
-                          <KeyRound className="size-3 text-ink-4" /> Enrolled with “{r.enrollment.token_name}”
-                        </span>
-                      )}
-                      {r.remove_offline_after_minutes && (
-                        <span>Removed once offline for {minutesText(r.remove_offline_after_minutes)}</span>
-                      )}
-                    </div>
-                  )}
-                  {others.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-ink-4">
-                      Also runs
-                      {others.map((x) => (
-                        <span key={x.id} className="inline-flex items-center gap-1 text-ink-3">
-                          <WorkspaceAvatar workspace={x} size={13} /> {x.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {own || (enrolled && r.yours)
-                  ? (admin || r.yours) && <ManageRunner w={w} runner={r} />
-                  : (admin || r.yours) && (
-                      <Button size="sm" variant="ghost" onClick={() => setTakingOut(r)}>
-                        {enrolled ? "Remove" : "Take out"}
-                      </Button>
-                    )}
-              </li>
-            );
-          })}
+          {unpooled.map((r) => (
+            <RunnerRow key={r.id} w={w} runner={r} admin={admin} live={live} onTakeOut={setTakingOut} />
+          ))}
         </ul>
       )}
       {list.data && (
@@ -1126,7 +1050,15 @@ function Runners({ w }: { w: G.Workspace }) {
           token={onRunners}
         />
       )}
-      <EnrollmentTokens w={w} admin={admin} onRunners={onRunners} />
+      <EnrollmentTokens
+        w={w}
+        admin={admin}
+        onRunners={onRunners}
+        runners={runners}
+        row={(r) => (
+          <RunnerRow key={r.id} w={w} runner={r} admin={admin} live={live} onTakeOut={setTakingOut} inPool />
+        )}
+      />
       <SnapshotsSection w={w} admin={admin} />
       <Dialog
         open={!!takingOut}

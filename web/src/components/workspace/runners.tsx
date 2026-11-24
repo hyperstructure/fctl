@@ -20,7 +20,7 @@ import {
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { SET_TOKEN_FROM_FILE } from "@/components/claude/on-runners";
 import {
   Banner,
@@ -55,6 +55,7 @@ import {
   minutesText,
   NEW_ENROLLMENT,
   OFFLINE_REMOVAL,
+  placementOf,
   sessionsOf,
   tokenState,
   type Whose,
@@ -62,6 +63,17 @@ import {
 } from "@/lib/enrollment";
 import { ago } from "@/lib/format";
 import { installCommand, siteUrl } from "@/lib/install";
+import {
+  enrolled,
+  labelProblem,
+  labelsWords,
+  PLACEMENTS,
+  parseLabels,
+  placementWords,
+  poolFacts,
+  poolLine,
+  poolState,
+} from "@/lib/pools";
 import { keys, queryClient, useMe } from "@/lib/queries";
 
 /** How enrollment works, on fctl.sh. */
@@ -426,50 +438,84 @@ export function ManageRunner({ w, runner: r }: { w: G.Workspace; runner: G.Runne
 // ───────────────────────────── enrollment tokens ─────────────────────────────
 
 /**
- * The workspace's enrollment tokens, what each does and how much it was used: every one for its
+ * The workspace's pools: each an enrollment token and the runners it enrolled, which carry its labels
+ * and follow its placement, with what it needs now (`GET …/runners/demand`). Every one for its
  * admins, and their own for its members, who make them for their own sessions. `onRunners`: your
  * sessions here run on the Claude token you keep on your runners, which the machines need too.
+ * `runners`: the workspace's, of which each pool lists those it enrolled, as `row` draws them.
  */
 export function EnrollmentTokens({
   w,
   admin,
   onRunners,
+  runners = [],
+  row,
 }: {
   w: G.Workspace;
   admin: boolean;
   onRunners: boolean;
+  runners?: G.Runner[];
+  row?: (r: G.Runner) => ReactNode;
 }) {
   const list = useQuery({
     queryKey: keys.enrollmentTokens(w.id),
     queryFn: () => workspaces.enrollmentTokens(w.id),
   });
+  // What each pool needs now: it changes as sessions start and wait, so it is read again often.
+  const demand = useQuery({
+    queryKey: keys.workspaceDemand(w.id),
+    queryFn: () => workspaces.demand(w.id),
+    refetchInterval: 15_000,
+  });
   const me = useMe().data?.user?.id;
   const [creating, setCreating] = useState(false);
   const [showEnded, setShowEnded] = useState(false);
   const [revoking, setRevoking] = useState<G.EnrollmentToken | null>(null);
+  const [editing, setEditing] = useState<G.EnrollmentToken | null>(null);
   const revoke = useMutation({
     mutationFn: (t: G.EnrollmentToken) => workspaces.revokeEnrollmentToken(w.id, t.id),
     onSuccess: (t) => {
       setRevoking(null);
       toast(`Revoked ${t.name}: it enrolls no more runners`);
       void list.refetch();
+      void demand.refetch();
     },
     onError: (e) => toast(e.message, "error"),
   });
   const now = Date.now();
   const tokens = list.data?.tokens ?? [];
-  const live = tokens.filter((t) => !["revoked", "expired"].includes(tokenState(t, now)));
-  const ended = tokens.filter((t) => ["revoked", "expired"].includes(tokenState(t, now)));
+  const pools = new Map(demand.data?.pools.map((d) => [d.pool.id, d]));
+  const of = (t: G.EnrollmentToken) => runners.filter((r) => r.enrollment?.token_id === t.id);
+  const ended = (t: G.EnrollmentToken) => ["revoked", "expired"].includes(tokenState(t, now));
+  // An ended token's runners stay in its pool: it shows with the others while it has some.
+  const shown = tokens.filter((t) => !ended(t) || of(t).length > 0);
+  const folded = tokens.filter((t) => ended(t) && of(t).length === 0);
+  const card = (t: G.EnrollmentToken) => (
+    <PoolCard
+      key={t.id}
+      token={t}
+      demand={pools.get(t.id)}
+      whose={whoseToken(t, me)}
+      now={now}
+      runners={of(t)}
+      row={row}
+      onEdit={ended(t) ? undefined : () => setEditing(t)}
+      onRevoke={ended(t) ? undefined : () => setRevoking(t)}
+    />
+  );
   return (
     <section id="enrollment-tokens" className="mt-12 scroll-mt-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div className="min-w-0">
-          <h3 className="font-display text-xl text-ink">Enrollment tokens</h3>
+          <h3 id="pools" className="font-display text-xl text-ink">
+            Pools
+          </h3>
           <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-ink-3">
             For machines that autoscaling creates, or that you set up without signing in on them: each enrolls
-            itself with a token, and gets a token of its own.{" "}
+            itself with its pool's enrollment token, and gets a token of its own. A pool's labels say which
+            projects' sessions its runners take, and how many it needs now tells whatever scales it.{" "}
             {admin
-              ? `With a token for everyone's sessions, they belong to ${w.name} and its admins manage them; with one for your own, they are yours and run only your sessions here.`
+              ? `With a pool for everyone's sessions, they belong to ${w.name} and its admins manage them; with one for your own, they are yours and run only your sessions here.`
               : `They are yours and run only your sessions in ${w.name}, so they count as your runners${w.own_runners || onRunners ? ", as your sessions here need" : ""}.`}{" "}
             <a
               href={GUIDE()}
@@ -486,25 +532,13 @@ export function EnrollmentTokens({
           onClick={() => setCreating(true)}
           className="shrink-0 self-start"
         >
-          New enrollment token
+          New pool
         </Button>
       </div>
       {list.data && !tokens.length && <p className="mt-4 text-[13px] text-ink-4">None yet.</p>}
-      {live.length > 0 && (
-        <ul className="mt-5 divide-y divide-line border-y border-line">
-          {live.map((t) => (
-            <TokenRow
-              key={t.id}
-              token={t}
-              whose={whoseToken(t, me)}
-              now={now}
-              onRevoke={() => setRevoking(t)}
-            />
-          ))}
-        </ul>
-      )}
-      {ended.length > 0 && (
-        <div className={cn(live.length ? "mt-3" : "mt-5")}>
+      {shown.length > 0 && <ul className="mt-5 flex flex-col gap-3">{shown.map(card)}</ul>}
+      {folded.length > 0 && (
+        <div className={cn(shown.length ? "mt-3" : "mt-5")}>
           <button
             type="button"
             aria-expanded={showEnded}
@@ -514,15 +548,9 @@ export function EnrollmentTokens({
             <ChevronDown
               className={cn("size-3.5 transition-transform duration-200", showEnded && "rotate-180")}
             />
-            {showEnded ? "Hide" : "Show"} {ended.length} revoked or expired
+            {showEnded ? "Hide" : "Show"} {folded.length} revoked or expired
           </button>
-          {showEnded && (
-            <ul className="mt-2 animate-rise divide-y divide-line border-y border-line">
-              {ended.map((t) => (
-                <TokenRow key={t.id} token={t} whose={whoseToken(t, me)} now={now} />
-              ))}
-            </ul>
-          )}
+          {showEnded && <ul className="mt-2 flex animate-rise flex-col gap-3">{folded.map(card)}</ul>}
         </div>
       )}
       <NewEnrollmentToken
@@ -533,8 +561,22 @@ export function EnrollmentTokens({
         onClose={() => {
           setCreating(false);
           void list.refetch();
+          void demand.refetch();
         }}
       />
+      {editing && (
+        <EditPool
+          key={editing.id}
+          w={w}
+          token={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            void list.refetch();
+            void demand.refetch();
+            refetch(w);
+          }}
+        />
+      )}
       <Dialog
         open={!!revoking}
         onClose={() => setRevoking(null)}
@@ -562,88 +604,303 @@ export function EnrollmentTokens({
   );
 }
 
-function TokenRow({
+/**
+ * A pool: its enrollment token, what it does and how much it was used, what it needs now, and the
+ * runners it enrolled. A card, as a configured thing whose state people check.
+ */
+function PoolCard({
   token: t,
+  demand: d,
   whose,
   now,
+  runners,
+  row,
+  onEdit,
   onRevoke,
 }: {
   token: G.EnrollmentToken;
+  demand?: G.PoolDemand;
   whose: Whose;
   now: number;
+  runners: G.Runner[];
+  row?: (r: G.Runner) => ReactNode;
+  onEdit?: () => void;
   onRevoke?: () => void;
 }) {
   const state = tokenState(t, now);
   const ended = state === "revoked" || state === "expired";
+  const labels = t.labels ?? [];
+  const doing = d && poolState(d);
   return (
-    <li className={cn("flex items-start gap-3 py-3.5", ended && "opacity-70")}>
-      <span
-        className={cn(
-          "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full",
-          ended ? "bg-raised text-ink-4" : "bg-accent-soft text-accent",
-        )}
-      >
-        <KeyRound className="size-3.5" />
-      </span>
-      <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[14px] text-ink">
-          {t.name}
-          {state !== "active" && (
-            <span
+    <li
+      className={cn("rounded-xl border border-line bg-surface/40", ended && !runners.length && "opacity-70")}
+    >
+      <div className="flex items-start gap-3 px-4 pt-3.5 pb-3">
+        <span
+          className={cn(
+            "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full",
+            ended ? "bg-raised text-ink-4" : "bg-accent-soft text-accent",
+          )}
+        >
+          <KeyRound className="size-3.5" />
+        </span>
+        <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[14px] text-ink">
+            {t.name}
+            {state !== "active" && (
+              <span
+                className={cn(
+                  "rounded-full border px-2 py-px text-[11.5px]",
+                  state === "full" ? "border-amber/30 text-amber" : "border-line text-ink-4",
+                )}
+              >
+                {state === "full" ? "Full" : state === "revoked" ? "Revoked" : "Expired"}
+              </span>
+            )}
+            {!("everyone" in whose) && (
+              <span className="whitespace-nowrap rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
+                {"you" in whose ? "Only your sessions" : `Only ${whose.name}'s sessions`}
+              </span>
+            )}
+          </div>
+          {labels.length > 0 && (
+            <ul aria-label="Labels" className="mt-1.5 flex flex-wrap gap-1">
+              {labels.map((l) => (
+                <li
+                  key={l}
+                  className="rounded-full border border-line px-2 py-px font-mono text-[11px] text-ink-3"
+                >
+                  {l}
+                </li>
+              ))}
+            </ul>
+          )}
+          {doing && (
+            <p
               className={cn(
-                "rounded-full border px-2 py-px text-[11.5px]",
-                state === "full" ? "border-amber/30 text-amber" : "border-line text-ink-4",
+                "mt-2 text-[13px] leading-relaxed",
+                doing.tone === "amber" ? "text-amber" : doing.tone === "accent" ? "text-ink-2" : "text-ink-3",
               )}
             >
-              {state === "full" ? "Full" : state === "revoked" ? "Revoked" : "Expired"}
-            </span>
+              {doing.text}
+            </p>
           )}
-          {!("everyone" in whose) && (
-            <span className="whitespace-nowrap rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
-              {"you" in whose ? "Only your sessions" : `Only ${whose.name}'s sessions`}
-            </span>
+          {d && (enrolled(d.runners) > 0 || d.waiting.sessions > 0) && (
+            <Meta
+              parts={poolFacts(d).map((f) => ({
+                key: f.key,
+                node: f.text,
+                className: f.amber ? "text-amber" : "text-ink-3",
+              }))}
+            />
           )}
-        </div>
-        <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-3">
-          {describeEnrollment(whose, t.approval, t.max_runners, t.remove_offline_after_minutes)}
-        </p>
-        <Meta
-          parts={[
-            {
-              key: "runners",
-              node:
-                t.max_runners !== undefined
-                  ? `${t.runners} of ${t.max_runners} runners`
-                  : `${t.runners} ${t.runners === 1 ? "runner" : "runners"}`,
-            },
-            t.pending > 0 && { key: "waiting", node: `${t.pending} waiting`, className: "text-amber" },
-            t.last_used_at
-              ? { key: "used", node: `last enrolled one ${ago(t.last_used_at)}` }
-              : { key: "used", node: "not used yet" },
-            state === "revoked"
-              ? {
-                  key: "ended",
-                  node: `revoked ${ago(t.revoked_at)}${t.revoked_by ? ` by ${t.revoked_by.name}` : ""}`,
-                }
-              : t.expires_at
+          <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-4">
+            {placementWords(t.placement)}.{" "}
+            {describeEnrollment(whose, t.approval, t.max_runners, t.remove_offline_after_minutes)}
+          </p>
+          <Meta
+            parts={[
+              // What it needs now counts them, where it shows.
+              !d && {
+                key: "runners",
+                node:
+                  t.max_runners !== undefined
+                    ? `${t.runners} of ${t.max_runners} runners`
+                    : `${t.runners} ${t.runners === 1 ? "runner" : "runners"}`,
+              },
+              t.pending > 0 && { key: "waiting", node: `${t.pending} waiting`, className: "text-amber" },
+              t.last_used_at
+                ? { key: "used", node: `last enrolled one ${ago(t.last_used_at)}` }
+                : { key: "used", node: "not used yet" },
+              state === "revoked"
                 ? {
                     key: "ended",
-                    node: `${state === "expired" ? "expired" : "expires"} ${ago(t.expires_at)}`,
+                    node: `revoked ${ago(t.revoked_at)}${t.revoked_by ? ` by ${t.revoked_by.name}` : ""}`,
                   }
-                : { key: "ended", node: "never expires" },
-            {
-              key: "made",
-              node: `made by ${"you" in whose ? "you" : (t.created_by?.name ?? (t.personal ? "a former member" : "a former admin"))}`,
-            },
-          ]}
-        />
+                : t.expires_at
+                  ? {
+                      key: "ended",
+                      node: `${state === "expired" ? "expired" : "expires"} ${ago(t.expires_at)}`,
+                    }
+                  : { key: "ended", node: "never expires" },
+              {
+                key: "made",
+                node: `made by ${"you" in whose ? "you" : (t.created_by?.name ?? (t.personal ? "a former member" : "a former admin"))}`,
+              },
+            ]}
+          />
+        </div>
+        {(onEdit || onRevoke) && (
+          <Menu
+            trigger={(toggle, open) => (
+              <IconButton
+                label={`Manage ${t.name}`}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                onClick={toggle}
+              >
+                <Ellipsis className="size-4" />
+              </IconButton>
+            )}
+          >
+            {(closeMenu) => {
+              const pick = (f: () => void) => () => {
+                closeMenu();
+                f();
+              };
+              return (
+                <>
+                  {onEdit && (
+                    <MenuItem icon={<Pencil />} onClick={pick(onEdit)}>
+                      Edit…
+                    </MenuItem>
+                  )}
+                  {onRevoke && (
+                    <MenuItem icon={<Ban />} danger onClick={pick(onRevoke)}>
+                      Revoke…
+                    </MenuItem>
+                  )}
+                </>
+              );
+            }}
+          </Menu>
+        )}
       </div>
-      {onRevoke && !ended && (
-        <Button size="sm" variant="ghost" onClick={onRevoke}>
-          Revoke
-        </Button>
+      {row && runners.length > 0 && (
+        <ul className="border-t border-line px-4 [&>li:last-child]:border-b-0">{runners.map(row)}</ul>
       )}
     </li>
+  );
+}
+
+/**
+ * Changes a pool as it runs: its name, its labels, its placement and how many runners it keeps.
+ * Its runners carry the new labels and placement at once.
+ */
+function EditPool({
+  w,
+  token,
+  onClose,
+  onSaved,
+}: {
+  w: G.Workspace;
+  token: G.EnrollmentToken;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  // Each opening starts from the token: the dialog mounts anew for it (its key).
+  const [name, setName] = useState(token.name);
+  const [labels, setLabels] = useState((token.labels ?? []).join(", "));
+  const [placement, setPlacement] = useState<G.Placement>(token.placement ?? "spread");
+  const [limit, setLimit] = useState(token.max_runners === undefined ? "" : String(token.max_runners));
+  const parsed = parseLabels(labels);
+  const problem = labelProblem(parsed);
+  const max = limitOf(limit);
+  const save = useMutation({
+    mutationFn: (t: G.EnrollmentToken) => {
+      const b: G.UpdateEnrollmentTokenRequest = {};
+      if (name.trim() !== t.name) b.name = name.trim();
+      if (parsed.join(",") !== (t.labels ?? []).join(",")) b.labels = parsed;
+      if (placement !== (t.placement ?? "spread")) b.placement = placement;
+      if (max !== t.max_runners) b.max_runners = max ?? 0;
+      return workspaces.updateEnrollmentToken(w.id, t.id, b);
+    },
+    onSuccess: (t) => {
+      toast(
+        `${t.name}'s runners carry ${labelsWords(t.labels ?? [])}, and ${t.placement === "packed" ? "pack" : "spread"} sessions`,
+      );
+      onSaved();
+      close();
+    },
+  });
+  const close = () => {
+    save.reset();
+    onClose();
+  };
+  const field = (save.error as { field?: string } | null)?.field;
+  const err = (f: string) => (field === f ? save.error?.message : undefined);
+  return (
+    <Dialog
+      open
+      onClose={close}
+      title={`Edit ${token.name}`}
+      description="Its runners carry the new labels and follow the new placement at once; the sessions they run carry on."
+    >
+      <form
+        className="flex flex-col gap-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim() && !problem && !Number.isNaN(max)) save.mutate(token);
+        }}
+      >
+        <Field label="Name" error={err("name")}>
+          {(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} />}
+        </Field>
+        <Field
+          label="Labels"
+          hint="Projects that ask for these labels run their sessions on its runners. Commas or spaces between them."
+          error={problem ?? err("labels")}
+        >
+          {(id) => (
+            <Input
+              id={id}
+              value={labels}
+              onChange={(e) => setLabels(e.target.value)}
+              placeholder="aws, large"
+              className="font-mono"
+            />
+          )}
+        </Field>
+        <div className="grid items-start gap-4 sm:grid-cols-2">
+          <Field label="Placement">
+            {(id) => (
+              <Select
+                id={id}
+                value={placement}
+                onChange={(v) => setPlacement(v as G.Placement)}
+                options={PLACEMENTS}
+              />
+            )}
+          </Field>
+          <Field
+            label="Runners at once"
+            hint={
+              Number.isNaN(max)
+                ? undefined
+                : "Fewer than it has removes none: it enrolls no more until some go."
+            }
+            error={
+              err("max_runners") ??
+              (Number.isNaN(max) ? `A whole number from 1 to ${MAX_RUNNERS}, or none` : undefined)
+            }
+          >
+            {(id) => (
+              <Input
+                id={id}
+                inputMode="numeric"
+                value={limit}
+                onChange={(e) => setLimit(e.target.value)}
+                placeholder="No limit"
+              />
+            )}
+          </Field>
+        </div>
+        {save.error && !field && <Banner tone="error">{save.error.message}</Banner>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={close}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            loading={save.isPending}
+            disabled={!name.trim() || !!problem || Number.isNaN(max)}
+          >
+            Save
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -683,7 +940,7 @@ function NewEnrollmentToken({
       open={open}
       onClose={close}
       wide
-      title={created ? `${created.token.name} is ready` : "New enrollment token"}
+      title={created ? `${created.token.name} is ready` : "New pool"}
       description={
         created
           ? describeEnrollment(
@@ -772,6 +1029,33 @@ function TokenForm({
         </Field>
       )}
       <div className="grid items-start gap-4 sm:grid-cols-2">
+        <Field
+          label="Labels"
+          hint="Projects that ask for them run on its runners. Commas or spaces between them."
+          error={labelProblem(parseLabels(form.labels)) ?? err("labels")}
+        >
+          {(id) => (
+            <Input
+              id={id}
+              value={form.labels}
+              onChange={(e) => set({ labels: e.target.value })}
+              placeholder="aws, large"
+              className="font-mono"
+            />
+          )}
+        </Field>
+        <Field label="Placement">
+          {(id) => (
+            <Select
+              id={id}
+              value={placementOf(form)}
+              onChange={(v) => set({ placement: v as G.Placement })}
+              options={PLACEMENTS}
+            />
+          )}
+        </Field>
+      </div>
+      <div className="grid items-start gap-4 sm:grid-cols-2">
         <Field label="Expires" error={err("expires_in_hours")}>
           {(id) => (
             <Select
@@ -835,6 +1119,7 @@ function TokenForm({
         className="rounded-lg border border-line bg-sunken/50 px-4 py-3 text-[13px] leading-relaxed text-ink-2"
       >
         {describeEnrollment(whose, form.approval, Number.isNaN(limit) ? undefined : limit, offline)}{" "}
+        {poolLine(labelProblem(parseLabels(form.labels)) ? [] : parseLabels(form.labels), placementOf(form))}{" "}
         {expires
           ? `It expires on ${new Date(Date.now() + expires * 3_600_000).toLocaleDateString(undefined, { dateStyle: "long" })}${expires < 24 ? ` at ${new Date(Date.now() + expires * 3_600_000).toLocaleTimeString(undefined, { timeStyle: "short" })}` : ""}.`
           : "It never expires: revoke it when you no longer need it."}
@@ -843,7 +1128,7 @@ function TokenForm({
       {create.error && !field && <Banner tone="error">{create.error.message}</Banner>}
       <div className="flex justify-end">
         <Button type="submit" variant="primary" loading={create.isPending} disabled={!enrollmentReady(form)}>
-          Create token
+          Create pool
         </Button>
       </div>
     </form>

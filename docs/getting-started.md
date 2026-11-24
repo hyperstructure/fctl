@@ -276,11 +276,12 @@ until the app runs a newer version.
 
 Machines that autoscaling starts and stops, or that you set up without
 signing in on them, enroll themselves with one of the workspace's
-**enrollment tokens**. Its admins make one under **Enrollment tokens** on
-its Runners tab (or with `fctl runners enrollment-tokens create`): a name,
-how long it works, how many runners it may enroll at once, whether each
-waits for an admin's approval, and whether runners that stay offline are
-removed. The token is shown once. On each machine, from its boot script
+**enrollment tokens**. Its admins make one with **New pool** under
+**Pools** on its Runners tab (or with `fctl runners enrollment-tokens
+create`): a name, its labels and placement, how long it works, how many
+runners it may enroll at once, whether each waits for an admin's
+approval, and whether runners that stay offline are removed. The token is
+shown once. On each machine, from its boot script
 (cloud-init's user data, a launch template) or a shell:
 
 ```sh
@@ -316,8 +317,12 @@ them, don't run sessions on it.
 
 The runners a token enrolls are a **pool**. Give the token labels (`--labels
 aws,large`), and a project that asks for them (`fctl projects set -p ml
---runners large`) runs its sessions only on runners
-that have them, which wait for one and say so. A token that removes offline
+--runners large`, or the pool by its name in the project's Settings →
+Runners) runs its sessions only on runners
+that have them, which wait for one and say so. On the Runners tab, each
+pool is a card with its runners under it and what it needs now: how many
+of its runners are busy, the sessions that wait for it and for how long,
+and whether it grows or is at its limit. A token that removes offline
 runners packs sessions onto its busiest runners with room, so that idle
 machines empty out and can go. What a pool needs now, for an autoscaler,
 comes from `fctl runners demand` (`--json`, `--cloudwatch`), or from `GET
