@@ -174,11 +174,9 @@ pub async fn commit(
         );
     }
     // The one before, in a bucket: its host deletes it there, when the
-    // bucket is its own (the control plane can't).
-    let replaced = before.and_then(|b| {
-        b.location
-            .filter(|_| b.snapshot_id.as_deref().is_some_and(|id| id != snapshot))
-    });
+    // bucket is its own (the control plane can't). A commit that comes
+    // again, its first answer lost, names it again.
+    let replaced = before.and_then(|b| b.replaced_by(snapshot));
     http::ok(&SnapshotCommitted { ok: true, replaced })
 }
 

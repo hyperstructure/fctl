@@ -107,6 +107,39 @@ impl Spool {
     }
 }
 
+/// Why a snapshot isn't the session's, and whether the control plane may
+/// have kept it all the same, its answer to the commit lost.
+#[derive(Debug)]
+pub struct NotSaved {
+    pub why: String,
+    pub maybe_kept: bool,
+}
+
+impl NotSaved {
+    fn sure(why: impl Into<String>) -> Self {
+        Self {
+            why: why.into(),
+            maybe_kept: false,
+        }
+    }
+
+    /// Of a commit that failed with `e`: one the control plane refused
+    /// wasn't kept; one whose answer didn't come may have been.
+    fn of_commit(e: &fctl_client::Error) -> Self {
+        Self {
+            why: format!("keeping it: {e}"),
+            maybe_kept: !refused(e),
+        }
+    }
+}
+
+/// Whether `e` is the control plane's answer refusing the request, rather
+/// than a failure that leaves its answer unknown (no connection, a time
+/// out, a 5xx).
+fn refused(e: &fctl_client::Error) -> bool {
+    e.api().is_some() && !e.is_transient()
+}
+
 /// Uploads a spooled snapshot, part by part, and makes it the session's:
 /// done when the task ends, the spool's file gone either way.
 ///
@@ -119,7 +152,7 @@ pub fn upload(
     spool: Spool,
     saved: SnapshotSaved,
     store: Option<std::sync::Arc<crate::s3::Store>>,
-) -> tokio::task::JoinHandle<Result<(), String>> {
+) -> tokio::task::JoinHandle<Result<(), NotSaved>> {
     tokio::spawn(async move {
         let Spool { id, path, file, .. } = spool;
         drop(file);
@@ -147,7 +180,7 @@ pub fn upload(
                 Ok(())
             }
             Err(e) => {
-                tracing::warn!("saving {session}'s snapshot: {e}");
+                tracing::warn!("saving {session}'s snapshot: {}", e.why);
                 Err(e)
             }
         };
@@ -166,16 +199,21 @@ async fn upload_to_bucket(
     path: &Path,
     saved: &SnapshotSaved,
     store: &crate::s3::Store,
-) -> Result<(String, Option<String>), String> {
-    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+) -> Result<(String, Option<String>), NotSaved> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| NotSaved::sure(e.to_string()))?
+        .len();
     if size != saved.size {
-        return Err(format!(
+        return Err(NotSaved::sure(format!(
             "it has {size} bytes where fctl-agent said {}",
             saved.size
-        ));
+        )));
     }
     let key = store.bucket.key(session.as_str(), id);
-    store.put(&key, path, &saved.sha256).await?;
+    store
+        .put(&key, path, &saved.sha256)
+        .await
+        .map_err(NotSaved::sure)?;
     let location = store.bucket.location(&key);
     let commit = SnapshotCommit {
         saved: saved.clone(),
@@ -185,9 +223,14 @@ async fn upload_to_bucket(
     match retry(|| api.runner_snapshot_commit(session.as_str(), id, &commit)).await {
         Ok(committed) => Ok((location, committed.replaced)),
         Err(e) => {
-            // Not the session's: it would only take room.
-            let _ = store.delete(&key).await;
-            Err(format!("keeping it: {e}"))
+            let not = NotSaved::of_commit(&e);
+            // Refused, it isn't the session's and would only take room.
+            // Without an answer, D1 may name it: it stays, and the bucket's
+            // lifecycle rule takes it if it isn't the session's.
+            if !not.maybe_kept {
+                let _ = store.delete(&key).await;
+            }
+            Err(not)
         }
     }
 }
@@ -198,30 +241,32 @@ async fn upload_parts(
     id: &str,
     path: &Path,
     saved: &SnapshotSaved,
-) -> Result<u32, String> {
-    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+) -> Result<u32, NotSaved> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| NotSaved::sure(e.to_string()))?
+        .len();
     if size != saved.size {
-        return Err(format!(
+        return Err(NotSaved::sure(format!(
             "it has {size} bytes where fctl-agent said {}",
             saved.size
-        ));
+        )));
     }
     let mut file = tokio::fs::File::open(path)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NotSaved::sure(e.to_string()))?;
     let mut n = 0u32;
     loop {
         let mut buf = vec![0u8; SNAPSHOT_PART_BYTES];
         let len = read_full(&mut file, &mut buf)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| NotSaved::sure(e.to_string()))?;
         if len == 0 && n > 0 {
             break;
         }
         buf.truncate(len);
         retry(|| api.runner_snapshot_put(session.as_str(), id, n, buf.clone()))
             .await
-            .map_err(|e| format!("uploading part {n}: {e}"))?;
+            .map_err(|e| NotSaved::sure(format!("uploading part {n}: {e}")))?;
         n += 1;
         if len < SNAPSHOT_PART_BYTES {
             break;
@@ -234,7 +279,7 @@ async fn upload_parts(
     };
     retry(|| api.runner_snapshot_commit(session.as_str(), id, &commit))
         .await
-        .map_err(|e| format!("keeping it: {e}"))?;
+        .map_err(|e| NotSaved::of_commit(&e))?;
     Ok(n)
 }
 
@@ -547,5 +592,34 @@ mod tests {
         spool.discard();
         assert_eq!(std::fs::read_dir(dir.path().join("snapshots"))?.count(), 0);
         Ok(())
+    }
+
+    /// A commit the control plane refused wasn't kept; one whose answer
+    /// didn't come may have been, so its object stays in the bucket.
+    #[test]
+    fn a_commit_without_an_answer_may_have_been_kept() {
+        use fctl_client::Error;
+        let refused = Error::Api(fctl_proto::ApiError::forbidden(
+            "This session saves no snapshots",
+        ));
+        assert!(!NotSaved::of_commit(&refused).maybe_kept);
+        for unknown in [
+            Error::Network {
+                url: "https://app.fctl.sh/api/v1/runner".into(),
+                message: "connection reset by peer".into(),
+            },
+            Error::Timeout(Duration::from_secs(30)),
+            Error::Status {
+                status: 502,
+                body: String::new(),
+            },
+            Error::Api(fctl_proto::ApiError::new(
+                fctl_proto::ErrorCode::Unavailable,
+                "D1 didn't answer",
+            )),
+            Error::Decode("expected value at line 1 column 1".into()),
+        ] {
+            assert!(NotSaved::of_commit(&unknown).maybe_kept, "{unknown}");
+        }
     }
 }
