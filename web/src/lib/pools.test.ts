@@ -165,23 +165,33 @@ describe("choosing a pool", () => {
     expect(poolFor(["large"], [tagged])?.pool.id).toBe("enr_t");
     expect(poolFor(["arm"], [large, small])).toBeUndefined();
     expect(poolFor([], [large])).toBeUndefined();
+    // A member's own pool runs only their sessions: no project's waits for it.
+    const own = demand({
+      pool: { id: "enr_o", labels: ["aws", "large"], owner: { id: "usr_grace", name: "Grace" } },
+    });
+    expect(poolFor(["aws", "large"], [own])).toBeUndefined();
+    expect(poolFor(["aws", "large"], [own, large])?.pool.id).toBe("enr_l");
   });
 });
 
 describe("a project's choice of runners", () => {
-  const runner = (id: string, labels: string[], pool?: G.RunnerPool) =>
-    ({ id, name: id, labels, pool, status: "online" }) as G.Runner;
+  const runner = (id: string, labels: string[], pool?: G.RunnerPool, personal: string[] = []) =>
+    ({ id, name: id, labels, pool, personal, status: "online" }) as G.Runner;
 
   it("lists the pools the viewer manages, and the others through their runners", () => {
     const managed = demand({ pool: { id: "enr_l", name: "AWS large" }, runners: { online: 4 }, shape: {} });
+    // A member's own pool, and a runner of one in this workspace, run only their sessions.
+    const own = demand({ pool: { id: "enr_o", name: "Grace's", owner: { id: "usr_grace", name: "Grace" } } });
     const choices = poolChoices(
-      [managed],
+      [managed, own],
       [
         runner("a", ["aws", "large"], { id: "enr_l", name: "AWS large" }),
         runner("g1", ["gpu", "eu"], { id: "enr_g", name: "GPUs" }),
         runner("g2", ["gpu"], { id: "enr_g", name: "GPUs" }),
+        runner("mine", ["arm"], { id: "enr_m", name: "Ada's" }, ["wsp_acme"]),
         runner("mac", []),
       ],
+      "wsp_acme",
     );
     expect(choices).toEqual([
       {

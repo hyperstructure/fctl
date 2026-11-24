@@ -185,12 +185,14 @@ export function poolShapeWords(d: G.PoolDemand): string {
 /**
  * Of `pools`, the one a project with `labels` waits for and counts towards first: the one whose
  * labels and its runners' include them all with the fewest others, then the oldest
- * (`fctl_domain::pools::first_with`). Undefined for no labels, or when no pool has them.
+ * (`fctl_domain::pools::first_with`). Undefined for no labels, or when no pool has them. A member's
+ * own pool runs only their sessions (`do_fleet.rs`'s `pool_for`), so it is no project's.
  */
 export function poolFor(labels: readonly string[], pools: readonly G.PoolDemand[]): G.PoolDemand | undefined {
   if (labels.length === 0) return undefined;
   let best: { p: G.PoolDemand; n: number; i: number } | undefined;
   pools.forEach((p, i) => {
+    if (p.pool.owner) return;
     const have = [
       ...(p.pool.labels ?? []),
       ...(p.shape?.labels ?? []).filter((l) => !(p.pool.labels ?? []).includes(l)),
@@ -211,16 +213,18 @@ export interface PoolChoice {
 }
 
 /**
- * The pools a project may choose, from what the viewer reads: what each needs now, for those who
- * manage the pools; and the pools of the workspace's runners, for the rest, which carry their pool's
- * labels and their hosts' (the labels all of a pool's runners share stand for its own).
+ * The pools a project of workspace `wid` may choose, from what the viewer reads: what each needs
+ * now, for those who manage the pools; and the pools of the workspace's runners, for the rest, which
+ * carry their pool's labels and their hosts' (the labels all of a pool's runners share stand for its
+ * own). Not a member's own pool, whose runners run only their sessions.
  */
 export function poolChoices(
   pools: readonly G.PoolDemand[] | undefined,
   runners: readonly G.Runner[],
+  wid: string,
 ): PoolChoice[] {
   const out: PoolChoice[] = (pools ?? [])
-    .filter((d) => !d.pool.closed || enrolled(d.runners) > 0)
+    .filter((d) => !d.pool.owner && (!d.pool.closed || enrolled(d.runners) > 0))
     .map((d) => ({
       id: d.pool.id,
       name: d.pool.name,
@@ -230,7 +234,7 @@ export function poolChoices(
   const seen = new Set(out.map((c) => c.id));
   const by = new Map<string, { name: string; runners: G.Runner[] }>();
   for (const r of runners) {
-    if (!r.pool || seen.has(r.pool.id)) continue;
+    if (!r.pool || seen.has(r.pool.id) || r.personal?.includes(wid)) continue;
     const g = by.get(r.pool.id) ?? { name: r.pool.name, runners: [] };
     g.runners.push(r);
     by.set(r.pool.id, g);
