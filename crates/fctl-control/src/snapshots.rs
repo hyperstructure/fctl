@@ -15,7 +15,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use fctl_domain::snapshots as domain;
 use fctl_proto::agent::SnapshotSaved;
-use fctl_proto::api::InstanceSettings;
+use fctl_proto::api::{BucketSnapshots, InstanceSettings, SnapshotCount};
 use fctl_proto::runner::{SnapshotRef, SnapshotSpec};
 use fctl_proto::session::SessionSnapshot;
 use serde::Deserialize;
@@ -365,6 +365,59 @@ pub async fn due(
         .collect())
 }
 
+/// What workspace `workspace_id`'s sessions' snapshots take at `now`: the
+/// ones its workspace still keeps, within its days, in the control plane
+/// and by bucket, the largest first.
+pub async fn usage(
+    db: &D1Database,
+    workspace_id: &str,
+    now: i64,
+) -> AppResult<(SnapshotCount, Vec<BucketSnapshots>)> {
+    #[derive(Deserialize)]
+    struct Use {
+        bucket: Option<String>,
+        #[serde(deserialize_with = "crate::db::int", default)]
+        count: i64,
+        #[serde(deserialize_with = "crate::db::int", default)]
+        bytes: i64,
+    }
+    // `s3://bucket/key`: the bucket is what comes before the key's `/`.
+    let rows: Vec<Use> = q(
+        db,
+        "SELECT CASE WHEN ss.location IS NULL THEN NULL \
+         ELSE substr(ss.location, 1, instr(substr(ss.location, 6), '/') + 4) END AS bucket, \
+         COUNT(*) AS count, COALESCE(SUM(ss.size), 0) AS bytes \
+         FROM session_snapshots ss JOIN sessions se ON se.id = ss.session_id \
+         JOIN projects p ON p.id = se.project_id JOIN workspaces w ON w.id = p.workspace_id \
+         WHERE p.workspace_id = ?1 AND ss.snapshot_id IS NOT NULL AND w.snapshots = 1 \
+         AND ss.saved_at > ?2 - COALESCE(w.snapshot_days, ?3) * 86400000 \
+         GROUP BY bucket ORDER BY bytes DESC",
+        &[s(workspace_id), n(now), n(i64::from(domain::DEFAULT_DAYS))],
+    )?
+    .all()
+    .await?;
+    let count = |c: i64| u32::try_from(c).unwrap_or(u32::MAX);
+    let bytes = |b: i64| u64::try_from(b).unwrap_or(0);
+    let mut kept = SnapshotCount::default();
+    let mut buckets = Vec::new();
+    for r in rows {
+        match r.bucket {
+            None => {
+                kept = SnapshotCount {
+                    count: count(r.count),
+                    bytes: bytes(r.bytes),
+                }
+            }
+            Some(bucket) => buckets.push(BucketSnapshots {
+                bucket,
+                count: count(r.count),
+                bytes: bytes(r.bytes),
+            }),
+        }
+    }
+    Ok((kept, buckets))
+}
+
 /// Forgets snapshot `snapshot_id` as the session's, unless another is
 /// the session's by now: all D1 said of it. The session's key stays, for
 /// its next one.
@@ -470,6 +523,97 @@ mod tests {
             parts,
             location: None,
         }
+    }
+
+    /// A workspace's usage counts the snapshots it keeps, in the control
+    /// plane and by bucket, and none past its days or forgotten.
+    #[wasm_bindgen_test]
+    async fn a_workspaces_snapshots_add_up_by_where_they_are() -> AppResult<()> {
+        let db = testing::database();
+        acme(&db).await?;
+        for (id, number) in [("ses_2", 2), ("ses_3", 3), ("ses_4", 4)] {
+            q(
+                &db,
+                "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, claude_session_id, created_at, updated_at) \
+                 VALUES (?, 'prj_web', ?, 'More', 'Go', 'stopped', 'usr_ada', ?, 0, 0)",
+                &[s(id), n(number), s(&format!("c{number}"))],
+            )?
+            .run()
+            .await?;
+        }
+        let keys = Keys::derive(&[5; 32]);
+        let settings = InstanceSettings::default();
+        assert_eq!(
+            usage(&db, "wsp_acme", NOW).await?,
+            (SnapshotCount::default(), vec![])
+        );
+        for (session, snapshot, size, location) in [
+            ("ses_1", "snp_a", 1_000, None),
+            (
+                "ses_2",
+                "snp_b",
+                2_000,
+                Some("s3://acme-fctl/s/ses_2/snp_b"),
+            ),
+            (
+                "ses_3",
+                "snp_c",
+                3_000,
+                Some("s3://acme-fctl/s/ses_3/snp_c"),
+            ),
+            ("ses_4", "snp_d", 500, Some("s3://acme-eu/ses_4/snp_d")),
+        ] {
+            spec(&db, &keys, &settings, session, false, NOW).await?;
+            keep(
+                &db,
+                session,
+                snapshot,
+                &SnapshotCommit {
+                    location: location.map(str::to_owned),
+                    ..commit(size, u32::from(location.is_none()))
+                },
+                ("rnr_1", "aws-7"),
+                NOW,
+            )
+            .await?;
+        }
+        let (kept, buckets) = usage(&db, "wsp_acme", NOW + DAY).await?;
+        assert_eq!(
+            kept,
+            SnapshotCount {
+                count: 1,
+                bytes: 1_000
+            }
+        );
+        assert_eq!(
+            buckets,
+            vec![
+                BucketSnapshots {
+                    bucket: "s3://acme-fctl".into(),
+                    count: 2,
+                    bytes: 5_000
+                },
+                BucketSnapshots {
+                    bucket: "s3://acme-eu".into(),
+                    count: 1,
+                    bytes: 500
+                },
+            ]
+        );
+        // Forgotten, or past the workspace's days: not counted.
+        forget(&db, "ses_4", "snp_d").await?;
+        let (_, buckets) = usage(&db, "wsp_acme", NOW + DAY).await?;
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(
+            usage(&db, "wsp_acme", NOW + 31 * DAY).await?,
+            (SnapshotCount::default(), vec![])
+        );
+        // Nor another workspace's.
+        assert_eq!(
+            usage(&db, "wsp_off", NOW).await?,
+            (SnapshotCount::default(), vec![])
+        );
+        Ok(())
     }
 
     /// A session's first spec makes its key, which later ones keep; once a

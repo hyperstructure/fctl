@@ -1940,6 +1940,44 @@ pub struct UpdateWorkspaceRequest {
     pub snapshot_days: Option<u32>,
 }
 
+/// What a workspace's sessions' snapshots take now
+/// (`GET /api/v1/workspaces/{id}/snapshots`): the ones still kept, within
+/// its days, in the control plane and in buckets of its runners' own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WorkspaceSnapshots {
+    /// The instance keeps snapshots ([`InstanceSettings::snapshots`]):
+    /// while it doesn't, no session saves one, whatever the workspace says.
+    pub instance: bool,
+    /// The most MiB one may take in the control plane
+    /// ([`InstanceSettings::max_snapshot_mb`]); a bucket's runners set
+    /// their own.
+    pub max_mb: u32,
+    /// The ones the control plane keeps.
+    pub kept: SnapshotCount,
+    /// The ones in buckets of the organization's own, by bucket, the
+    /// largest first.
+    pub buckets: Vec<BucketSnapshots>,
+}
+
+/// How many snapshots, and their bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SnapshotCount {
+    pub count: u32,
+    pub bytes: u64,
+}
+
+/// The snapshots in one bucket.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BucketSnapshots {
+    /// `s3://bucket`.
+    pub bucket: String,
+    pub count: u32,
+    pub bytes: u64,
+}
+
 /// Someone in a workspace.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

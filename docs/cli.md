@@ -315,6 +315,7 @@ fctl workspaces set --require-two-factor on   # closed to members without a seco
 fctl workspaces set --skip-invites on      # a workspace for one: its setup stops asking for people
 fctl workspaces set --snapshot-days 7      # keep each session's snapshot a week after it stops (30 by default)
 fctl workspaces set --snapshots off        # sessions keep no snapshots: one that resumes elsewhere starts its conversation again
+fctl workspaces snapshots                  # what its sessions' snapshots take now, with fctl and in each of its runners' buckets
 
 fctl workspaces runners                    # the runners its sessions start on, with their ids
 fctl workspaces add-runner studio-mac      # one of yours runs its sessions too (its name or id)

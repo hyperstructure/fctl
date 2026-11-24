@@ -66,6 +66,7 @@ import { WorkspaceColorField } from "@/components/workspace/color-field";
 import { LinearTab } from "@/components/workspace/linear";
 import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
 import { EnrollmentTokens, ManageRunner, WaitingRunners } from "@/components/workspace/runners";
+import { SnapshotSettings, SnapshotsSection } from "@/components/workspace/snapshots";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
 import type { AuditNames } from "@/lib/audit";
@@ -1126,6 +1127,7 @@ function Runners({ w }: { w: G.Workspace }) {
         />
       )}
       <EnrollmentTokens w={w} admin={admin} onRunners={onRunners} />
+      <SnapshotsSection w={w} admin={admin} />
       <Dialog
         open={!!takingOut}
         onClose={() => setTakingOut(null)}
@@ -1879,6 +1881,7 @@ function WorkspaceSettings({ w }: { w: G.Workspace }) {
       <You w={w} />
       {admin && <General w={w} />}
       {admin && <Access w={w} />}
+      {admin && <SnapshotSettings w={w} />}
       {admin && <Autopilots w={w} />}
       {w.role === "owner" && <Primary w={w} />}
     </>

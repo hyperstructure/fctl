@@ -64,6 +64,7 @@ import {
   TicketLink,
 } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
+import { SnapshotRow } from "@/components/session/snapshot";
 import { TakeOverDialog } from "@/components/session/take-over";
 import {
   TurnBar,
@@ -153,6 +154,11 @@ export function SessionPage() {
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
   const [s, store] = useLiveSession(id, initial.data);
   const session = s.session ?? initial.data;
+  // The snapshot its sandbox saves as it stops comes only with its details: read them again then.
+  const stopped = session?.status === "stopped";
+  useEffect(() => {
+    if (stopped) void queryClient.invalidateQueries({ queryKey: keys.session(id) });
+  }, [stopped, id]);
   const prs = session ? pullRequests(session) : [];
   const workspaceIndex = useWorkspaceIndex();
   const stall = useStall(session, s);
@@ -937,6 +943,7 @@ export function SessionPage() {
           <Details
             key={session.id}
             session={session}
+            snapshot={initial.data?.snapshot}
             onDiff={setDiffAt}
             role={role}
             review={review}
@@ -971,6 +978,7 @@ export function SessionPage() {
           <Overview session={session} workspace={workspace} notes={notes} />
           <Details
             session={session}
+            snapshot={initial.data?.snapshot}
             role={role}
             review={review}
             me={me?.user.id}
@@ -1563,6 +1571,7 @@ function Details({
   onDiff,
   turns,
   plan,
+  snapshot,
 }: {
   session: G.Session;
   /** The signed-in person's, in the session. */
@@ -1588,6 +1597,8 @@ function Details({
   turns?: React.ReactNode;
   /** The agent's plan, first. */
   plan?: React.ReactNode;
+  /** Its last snapshot, which only its details carry. */
+  snapshot?: G.SessionSnapshot;
 }) {
   const st = session.stats;
   const project = useProject(session.project_slug).data;
@@ -1766,6 +1777,7 @@ function Details({
             }
           />
         )}
+        {snapshot && <SnapshotRow snapshot={snapshot} />}
         <Row
           k="Billing"
           v={

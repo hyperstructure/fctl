@@ -1704,6 +1704,7 @@ function InstanceSettings() {
       <SignInSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <SensitiveActions settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <ServiceAccountSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
+      <SnapshotSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <Section title="Agents" description="What projects may let their agents do on this instance.">
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
           <span>
@@ -1946,8 +1947,112 @@ function workspaceLimits(current: number | undefined): SelectOption[] {
   }));
 }
 
+/** The most MiB one snapshot may take that admins choose from, with the current one. */
+function snapshotLimits(current: number | undefined): SelectOption[] {
+  const mbs = [50, 100, 200, 500, 1024, 2048];
+  if (current !== undefined && !mbs.includes(current)) mbs.push(current);
+  return mbs
+    .sort((a, b) => a - b)
+    .map((mb) => ({
+      value: String(mb),
+      label: memory(mb),
+      description: mb === 200 ? "The default" : undefined,
+    }));
+}
+
+/**
+ * Whether sessions save snapshots on this instance, and how large one may be where it keeps them.
+ * Off deletes every one it keeps, so it asks first.
+ */
+function SnapshotSettings({
+  settings: s,
+  save,
+  saving,
+}: {
+  settings?: G.InstanceSettings;
+  save: (b: G.UpdateInstanceSettingsRequest) => void;
+  saving: boolean;
+}) {
+  const [confirm, setConfirm] = useState(false);
+  const on = s?.snapshots ?? true;
+  return (
+    <Section
+      title="Session snapshots"
+      description="What a session takes with it when it resumes on another runner. Workspaces choose how long they keep them, and may turn them off."
+    >
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Sessions save snapshots
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              As a session's sandbox stops, its agent saves its conversation and the work it hadn't pushed,
+              encrypted with a key of the session's own, so that it resumes on any runner as it was. This
+              instance keeps them, or the buckets runners name in their host.toml. Off: no session saves one,
+              and a session that resumes on another runner starts from its task and branch.
+            </span>
+          </span>
+          <Switch
+            checked={on}
+            disabled={!s || saving}
+            onChange={(v) => (v ? save({ snapshots: true }) : setConfirm(true))}
+            label="Sessions save snapshots"
+          />
+        </div>
+        {on && (
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Each one at most
+              <span className="block text-[12.5px] leading-relaxed text-ink-4">
+                Past it, an agent leaves the conversation's images out, then the work; past it still, it saves
+                none, and the session's transcript says so. Runners that keep snapshots in a bucket of their
+                own set their own limit.
+              </span>
+            </span>
+            <Select
+              size="sm"
+              aria-label="The most one snapshot may take"
+              className="shrink-0"
+              value={s && String(s.max_snapshot_mb)}
+              options={snapshotLimits(s?.max_snapshot_mb)}
+              disabled={saving}
+              onChange={(v) => save({ max_snapshot_mb: Number(v) })}
+            />
+          </div>
+        )}
+      </div>
+      <Dialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        title="Turn session snapshots off?"
+        description="Every snapshot this instance keeps is deleted within the hour, in every workspace, and from then on a session that resumes on another runner starts from its task and branch. Snapshots in runners' own buckets go by those buckets' rules."
+      >
+        <div className="mt-2 flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setConfirm(false)}>
+            Keep them
+          </Button>
+          <Button
+            variant="danger"
+            loading={saving}
+            onClick={() => {
+              save({ snapshots: false });
+              setConfirm(false);
+            }}
+          >
+            Turn them off
+          </Button>
+        </div>
+      </Dialog>
+    </Section>
+  );
+}
+
 /** What changed, for the toast. */
 function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest): string {
+  if (b.snapshots !== undefined)
+    return s.snapshots
+      ? "Sessions save snapshots again"
+      : "Snapshots are off: the ones this instance keeps go within the hour";
+  if (b.max_snapshot_mb !== undefined) return `A snapshot may take ${memory(s.max_snapshot_mb)} at most`;
   if (b.export_interval_hours !== undefined)
     return `People can export their data ${exportEvery(s.export_interval_hours)}`;
   if (b.max_workspaces !== undefined)

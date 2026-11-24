@@ -1354,6 +1354,22 @@ pub async fn runners(ctx: &Ctx, id: &str) -> AppResult<Response> {
     })
 }
 
+/// `GET /api/v1/workspaces/{id}/snapshots`: what its sessions' snapshots
+/// take now, in the control plane and in its runners' buckets, and whether
+/// the instance keeps any, for its members.
+pub async fn snapshots(ctx: &Ctx, id: &str) -> AppResult<Response> {
+    let a = ws::load(ctx, id).await?;
+    a.require_open()?;
+    let settings = crate::instance::settings(&ctx.db).await?;
+    let (kept, buckets) = crate::snapshots::usage(&ctx.db, a.id(), ctx.now).await?;
+    http::ok(&fctl_proto::api::WorkspaceSnapshots {
+        instance: settings.snapshots,
+        max_mb: settings.max_snapshot_mb,
+        kept,
+        buckets,
+    })
+}
+
 /// Registers a runner for `workspace_id`, where with `personal` it runs
 /// only the caller's sessions: the caller owns it.
 pub async fn register_runner(

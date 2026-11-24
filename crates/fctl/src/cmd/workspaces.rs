@@ -124,6 +124,14 @@ pub enum WorkspacesCmd {
         #[arg(short, long)]
         workspace: Option<String>,
     },
+    /// What a workspace's sessions' snapshots take now: how many, and
+    /// their size, with fctl and in each bucket of its runners' own.
+    Snapshots {
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
+        #[arg(short, long)]
+        workspace: Option<String>,
+    },
     /// Create a workspace: you are its primary admin.
     #[command(
         after_help = "Examples:\n  fctl workspaces create \"Side project\" --color pink\n  fctl workspaces create Acme --color '#2a9d8f'\n  fctl workspaces create Acme --as ada.lovelace@company.example"
@@ -511,6 +519,44 @@ fn base(b: BaseRole) -> &'static str {
     }
 }
 
+/// Whether a workspace's sessions save snapshots, and what those it keeps
+/// take, where.
+fn print_snapshots(w: &Workspace, s: &fctl_proto::api::WorkspaceSnapshots) {
+    let days = w
+        .snapshot_days
+        .unwrap_or(fctl_domain::snapshots::DEFAULT_DAYS);
+    if !s.instance {
+        println!(
+            "{}",
+            style::amber(
+                "The instance keeps no snapshots: its admins turned them off. A session resumes on another runner without its conversation or uncommitted work."
+            )
+        );
+        return;
+    }
+    if !w.snapshots {
+        println!(
+            "Session snapshots in {}: off. A session resumes on another runner without its conversation or uncommitted work.",
+            w.name
+        );
+        return;
+    }
+    println!(
+        "Session snapshots in {}: on, each kept {} after it was saved",
+        w.name,
+        style::count(days, "day", "days")
+    );
+    let size = fctl_domain::snapshots::size_words;
+    let mut lines = vec![(format!("{} with fctl", s.kept.count), size(s.kept.bytes))];
+    for b in &s.buckets {
+        lines.push((format!("{} in {}", b.count, b.bucket), size(b.bytes)));
+    }
+    let width = lines.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    for (what, bytes) in lines {
+        println!("  {what:<width$}  {}", style::dim(&bytes));
+    }
+}
+
 fn print_workspace(w: &Workspace) {
     let mark = if w.blocked {
         style::amber("closed until you set up two-factor sign-in")
@@ -620,6 +666,14 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     style::dim("Join one with `fctl workspaces join <workspace>`.")
                 );
             }
+        }
+        WorkspacesCmd::Snapshots { workspace } => {
+            let w = resolve(&api, workspace).await?;
+            let s = api.workspace_snapshots(w.id.as_str()).await?;
+            if json {
+                return style::print_json(&s);
+            }
+            print_snapshots(&w, &s);
         }
         WorkspacesCmd::Show { workspace } => {
             let w = resolve(&api, workspace).await?;

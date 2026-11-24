@@ -372,6 +372,7 @@ async fn dispatch(
         }
         (Get, ["workspaces", id, "audit"]) => api::workspaces::audit(ctx, req, id).await,
         (Get, ["workspaces", id, "runners"]) => api::workspaces::runners(ctx, id).await,
+        (Get, ["workspaces", id, "snapshots"]) => api::workspaces::snapshots(ctx, id).await,
         (Post, ["workspaces", id, "runners"]) => api::workspaces::create_runner(ctx, req, id).await,
         (Get, ["workspaces", id, "service-accounts"]) => api::service_accounts::list(ctx, id).await,
         (Post, ["workspaces", id, "service-accounts"]) => {

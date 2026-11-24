@@ -595,6 +595,11 @@ admins choose whether its sessions keep snapshots and for how long
 (`PATCH /api/v1/workspaces/{id}` with `snapshots` and `snapshot_days`),
 and an instance's admins whether any workspace does and how large one may
 be (`snapshots`, `max_snapshot_mb` in `PATCH /api/v1/admin/settings`).
+`GET /api/v1/workspaces/{id}/snapshots` tells its members what its
+sessions' snapshots take now: `{"instance": true, "max_mb": 200, "kept":
+{"count", "bytes"}, "buckets": [{"bucket": "s3://acme-fctl", "count",
+"bytes"}]}`, the ones the control plane keeps and those in its runners'
+own buckets, within the workspace's days.
 
 ## Runner pools
 
