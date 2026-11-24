@@ -1,4 +1,4 @@
-# 0097: Domains require signing in with their provider
+# 0098: Domains require signing in with their provider
 
 2026-11-23 · accepted
 

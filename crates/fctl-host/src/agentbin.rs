@@ -21,6 +21,33 @@ pub fn asset_name(arch: &str) -> String {
     format!("fctl-agent-{arch}-linux")
 }
 
+/// [`linux_agent`] where it is on this machine already, without
+/// downloading it: for what the host does by itself, in the background.
+pub fn linux_agent_here(cfg: &HostConfig) -> Option<PathBuf> {
+    if let Some(p) = &cfg.agent_bin {
+        return p.is_file().then(|| p.clone());
+    }
+    let exe = std::env::current_exe().ok()?;
+    let bundled = exe.with_file_name(asset_name(arch()));
+    if bundled.is_file() {
+        return Some(bundled);
+    }
+    if cfg!(target_os = "linux") {
+        let native = exe.with_file_name("fctl-agent");
+        if native.is_file() {
+            return Some(native);
+        }
+    }
+    Some(cached(cfg)).filter(|c| c.is_file())
+}
+
+/// Where a download of fctl-agent of this version is kept.
+fn cached(cfg: &HostConfig) -> PathBuf {
+    cfg.data_dir()
+        .join("bin")
+        .join(format!("fctl-agent-{VERSION}-{}-linux", arch()))
+}
+
 pub async fn linux_agent(cfg: &HostConfig) -> Result<PathBuf> {
     if let Some(p) = &cfg.agent_bin {
         if p.is_file() {
@@ -28,22 +55,11 @@ pub async fn linux_agent(cfg: &HostConfig) -> Result<PathBuf> {
         }
         bail!("agent_bin {} does not exist", p.display());
     }
-    let exe = std::env::current_exe()?;
-    let bundled = exe.with_file_name(asset_name(arch()));
-    if bundled.is_file() {
-        return Ok(bundled);
-    }
-    if cfg!(target_os = "linux") {
-        let native = exe.with_file_name("fctl-agent");
-        if native.is_file() {
-            return Ok(native);
-        }
+    if let Some(here) = linux_agent_here(cfg) {
+        return Ok(here);
     }
     let cache_dir = cfg.data_dir().join("bin");
-    let cached = cache_dir.join(format!("fctl-agent-{VERSION}-{}-linux", arch()));
-    if cached.is_file() {
-        return Ok(cached);
-    }
+    let cached = cached(cfg);
     std::fs::create_dir_all(&cache_dir)?;
     let base = cfg.download_base.trim_end_matches('/');
     let url = format!("{base}/v{VERSION}/{}", asset_name(arch()));
