@@ -45,10 +45,16 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function show(node: React.ReactNode, tokens?: G.EnrollmentToken[], demand?: G.WorkspaceDemand) {
+function show(
+  node: React.ReactNode,
+  tokens?: G.EnrollmentToken[],
+  demand?: G.WorkspaceDemand,
+  instance?: Partial<G.InstanceInfo>,
+) {
   const client = new QueryClient();
   if (tokens) client.setQueryData<G.EnrollmentTokenList>(keys.enrollmentTokens(acme.id), { tokens });
   if (demand) client.setQueryData<G.WorkspaceDemand>(keys.workspaceDemand(acme.id), demand);
+  if (instance) client.setQueryData(keys.instance, instance);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -303,7 +309,7 @@ describe("making a pool", () => {
   it("goes step by step, and a cloud brings what its machines need", async () => {
     vi.useFakeTimers();
     try {
-      show(<EnrollmentTokens w={acme} admin onRunners={false} />, []);
+      show(<EnrollmentTokens w={acme} admin onRunners={false} />, [], undefined, { version: "0.38.0" });
       act(() => button("New pool").click());
       const dialog = () => document.querySelector("dialog[open]")?.textContent ?? "";
       expect(dialog()).toContain("Name it");
@@ -333,6 +339,8 @@ describe("making a pool", () => {
       const code = [...document.querySelectorAll("dialog code")].map((c) => c.textContent).join("\n");
       expect(code).toContain("fctl_et_shown_once");
       expect(code).toContain('module "fctl_aws_large"');
+      // The image installs the version this instance runs.
+      expect(code).toContain('fctl_version     = "0.38.0"');
     } finally {
       vi.useRealTimers();
     }

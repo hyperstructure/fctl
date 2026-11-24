@@ -1287,7 +1287,8 @@ function Created({
 }) {
   const t = token.token;
   const whose: Whose = t.personal ? { you: true } : { everyone: true };
-  const version = useInstance().data?.version ?? "";
+  // Unknown until the app has heard it: the steps then say where to find it.
+  const version = useInstance().data?.version;
   // The form scrolled the dialog down to its button: the token, shown once, is at the top.
   const top = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
