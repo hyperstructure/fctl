@@ -272,6 +272,10 @@ pub fn question_detail(text: &str, options: &[String]) -> String {
     }
 }
 
+/// The first line of a notification that an autopilot keeps failing.
+const AUTOPILOT_FAILING: &str =
+    "It keeps failing: fctl tries again every hour until it works, or you pause it";
+
 fn says(kind: Kind) -> &'static str {
     match kind {
         Kind::Waiting => "waits for your reply",
@@ -332,13 +336,16 @@ pub fn compose(events: &[Event]) -> Option<PushMessage> {
             Some(why) => format!("fctl paused it\n{why}"),
             None => "fctl paused it".to_owned(),
         },
+        // Its sessions failed, or fctl couldn't wake it: either way it
+        // can't get on, and fctl tries again, which comes first, as a long
+        // reason is cut short.
         (Kind::AutopilotFailing, _) => match only
             .detail
             .as_deref()
             .and_then(|why| excerpt(why, QUESTION_CHARS))
         {
-            Some(why) => format!("Its sessions keep failing\n{why}"),
-            None => "Its sessions keep failing".to_owned(),
+            Some(why) => format!("{AUTOPILOT_FAILING}\n{why}"),
+            None => AUTOPILOT_FAILING.to_owned(),
         },
     };
     Some(PushMessage {
@@ -443,8 +450,24 @@ mod tests {
         };
         assert_eq!(
             compose(&[e]).map(|m| m.body),
-            Some(format!("Its sessions keep failing\n{why}"))
+            Some(format!(
+                "It keeps failing: fctl tries again every hour until it works, or you pause it\n{why}"
+            ))
         );
+        // A long reason is cut short, below what says that fctl tries again.
+        let long = crate::autopilot::failing(4, &"fatal: unable to access ".repeat(30), true);
+        let e = Event {
+            title: "Shop's autopilot".into(),
+            ..event(3, Kind::AutopilotFailing, Some(&long))
+        };
+        let body = compose(&[e]).map(|m| m.body).unwrap_or_default();
+        assert!(
+            body.starts_with(&format!(
+                "{AUTOPILOT_FAILING}\nfctl couldn't wake it 4 times"
+            )),
+            "{body}"
+        );
+        assert!(body.chars().count() < long.chars().count(), "{body}");
         assert!(Kind::AutopilotFailing.notifies(Audience::Autopilot));
         assert!(Kind::AutopilotFailing.still(SessionStatus::Failed));
         assert!(!Kind::AutopilotFailing.wanted(&NotificationSettings {

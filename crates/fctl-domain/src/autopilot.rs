@@ -595,15 +595,16 @@ pub fn tells(failures: u32) -> bool {
 
 /// What people hear when its own sessions failed `failures` times in a row
 /// ([`tells`]), the last because `why`; or (`waking`) fctl couldn't wake it
-/// as often.
+/// as often. The notification puts this under a line that says fctl
+/// tries again (`crate::notify::compose`), which a long reason, cut short,
+/// can't push out.
 pub fn failing(failures: u32, why: &str, waking: bool) -> String {
     let why = why.trim().trim_end_matches('.');
-    let what = if waking {
-        format!("fctl couldn't wake it {failures} times in a row, the last because: {why}")
+    if waking {
+        format!("fctl couldn't wake it {failures} times in a row, the last because: {why}.")
     } else {
-        format!("Its last {failures} sessions failed, the last because {why}")
-    };
-    format!("{what}. It tries again every hour until it works; pause it to stop it.")
+        format!("Its last {failures} sessions failed, the last because {why}.")
+    }
 }
 
 /// Its own session, as a wake finds it.
@@ -3378,11 +3379,11 @@ mod tests {
                 "cloning acme/shop failed: Could not resolve host: github.com",
                 false
             ),
-            "Its last 4 sessions failed, the last because cloning acme/shop failed: Could not resolve host: github.com. It tries again every hour until it works; pause it to stop it."
+            "Its last 4 sessions failed, the last because cloning acme/shop failed: Could not resolve host: github.com."
         );
         assert_eq!(
             failing(4, "No runner can run it.", true),
-            "fctl couldn't wake it 4 times in a row, the last because: No runner can run it. It tries again every hour until it works; pause it to stop it."
+            "fctl couldn't wake it 4 times in a row, the last because: No runner can run it."
         );
     }
 
