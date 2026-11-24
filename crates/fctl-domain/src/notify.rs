@@ -41,9 +41,14 @@ pub enum Kind {
     /// (`fctl autopilot ask`): a decision, or a secret. It goes on with
     /// other work meanwhile, so it says this whatever the session's state.
     Autopilot,
-    /// fctl paused an autopilot whose sessions kept failing, which its
-    /// own session's failures don't say: people resume it once that's fixed.
+    /// fctl paused an autopilot whose sessions kept failing, as it did
+    /// before autopilots kept trying: what it said then may still go out.
     AutopilotPaused,
+    /// An autopilot's own sessions keep failing, which their failures
+    /// don't say: fctl goes on trying every hour, and people hear of it
+    /// at the fourth failure in a row and each day after
+    /// (`fctl_domain::autopilot::tells`).
+    AutopilotFailing,
 }
 
 impl Kind {
@@ -65,7 +70,7 @@ impl Kind {
     /// something, and a review's not when its turn ends.
     pub fn notifies(self, audience: Audience) -> bool {
         match self {
-            Self::Asking | Self::Autopilot | Self::AutopilotPaused => true,
+            Self::Asking | Self::Autopilot | Self::AutopilotPaused | Self::AutopilotFailing => true,
             Self::Waiting => audience == Audience::People,
             Self::Paused | Self::Failed => audience != Audience::Autopilot,
         }
@@ -76,7 +81,7 @@ impl Kind {
         match self {
             Self::Waiting | Self::Asking | Self::Autopilot => settings.waiting,
             Self::Paused => settings.paused,
-            Self::Failed | Self::AutopilotPaused => settings.failed,
+            Self::Failed | Self::AutopilotPaused | Self::AutopilotFailing => settings.failed,
         }
     }
 
@@ -88,7 +93,7 @@ impl Kind {
                 Self::Waiting | Self::Asking => SessionStatus::Idle,
                 Self::Paused => SessionStatus::Paused,
                 Self::Failed => SessionStatus::Failed,
-                Self::Autopilot | Self::AutopilotPaused => return true,
+                Self::Autopilot | Self::AutopilotPaused | Self::AutopilotFailing => return true,
             }
     }
 }
@@ -106,9 +111,10 @@ pub enum Audience {
     /// started while it is on. People hear only what they ask: the
     /// autopilot hears when they finish a turn or fail, and goes on by
     /// itself; a pause on a usage limit continues by itself when the limit
-    /// resets. Should its own sessions keep failing, fctl pauses it and says
-    /// so ([`Kind::AutopilotPaused`]); its own session's other failures, while
-    /// the autopilot is paused or off, go unheard.
+    /// resets. Should its own sessions keep failing, fctl says so, and again
+    /// each day they go on, and goes on trying ([`Kind::AutopilotFailing`]);
+    /// its own session's other failures, while the autopilot is paused or
+    /// off, go unheard.
     Autopilot,
 }
 
@@ -266,6 +272,10 @@ pub fn question_detail(text: &str, options: &[String]) -> String {
     }
 }
 
+/// The first line of a notification that an autopilot keeps failing.
+const AUTOPILOT_FAILING: &str =
+    "It keeps failing: fctl tries again every hour until it works, or you pause it";
+
 fn says(kind: Kind) -> &'static str {
     match kind {
         Kind::Waiting => "waits for your reply",
@@ -274,6 +284,7 @@ fn says(kind: Kind) -> &'static str {
         Kind::Failed => "failed",
         Kind::Autopilot => "asks you",
         Kind::AutopilotPaused => "is paused",
+        Kind::AutopilotFailing => "keeps failing",
     }
 }
 
@@ -324,6 +335,17 @@ pub fn compose(events: &[Event]) -> Option<PushMessage> {
         {
             Some(why) => format!("fctl paused it\n{why}"),
             None => "fctl paused it".to_owned(),
+        },
+        // Its sessions failed, or fctl couldn't wake it: either way it
+        // can't get on, and fctl tries again, which comes first, as a long
+        // reason is cut short.
+        (Kind::AutopilotFailing, _) => match only
+            .detail
+            .as_deref()
+            .and_then(|why| excerpt(why, QUESTION_CHARS))
+        {
+            Some(why) => format!("{AUTOPILOT_FAILING}\n{why}"),
+            None => AUTOPILOT_FAILING.to_owned(),
         },
     };
     Some(PushMessage {
@@ -416,6 +438,42 @@ mod tests {
             Some("It asks you\nWhich payment provider?".into())
         );
         assert!(Kind::Autopilot.still(SessionStatus::Running));
+    }
+
+    #[test]
+    fn an_autopilot_whose_sessions_keep_failing_says_why() {
+        let why = crate::autopilot::failing(4, "the runner is gone", false);
+        let e = Event {
+            title: "Shop's autopilot".into(),
+            url: Some("/p/shop?tab=autopilot".into()),
+            ..event(3, Kind::AutopilotFailing, Some(&why))
+        };
+        assert_eq!(
+            compose(&[e]).map(|m| m.body),
+            Some(format!(
+                "It keeps failing: fctl tries again every hour until it works, or you pause it\n{why}"
+            ))
+        );
+        // A long reason is cut short, below what says that fctl tries again.
+        let long = crate::autopilot::failing(4, &"fatal: unable to access ".repeat(30), true);
+        let e = Event {
+            title: "Shop's autopilot".into(),
+            ..event(3, Kind::AutopilotFailing, Some(&long))
+        };
+        let body = compose(&[e]).map(|m| m.body).unwrap_or_default();
+        assert!(
+            body.starts_with(&format!(
+                "{AUTOPILOT_FAILING}\nfctl couldn't wake it 4 times"
+            )),
+            "{body}"
+        );
+        assert!(body.chars().count() < long.chars().count(), "{body}");
+        assert!(Kind::AutopilotFailing.notifies(Audience::Autopilot));
+        assert!(Kind::AutopilotFailing.still(SessionStatus::Failed));
+        assert!(!Kind::AutopilotFailing.wanted(&NotificationSettings {
+            failed: false,
+            ..Default::default()
+        }));
     }
 
     #[test]
