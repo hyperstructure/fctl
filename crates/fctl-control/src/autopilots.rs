@@ -3180,6 +3180,9 @@ async fn relayed(ctx: &Ctx, session_id: &str, method: &str, path: &str) -> AppRe
         via_cookie: false,
         signed_in_at: row.created_at,
         verified_at: None,
+        // Nobody signed in: its owner's sign-in rules check people's
+        // tokens, and an autopilot is none.
+        signed_in_with: fctl_domain::sign_in::SignedIn::default(),
         two_factor_setup_required: false,
         settings,
         limits: Some(Limits {

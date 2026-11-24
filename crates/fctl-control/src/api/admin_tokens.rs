@@ -96,9 +96,16 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     ctx.verified(Sensitive::NewAdminToken)?;
     let secret = new_secret(SecretKind::Admin);
     let id = fctl_domain::ids::admin_token_id(ctx.now);
+    // How the sign-in that makes it was made, which a domain's rule holds it
+    // to as it holds its admin's sign-ins.
+    let how = ctx
+        .auth
+        .as_ref()
+        .map(|a| a.signed_in_with.clone())
+        .unwrap_or_default();
     q(
         &ctx.db,
-        "INSERT INTO admin_tokens (id, hash, name, user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO admin_tokens (id, hash, name, user_id, created_at, expires_at, auth_method, auth_domain) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&hash_secret(&secret)),
@@ -106,6 +113,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             s(&actor.id),
             n(ctx.now),
             on(expires_at),
+            crate::db::os(how.method_str()),
+            crate::db::os(how.domain.as_deref()),
         ],
     )?
     .run()

@@ -104,3 +104,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0096](0096-sessions-keep-their-conversation-in-encrypted-snapshots.md) | Sessions keep their conversation in encrypted snapshots |
 | [0097](0097-hosts-restart-apples-container-when-its-sandboxes-lose-the-network.md) | Hosts restart Apple's `container` when its sandboxes lose the network |
 | [0098](0098-admins-see-facts-about-members-claude-connections.md) | Admins see facts about members' Claude connections |
+| [0099](0099-domains-require-signing-in-with-their-provider.md) | Domains require signing in with their provider |

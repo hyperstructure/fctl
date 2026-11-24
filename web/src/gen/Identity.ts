@@ -8,4 +8,10 @@ export type Identity = { id: IdentityId,
 /**
  * `google`.
  */
-provider: string, email?: string, name?: string, avatar_url?: string, created_at: number, };
+provider: string, email?: string, 
+/**
+ * The domain of `email`, where the provider vouched for it at its last
+ * sign-in (Google: one it hosts). Only then does it sign in where a
+ * domain requires the provider ([`SignInRule`]).
+ */
+domain?: string, name?: string, avatar_url?: string, created_at: number, };

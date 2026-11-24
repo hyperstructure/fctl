@@ -7,7 +7,7 @@ use crate::ctx::Ctx;
 use crate::db::{Count, batch, n, os, q, s};
 use crate::error::{AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
-use crate::model::{AllowRow, UserRow, user_columns};
+use crate::model::{AllowRow, PROVIDERS_COLUMN, UserRow, user_columns};
 use fctl_domain::allowlist::AllowPattern;
 use fctl_domain::perm;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
@@ -25,7 +25,7 @@ pub async fn users(ctx: &Ctx) -> AppResult<Response> {
     let rows: Vec<UserRow> = q(
         &ctx.db,
         &format!(
-            "SELECT {} FROM users u ORDER BY u.created_at",
+            "SELECT {}, {PROVIDERS_COLUMN} FROM users u ORDER BY u.created_at",
             user_columns("u")
         ),
         &[],
@@ -336,6 +336,75 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     http::ok(&Ok { ok: true })
 }
 
+/// `DELETE /api/v1/admin/users/{user}/identities/{provider}`: unlinks
+/// someone's accounts of `provider`, for when theirs was recreated or its
+/// address handed to someone else. Where their domain signs in with the
+/// provider, the one that blocked the new account from linking goes, and
+/// their next sign-in with it links the account they sign in with. Only
+/// the primary instance owner unlinks an admin's, and nobody theirs, which
+/// they unlink in Settings.
+pub async fn unlink(ctx: &mut Ctx, id: &str, provider: &str) -> AppResult<Response> {
+    let actor = ctx.admin()?.clone();
+    let target = user(ctx, id).await?;
+    if target.id == actor.id {
+        return Err(conflict(
+            "Unlink your own in Settings → Security, where you keep another way in.",
+        ));
+    }
+    if target.is_owner() {
+        return Err(forbidden(
+            "Only the primary instance owner unlinks their own, in Settings",
+        ));
+    }
+    if target.role() != InstanceRole::Member && actor.role() != InstanceRole::Owner {
+        return Err(forbidden(
+            "Only the primary instance owner can unlink an admin's sign-in",
+        ));
+    }
+    // Their next sign-in with the provider, as anyone with the address
+    // there, links to their account where a rule makes it the way in.
+    ctx.verified(Sensitive::UnlinkSignIn)?;
+    let changed = q(
+        &ctx.db,
+        "DELETE FROM identities WHERE user_id = ? AND provider = ?",
+        &[s(&target.id), s(provider)],
+    )?
+    .run()
+    .await?;
+    if changed == 0 {
+        return Err(not_found("Linked account"));
+    }
+    let name = crate::sign_in::provider_name(provider).to_owned();
+    ctx.audit(
+        "identity.unlinked",
+        Some(&target.id),
+        Some(serde_json::json!({ "provider": provider, "by_admin": true, "count": changed })),
+    );
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        &target,
+        &format!("Your {name} account was unlinked"),
+        format!(
+            "{} unlinked the {name} account that signed in to your {instance} account ({}). Where your organization requires {name}, your next sign-in with it links the account you sign in with.\n\nIf you didn't ask for this, tell an admin of {instance}: {}",
+            actor.name,
+            target.email,
+            ctx.cfg.url("/login")
+        ),
+    );
+    let row: Option<UserRow> = q(
+        &ctx.db,
+        &format!(
+            "SELECT {}, {PROVIDERS_COLUMN} FROM users u WHERE u.id = ?",
+            user_columns("u")
+        ),
+        &[s(&target.id)],
+    )?
+    .first()
+    .await?;
+    http::ok(&row.ok_or_else(|| not_found("User"))?.to_user())
+}
+
 /// A link that resets someone's password: emailed to them where the
 /// instance sends email, else for the admin to hand over.
 pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
@@ -353,6 +422,16 @@ pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         return Err(forbidden(
             "Only the primary instance owner can reset an admin's password",
         ));
+    }
+    // A password wouldn't sign them in: their provider's first sign-in
+    // links to their account.
+    if let Some(required) = target.sign_in_required(&ctx.settings()) {
+        return Err(conflict(&format!(
+            "{}, so a password wouldn't sign {} in: they continue with {} on the sign-in page, which links it to their account the first time.",
+            crate::sign_in::says(&required),
+            target.name,
+            crate::sign_in::provider_name(&required.provider)
+        )));
     }
     // Without email the link comes back here, and signs in as them: as
     // much as deleting their account, a stolen session mustn't do it alone.
@@ -1096,7 +1175,29 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         }
         settings.claude_refusals = n;
     }
+    if let Some(on) = body.self_sign_up {
+        settings.self_sign_up = on;
+    }
+    // No admin signs themselves out who might not sign in again: they
+    // sign in with the provider first, which shows it works.
+    let mut change = None;
+    if let Some(rules) = &body.sign_in {
+        let rules = fctl_domain::sign_in::check_rules(rules, &crate::sign_in::providers(&ctx.cfg))
+            .map_err(crate::error::AppError)?;
+        change = Some(crate::api::sign_in::check(ctx, &settings.sign_in, &rules).await?);
+        settings.sign_in = rules;
+    }
     crate::instance::save(&ctx.db, &settings).await?;
+    if let Some(change) = change {
+        // The sign-ins the rules don't meet go, so that none comes back with
+        // a rule that goes; then who hears that their way in stopped.
+        batch(
+            &ctx.db,
+            crate::sign_in::revoke_unmet(&ctx.db, &settings.sign_in)?,
+        )
+        .await?;
+        crate::api::sign_in::tell(ctx, change, &settings.sign_in);
+    }
     if gravatar_off {
         // The copies go, and turned on again, it looks for everyone anew.
         crate::db::batch(
