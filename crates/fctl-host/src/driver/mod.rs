@@ -14,6 +14,7 @@ pub mod container;
 pub(crate) mod fake;
 pub mod firecracker;
 pub mod lima;
+pub mod network;
 pub mod process;
 pub(crate) mod pulls;
 pub mod stuck;
@@ -375,7 +376,9 @@ impl Driver {
                     agent_bin.clone(),
                 ))),
                 "apple" => Some(Driver::Container(
-                    container::ContainerDriver::apple().agent_as_root(cfg.agent_as_root),
+                    container::ContainerDriver::apple()
+                        .agent_as_root(cfg.agent_as_root)
+                        .reach_dir(data_dir.join("reach")),
                 )),
                 "docker" => Some(Driver::Container(
                     container::ContainerDriver::docker()
@@ -888,6 +891,49 @@ impl Driver {
     pub async fn held_up(&self) -> Option<String> {
         match self {
             Self::Container(d) => d.held_up().await,
+            _ => None,
+        }
+    }
+
+    /// Readies the network of the sandbox `sb` before fctl-agent starts in
+    /// it, with Apple's `container`, which the host restarts when its
+    /// sandboxes lost their network ([`network`]): an error while they
+    /// don't reach it. `agent` is the host's fctl-agent for sandboxes, and
+    /// `images` those a fresh sandbox may start from. The other drivers'
+    /// sandboxes are left as they are.
+    pub async fn ready_network(
+        &self,
+        sb: &Sandbox,
+        agent: &Path,
+        images: &[String],
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<()> {
+        match self {
+            Self::Container(d) => d.ready_network(sb, agent, images, log).await,
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether a fresh sandbox reaches the network, with Apple's
+    /// `container` ([`network`]), for `fctl host doctor`: `None` when it
+    /// can't tell, and with the other drivers. It boots a VM.
+    pub async fn fresh_reaches(
+        &self,
+        agent: Option<&Path>,
+        images: &[String],
+    ) -> Option<fctl_domain::reach::Reach> {
+        match self {
+            Self::Container(d) => d.fresh_reaches(agent, images).await,
+            _ => None,
+        }
+    }
+
+    /// Why sandboxes don't reach the network, which the host couldn't
+    /// bring back, with Apple's `container` ([`network`]); `None` with the
+    /// other drivers.
+    pub async fn network_down(&self, agent: Option<&Path>, images: &[String]) -> Option<String> {
+        match self {
+            Self::Container(d) => d.network_down(agent, images).await,
             _ => None,
         }
     }
