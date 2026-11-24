@@ -361,7 +361,10 @@ impl Store {
                 .await;
             let again = match &sent {
                 Ok((status, _, answer)) => try_again(*status, answer),
-                Err(e) => e.is_transient(),
+                // A request that ran out of its 5 minutes isn't tried again:
+                // four of them would outlast the session's wait for its
+                // upload (`snapshots::UPLOAD_LIMIT`).
+                Err(e) => e.is_transient() && !matches!(e, fctl_client::Error::Timeout(_)),
             };
             if !again || tries >= TRIES {
                 return sent.map_err(|e| format!("the bucket didn't answer: {e}"));
