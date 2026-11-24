@@ -3023,8 +3023,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    (`--only sessions,people,asks`, `?only=`; `brief_parts`), as the whole
    runs to tens of kilobytes that each wake would read again, and it has
    heard of the notes and answers of the parts it read. Its owner follows its own session, which
-   notifies only of what it asks, and of fctl pausing it after its sessions
-   kept failing ([Notifications](#notifications)).
+   notifies only of what it asks, and of its own sessions failing four
+   times in a row, and each day they go on failing, while fctl goes on
+   trying
+   ([Notifications](#notifications)).
 3. **Waking** (`crate::autopilots`). ScheduleObject's alarm, which starts
    schedules' runs, wakes autopilots too: at the earliest of the two, each
    wake claimed in D1 (`autopilots.wake_at`) as a run is. It wakes at its
@@ -3059,12 +3061,21 @@ sessions to do it, and sets up what the work needs, as far as they let it
    wrote to since, and people's sessions that ended a turn with a pull
    request open; those two wake it for nothing themselves
    (`fctl_domain::autopilot::wake_message`). While its owner's plan is at
-   its limit it waits for the reset. Its own session failing makes fctl
-   try again 5, 15 and 60 minutes later, then pauses it and says why;
-   its owner can no longer manage its project (or, for a workspace's, is
-   no longer an admin), has no Claude connection or is gone, its project
-   is archived, or its workspace turned autopilots off: fctl pauses it
-   at its next wake and says why (`Autopilot.problem` beforehand). It
+   its limit it waits for the reset. Its own session failing, or fctl
+   failing to wake it, makes fctl try again 5, 15 and 60 minutes later,
+   then every hour until it works, each in its log
+   (`fctl_domain::autopilot::retry_in`), rather than pause it: what fails
+   its sessions often mends by itself, a runner that lost its network
+   say, and it carries on then
+   ([ADR 0100](adr/0100-autopilots-keep-trying-after-their-sessions-fail.md)).
+   A retry takes the place of its check-in, so that it tries no more often
+   than that unless something else wakes it sooner. At the fourth failure
+   in a row those who follow its own session hear of it, and again every
+   24 failures while they go on. When its owner can no longer manage its project (or, for
+   a workspace's, is no longer an admin), has no Claude connection or is
+   gone, its project is archived, or its workspace turned autopilots off,
+   fctl pauses it at its next wake and says why (`Autopilot.problem`
+   beforehand). It
    pauses itself once its direction is done (`fctl autopilot pause
    --reason …`), and people pause, resume and take it off.
 
@@ -4315,10 +4326,11 @@ asks you", with the question and its answers), to those who want to hear
 when it waits. An autopilot's sessions notify only when they ask: its own
 session, and those it started while it is on, finish turns, pause and fail
 for the autopilot, which hears of them and goes on by itself
-(`notify::Audience`). When its own sessions keep failing, fctl pauses it
-and says so to those who follow its own session, as a failure
-(`notify::Kind::AutopilotPaused`). A review agent's finished turn is its
-review's.
+(`notify::Audience`). When its own sessions keep failing (four times in
+a row), fctl says so to those who follow its own session, as a failure
+(`notify::Kind::AutopilotFailing`), and again each day they go on, while
+it goes on trying every hour.
+A review agent's finished turn is its review's.
 Starting
 or resuming a session follows it, unless the person turned that off in
 Settings; anyone who can see a session can follow it (the bell on its page,

@@ -75,9 +75,17 @@ pub const CREW_GATHER_MS: i64 = MINUTE_MS;
 /// What people say, gathered this long before it wakes for it: answers
 /// given one after another reach it in one message, still at once to them.
 pub const PEOPLE_GATHER_MS: i64 = 5_000;
-/// After its own session fails, fctl tries again this much later, and
-/// pauses it after as many failures in a row.
+/// After its own session fails, fctl tries again this much later: after
+/// the first, second and third failure in a row, then every hour, until a
+/// session of its own works or people pause it. What fails its sessions
+/// often mends by itself: a runner that lost its network, GitHub or
+/// Anthropic down for a while.
 pub const RETRY_MS: [i64; 3] = [5 * MINUTE_MS, 15 * MINUTE_MS, HOUR_MS];
+/// The failure in a row of its own sessions that people first hear of
+/// ([`failing`]), and how many more go before they hear again: once a day
+/// of tries every hour. fctl goes on trying.
+pub const FAILING_AFTER: u32 = 4;
+pub const FAILING_AGAIN_AFTER: u32 = 24;
 
 // ───────────────────────────── what people set ─────────────────────────────
 
@@ -563,11 +571,40 @@ pub fn next_check_in(now: Millis, check_in_minutes: u32) -> Millis {
     now + i64::from(check_in_minutes.max(CHECK_INS[0])) * MINUTE_MS
 }
 
-/// How long after its own session's `failures`-th failure in a row fctl
-/// tries again; `None`: it pauses the autopilot instead.
-pub fn retry_in(failures: u32) -> Option<i64> {
-    let i = usize::try_from(failures.checked_sub(1)?).ok()?;
-    RETRY_MS.get(i).copied()
+/// How long after its own session's `failures`-th failure in a row, or
+/// that many failures to wake it, fctl tries again ([`RETRY_MS`]): every
+/// hour once it has failed three times.
+pub fn retry_in(failures: u32) -> i64 {
+    let i = usize::try_from(failures.saturating_sub(1)).unwrap_or(usize::MAX);
+    RETRY_MS
+        .get(i)
+        .or(RETRY_MS.last())
+        .copied()
+        .unwrap_or(HOUR_MS)
+}
+
+/// Whether people hear that its own sessions keep failing at its
+/// `failures`-th failure in a row: at [`FAILING_AFTER`], and every
+/// [`FAILING_AGAIN_AFTER`] after while they go on, so that one with no
+/// session to tell them through yet tells them once it has.
+pub fn tells(failures: u32) -> bool {
+    failures
+        .checked_sub(FAILING_AFTER)
+        .is_some_and(|past| past % FAILING_AGAIN_AFTER == 0)
+}
+
+/// What people hear when its own sessions failed `failures` times in a row
+/// ([`tells`]), the last because `why`; or (`waking`) fctl couldn't wake it
+/// as often. The notification puts this under a line that says fctl
+/// tries again (`crate::notify::compose`), which a long reason, cut short,
+/// can't push out.
+pub fn failing(failures: u32, why: &str, waking: bool) -> String {
+    let why = why.trim().trim_end_matches('.');
+    if waking {
+        format!("fctl couldn't wake it {failures} times in a row, the last because: {why}.")
+    } else {
+        format!("Its last {failures} sessions failed, the last because {why}.")
+    }
 }
 
 /// Its own session, as a wake finds it.
@@ -3317,11 +3354,37 @@ mod tests {
     }
 
     #[test]
-    fn retries_three_times_then_pauses() {
-        assert_eq!(retry_in(0), None);
-        assert_eq!(retry_in(1), Some(5 * MINUTE_MS));
-        assert_eq!(retry_in(3), Some(HOUR_MS));
-        assert_eq!(retry_in(4), None);
+    fn retries_sooner_then_every_hour() {
+        assert_eq!(retry_in(1), 5 * MINUTE_MS);
+        assert_eq!(retry_in(2), 15 * MINUTE_MS);
+        assert_eq!(retry_in(3), HOUR_MS);
+        // It never pauses for failures: the hour goes on.
+        assert_eq!(retry_in(4), HOUR_MS);
+        assert_eq!(retry_in(500), HOUR_MS);
+        assert_eq!(retry_in(u32::MAX), HOUR_MS);
+        assert_eq!(retry_in(0), 5 * MINUTE_MS);
+    }
+
+    #[test]
+    fn people_hear_of_failures_at_the_fourth_then_every_day() {
+        let told: Vec<u32> = (0..60).filter(|f| tells(*f)).collect();
+        assert_eq!(told, [4, 28, 52]);
+    }
+
+    #[test]
+    fn people_hear_that_its_sessions_keep_failing() {
+        assert_eq!(
+            failing(
+                4,
+                "cloning acme/shop failed: Could not resolve host: github.com",
+                false
+            ),
+            "Its last 4 sessions failed, the last because cloning acme/shop failed: Could not resolve host: github.com."
+        );
+        assert_eq!(
+            failing(4, "No runner can run it.", true),
+            "fctl couldn't wake it 4 times in a row, the last because: No runner can run it."
+        );
     }
 
     #[test]
