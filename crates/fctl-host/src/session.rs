@@ -174,7 +174,15 @@ impl HostCtx {
     /// sandbox it failed to make may have failed for that: Docker stopped
     /// since the last probe, say.
     pub async fn recheck_driver(&self) -> Option<String> {
-        let info = self.driver.probe().await;
+        let mut info = self.driver.probe().await;
+        // Sandboxes that lost their network, which the host couldn't bring
+        // back (`driver::network`), only it knows of.
+        if info.available
+            && let Some(why) = self.network_down().await
+        {
+            info.available = false;
+            info.detail = Some(why);
+        }
         let why = (!info.available).then(|| {
             info.detail
                 .clone()
@@ -207,9 +215,18 @@ impl HostCtx {
             self.driver.disk_spot(&data_dir)
         );
         // What holds up the driver this host uses only it knows: a VM that
-        // doesn't answer, which the host doesn't stop (`driver::stuck`).
+        // doesn't answer, which the host doesn't stop (`driver::stuck`), or
+        // sandboxes that lost their network, which it couldn't bring back
+        // (`driver::network`).
         if let Some(why) = self.driver.held_up().await
             && let Some(d) = drivers.iter_mut().find(|d| d.name == self.driver.name())
+        {
+            d.available = false;
+            d.detail = Some(why);
+        }
+        if let Some(d) = drivers.iter_mut().find(|d| d.name == self.driver.name())
+            && d.available
+            && let Some(why) = self.network_down().await
         {
             d.available = false;
             d.detail = Some(why);
@@ -225,6 +242,16 @@ impl HostCtx {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = spot;
         }
+    }
+
+    /// Why the driver's sandboxes don't reach the network, which the host
+    /// couldn't bring back (`driver::network`): it looks again now and then,
+    /// with the host's fctl-agent for sandboxes where that is here already.
+    async fn network_down(&self) -> Option<String> {
+        let agent = crate::agentbin::linux_agent_here(&self.cfg);
+        self.driver
+            .network_down(agent.as_deref(), &self.cfg.own_images())
+            .await
     }
 
     pub fn disk_spot(&self) -> DiskSpot {
@@ -1129,6 +1156,16 @@ async fn prepare(
             .keep_off_metadata(&sb, &bin)
             .await
             .context(KEEP_OFF_FAILED)?;
+        // A sandbox of Apple's `container` that lost the network would fail
+        // to clone: the host brings it back, or the session waits
+        // (`driver::network`).
+        let images: Vec<String> = std::iter::once(sspec.image.clone())
+            .chain(sspec.fallback_image.clone())
+            .chain(ctx.cfg.own_images())
+            .collect();
+        ctx.driver
+            .ready_network(&sb, &bin, &images, &log_uplink)
+            .await?;
     }
     ctx.driver.start_agent(&sb).await?;
     Ok((sb, for_agent))
@@ -1315,11 +1352,25 @@ async fn run(
                     // goes back to the control plane's queue, to start once
                     // a runner can start it, rather than fail. Not when
                     // someone stopped it meanwhile.
-                    if let Some(why) = ctx.recheck_driver().await
+                    // So does one whose sandbox can't start for now, Apple's
+                    // `container` having lost the network
+                    // (`driver::network`).
+                    let down = e
+                        .downcast_ref::<crate::driver::network::Down>()
+                        .map(|d| d.0.clone());
+                    if let Some(why) = ctx.recheck_driver().await.or(down)
                         && !stop_asked(&mut cmds)
                     {
                         let reason = not_ready(&ctx, &why);
                         tracing::warn!("{session_id} goes back to the queue: {reason} ({msg})");
+                        // A sandbox it made or started stops: another runner
+                        // may start the session, and one that ran here would
+                        // keep its share of the machine. Should it come back
+                        // here, it starts again.
+                        let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
+                        if let Err(e) = ctx.driver.stop(&sb).await {
+                            tracing::debug!("stopping {}: {e:#}", sb.name);
+                        }
                         host_log(
                             &uplink,
                             LogLevel::Warn,
@@ -2553,6 +2604,73 @@ mod tests {
             "This session's sandbox stopped answering, so runner studio's host stopped it: with Apple's `container`, one sandbox that doesn't answer holds up every other on the runner. Resume the session to start it again, with its files."
         );
         assert!(!apple.runs(&name)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_sandboxes_lost_the_network_waits_for_it() -> Result<()> {
+        use crate::driver::fake::StuckApple;
+        let data = tempfile::tempdir()?;
+        let agent = data.path().join("fctl-agent");
+        std::fs::write(&agent, "")?;
+        let cfg = HostConfig {
+            name: "studio".into(),
+            driver: "apple".into(),
+            // Nothing answers there: the session's uplink tries in vain.
+            server: "http://127.0.0.1:9".into(),
+            data_dir: Some(data.path().to_owned()),
+            agent_bin: Some(agent),
+            ..HostConfig::default()
+        };
+        // This Mac reaches what sandboxes should, which answers here.
+        let github = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let at = github.local_addr()?.to_string();
+        let apple = StuckApple::new(&[], &[])?;
+        apple.lose_network()?;
+        let ctx = Arc::new(HostCtx::new(
+            cfg,
+            Driver::Container(apple.networked(
+                &at,
+                Duration::ZERO,
+                crate::driver::network::RESTART_EVERY,
+            )),
+            "fctl_rt_test".into(),
+        ));
+        // Its sandbox doesn't reach it, nor does a fresh one, and restarting
+        // Apple's `container` doesn't bring their network back: the session
+        // goes back to the queue rather than fail, before fctl-agent starts.
+        let (status, reason) = run_to_end(&ctx, "ses_01OFFLINE").await?;
+        assert_eq!(status, SessionStatus::Queued);
+        let reason = reason.unwrap_or_default();
+        assert!(
+            reason.starts_with(
+                "studio's apple driver isn't ready: its sandboxes don't reach 127.0.0.1, though this Mac does"
+            ),
+            "{reason}"
+        );
+        let calls = apple.calls()?;
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "system stop").count(),
+            1
+        );
+        assert!(!calls.iter().any(|c| c.contains(" serve ")), "{calls:?}");
+        // The next session that comes meanwhile goes back too, without
+        // another restart, and its sandbox stops, for another runner may
+        // start it.
+        let (status, _) = run_to_end(&ctx, "ses_01OFFLINE2").await?;
+        assert_eq!(status, SessionStatus::Queued);
+        let calls = apple.calls()?;
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "system stop").count(),
+            1
+        );
+        let name = sandbox_name("ses_01OFFLINE2");
+        assert!(calls.contains(&format!("stop -t 20 {name}")), "{calls:?}");
+        assert!(!apple.runs(&name)?);
+        // The next heartbeat says so, until the network comes back.
+        assert!(ctx.driver_problem().is_some());
+        apple.mend_network()?;
+        assert_eq!(ctx.recheck_driver().await, None);
         Ok(())
     }
 
