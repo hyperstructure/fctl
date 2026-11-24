@@ -234,8 +234,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces", "snapshots", "max_snapshot_mb", "self_sign_up"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces\n  fctl admin set --self-sign-up off   # accounts only from invitations and admin tokens"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent", "members_create_workspaces", "max_workspaces", "snapshots", "max_snapshot_mb", "claude_oversight", "claude_limit_pauses", "claude_instance_view", "claude_refusals", "self_sign_up"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance\n  fctl admin set --members-create-workspaces off   # only instance admins create workspaces\n  fctl admin set --max-workspaces 50\n  fctl admin set --max-workspaces any   # each person in any number of workspaces\n  fctl admin set --claude-oversight readiness   # admins see only whose sessions can run\n  fctl admin set --claude-instance-view on      # instance admins see everyone's\n  fctl admin set --claude-refusals 1            # ended at Claude's first refusal\n  fctl admin set --self-sign-up off   # accounts only from invitations and admin tokens"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -317,6 +317,49 @@ pub enum AdminCmd {
         /// one to ask an admin.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         self_sign_up: Option<bool>,
+        /// The most a workspace's admins may see of their members' Claude
+        /// connections, never a token: `details` (the default: each
+        /// connection's kind, plan, last answer and when its token runs
+        /// out), `readiness` (only whether their sessions can run and when
+        /// their token runs out) or `off`. Each workspace chooses within
+        /// it; lowering it lowers those that chose more.
+        #[arg(long, value_enum, value_name = "LEVEL")]
+        claude_oversight: Option<crate::cmd::claude_overview::Oversight>,
+        /// Whether workspace admins may see how often their members'
+        /// sessions paused on usage limits, in the last 7 and 30 days (on
+        /// by default). They see whose sessions wait for a limit to reset
+        /// now whatever it says.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        claude_limit_pauses: Option<bool>,
+        /// Whether instance admins see everyone's Claude connection, with
+        /// `fctl admin claude` and in Admin → People, as workspace admins
+        /// see their members': for instances that set people's seats with
+        /// admin tokens. Off by default.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        claude_instance_view: Option<bool>,
+        /// In how many sessions Claude must refuse a long-lived token,
+        /// since it last answered it, before fctl marks it ended and tells
+        /// its person: 2 by default, so that a moment's trouble at Claude
+        /// doesn't; 1 to 5.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=5))]
+        claude_refusals: Option<u32>,
+    },
+    /// Everyone's Claude connection: its kind, plan, when Claude last
+    /// answered it, when its token runs out and how often their sessions
+    /// paused on usage limits, never the token. Where the instance lets
+    /// its admins see them (`fctl admin set --claude-instance-view on`).
+    #[command(
+        after_help = "Examples:\n  fctl admin claude\n  fctl admin claude --problems   # those whose sessions can't run soon\n  fctl admin claude --expiring 14d --json"
+    )]
+    Claude {
+        /// Only those whose token runs out within this long: 30d, 2w, 12h.
+        #[arg(long, value_name = "DURATION", value_parser = crate::cmd::claude_overview::within)]
+        expiring: Option<i64>,
+        /// Only those whose sessions can't run (no connection, or one that
+        /// stopped working) or whose token runs out within 30 days (or
+        /// --expiring).
+        #[arg(long)]
+        problems: bool,
     },
 }
 
@@ -626,8 +669,73 @@ fn print_snapshots(s: &InstanceSettings) {
     );
 }
 
+/// What workspace admins and instance admins see of people's Claude
+/// connections, and when fctl marks a token ended.
+fn print_claude(s: &InstanceSettings) {
+    use fctl_proto::api::ClaudeOversight;
+    println!(
+        "Claude connections     {}",
+        match s.claude_oversight {
+            ClaudeOversight::Details => style::accent("workspace admins see details"),
+            ClaudeOversight::Readiness => style::accent("workspace admins see readiness"),
+            ClaudeOversight::Off => style::dim("workspace admins see nothing"),
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(&match s.claude_oversight {
+            ClaudeOversight::Details => format!(
+                "At most, each member's connection: its kind, plan, last answer and when its token runs out{}, never the token. Each workspace can choose less.",
+                if s.claude_limit_pauses {
+                    ", and how often their sessions paused on usage limits"
+                } else {
+                    ""
+                }
+            ),
+            ClaudeOversight::Readiness => {
+                "At most, whether each member's sessions can run and when their token runs out, never the connection's kind, plan or token.".to_owned()
+            }
+            ClaudeOversight::Off => {
+                "No workspace's admins see anything of their members' Claude connections."
+                    .to_owned()
+            }
+        })
+    );
+    println!(
+        "Instance view          {}",
+        if s.claude_instance_view {
+            style::accent("on")
+        } else {
+            style::dim("off")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.claude_instance_view {
+            "Instance admins see everyone's Claude connection: `fctl admin claude`, and Admin → People."
+        } else {
+            "Instance admins see people's Claude connections only in the workspaces they are admins of."
+        })
+    );
+    println!(
+        "Refused tokens         {}",
+        style::accent(&format!(
+            "ended after {}",
+            style::count(s.claude_refusals, "session", "sessions")
+        ))
+    );
+    println!(
+        "  {}",
+        style::dim(&format!(
+            "fctl marks a long-lived token ended once Claude refused it in {} since it last answered it, and tells its person.",
+            style::count(s.claude_refusals, "session", "sessions")
+        ))
+    );
+}
+
 fn print_settings(s: &InstanceSettings) {
     print_snapshots(s);
+    print_claude(s);
     println!(
         "Sign-in                {}",
         match s.sign_in.len() {
@@ -1305,6 +1413,30 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             print_audit(&list);
         }
         AdminCmd::SignIn { cmd } => crate::cmd::sign_in::run(&api, cmd, json).await?,
+        AdminCmd::Claude { expiring, problems } => {
+            use crate::cmd::claude_overview as overview;
+            let all = api
+                .admin_claude()
+                .await
+                .map_err(|e| overview::refused(e, "instance"))?;
+            let filter = overview::Filter { expiring, problems };
+            let now = style::now_ms();
+            let shown = filter.apply(all, now);
+            if json {
+                return style::print_json(&shown);
+            }
+            for line in overview::lines(
+                &shown,
+                overview::Place {
+                    workspace: None,
+                    slug: None,
+                },
+                filter,
+                now,
+            ) {
+                println!("{line}");
+            }
+        }
         AdminCmd::Settings => {
             let settings = api.instance_settings().await?;
             if json {
@@ -1325,6 +1457,10 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             snapshots,
             max_snapshot_mb,
             self_sign_up,
+            claude_oversight,
+            claude_limit_pauses,
+            claude_instance_view,
+            claude_refusals,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
@@ -1341,6 +1477,10 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     max_snapshot_mb,
                     self_sign_up,
                     sign_in: None,
+                    claude_oversight: claude_oversight.map(Into::into),
+                    claude_limit_pauses,
+                    claude_instance_view,
+                    claude_refusals,
                 })
                 .await?;
             if json {

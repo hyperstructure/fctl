@@ -12,4 +12,19 @@ export type AdminClaudeToken = { id: CredentialId, label?: string, status: Crede
  * The sessions they start run on it, unless a workspace's choice of
  * theirs says otherwise.
  */
-is_default: boolean, created_at: number, updated_at: number, };
+is_default: boolean, created_at: number, updated_at: number, 
+/**
+ * When it runs out: a year after `claude setup-token` made it, or,
+ * with `expiry_estimated`, after it was set, as nobody said when it
+ * was made. Setting the same token again keeps it. Absent from control
+ * planes before it.
+ */
+expires_at?: number, expiry_estimated?: boolean, 
+/**
+ * When Claude last answered it.
+ */
+answered_at?: number, 
+/**
+ * When fctl found it ended: Claude refused it.
+ */
+ended_at?: number, };

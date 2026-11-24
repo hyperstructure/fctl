@@ -5,6 +5,7 @@ mod access;
 mod api;
 mod auth;
 mod autopilots;
+mod claude_oversight;
 mod config;
 mod crypto;
 mod ctx;
@@ -276,6 +277,7 @@ async fn dispatch(
 
         // Admin
         (Get, ["admin", "users"]) => api::admin::users(ctx).await,
+        (Get, ["admin", "claude"]) => api::admin::claude(ctx).await,
         (Patch, ["admin", "users", id]) => {
             api::admin::update_user(ctx, req, &http::decode(id)).await
         }
@@ -360,6 +362,7 @@ async fn dispatch(
         (Put, ["workspaces", id, "avatar"]) => api::workspaces::set_avatar(ctx, req, id).await,
         (Delete, ["workspaces", id, "avatar"]) => api::workspaces::remove_avatar(ctx, id).await,
         (Get, ["workspaces", id, "members"]) => api::workspaces::members(ctx, id).await,
+        (Get, ["workspaces", id, "claude"]) => api::workspaces::claude(ctx, id).await,
         (Patch, ["workspaces", id, "members", user]) => {
             api::workspaces::set_member_role(ctx, req, id, user).await
         }

@@ -10,7 +10,7 @@ use fctl_proto::session::{Memory, Project, Session};
 use fctl_proto::tickets::{
     ConnectLinearRequest, LinearLink, LinearTeamList, MyLinear, ProjectTickets, WorkspaceLinear,
 };
-use fctl_proto::{ApiError, AttachmentId, ErrorCode};
+use fctl_proto::{ApiError, AttachmentId, ErrorCode, Millis};
 use futures::future::BoxFuture;
 use http::Method;
 use serde::Serialize;
@@ -2019,12 +2019,20 @@ impl Api {
 
     // ── Claude ──
 
-    pub async fn add_claude_token(&self, token: &str, label: Option<String>) -> Result<Me> {
+    /// Connects a long-lived token from `claude setup-token`; `made_at`,
+    /// when that made it, if you know, so that fctl knows when it runs out.
+    pub async fn add_claude_token(
+        &self,
+        token: &str,
+        label: Option<String>,
+        made_at: Option<Millis>,
+    ) -> Result<Me> {
         self.post(
             "/me/claude/token",
             &AddClaudeTokenRequest {
                 token: token.to_owned(),
                 label,
+                made_at,
             },
         )
         .await
@@ -2430,6 +2438,18 @@ impl Api {
 
     pub async fn workspace_members(&self, id: &str) -> Result<WorkspaceMemberList> {
         self.get(&format!("/workspaces/{}/members", enc(id))).await
+    }
+
+    /// What each member's sessions in a workspace run on, as much as its
+    /// admins see (its admins).
+    pub async fn workspace_claude(&self, id: &str) -> Result<ClaudeOverview> {
+        self.get(&format!("/workspaces/{}/claude", enc(id))).await
+    }
+
+    /// What every account's sessions run on (instance admins, where the
+    /// instance lets them see it).
+    pub async fn admin_claude(&self) -> Result<ClaudeOverview> {
+        self.get("/admin/claude").await
     }
 
     pub async fn invite_to_workspace(

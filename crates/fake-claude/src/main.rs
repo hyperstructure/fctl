@@ -42,6 +42,7 @@
 //! | `background <seconds>` | starts a shell command in the background that ends after that many seconds (`system/task_started`), and ends its turn; when the command ends (`system/task_notification`), takes its result in a turn of its own, as Claude Code does |
 //! | `delegate` | delegates a look around the working directory to a subagent with the `Agent` tool, as Claude Code does: the subagent's messages name the call (`parent_tool_use_id`), it runs two commands about a second each, and the call returns its report |
 //! | `delegate … in the background` | the same subagent in the background (`run_in_background`): its call returns at once and the turn ends; it takes a step every two seconds, and when it ends, a turn of its own takes its report, which starts without a `running` of its own, as Claude Code's does |
+//! | `refused` | answers as Claude Code does when Claude refuses its credential, as it refuses a revoked or expired token: an assistant message whose `error` is `authentication_failed`, and a failed turn, without plan usage |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
 //! | `overage` | reports paid extra usage starting |
 //! | `warning` | reports plan usage with Claude Code's warning that the weekly limit goes faster than the week passes (`allowed_warning`), as Claude Code sends with a quarter of the week used in its first day |
@@ -1336,6 +1337,17 @@ impl Session {
         }
         if says(&lower, "compact") {
             self.compact("manual");
+        }
+        if says(&lower, "refused") {
+            out(
+                &json!({"type": "assistant", "message": {"id": "msg_refused", "type": "message", "role": "assistant", "model": "<synthetic>", "content": [{"type": "text", "text": "Invalid API key · Please run /login"}], "usage": {"input_tokens": 0, "output_tokens": 0}}, "error": "authentication_failed", "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            );
+            self.result(
+                started,
+                "Invalid API key · Please run /login",
+                "error_during_execution",
+            );
+            return;
         }
         if asks_for_limit(text) {
             let resets = SystemTime::now()

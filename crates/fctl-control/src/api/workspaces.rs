@@ -239,6 +239,21 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             ),
         ));
     }
+    if let Some(o) = body.claude_oversight {
+        let most = ctx.settings().claude_oversight;
+        if o > most {
+            return Err(validation(
+                "claude_oversight",
+                &crate::claude_oversight::beyond_most(most),
+            ));
+        }
+    }
+    if body.claude_limit_pauses == Some(true) && !ctx.settings().claude_limit_pauses {
+        return Err(validation(
+            "claude_limit_pauses",
+            "This instance shows workspace admins no limit pauses: its admins decide that in Admin → Settings",
+        ));
+    }
     if let Some(on) = body.require_two_factor {
         policy::check_two_factor(&ctx.settings(), on)?;
     }
@@ -259,7 +274,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         "UPDATE workspaces SET name = COALESCE(?, name), slug = COALESCE(?, slug), color = COALESCE(?, color), \
          base_role = COALESCE(?, base_role), require_two_factor = COALESCE(?, require_two_factor), \
          skip_invites = COALESCE(?, skip_invites), autopilots = COALESCE(?, autopilots), \
-         snapshots = COALESCE(?, snapshots), snapshot_days = COALESCE(?, snapshot_days), updated_at = ? WHERE id = ?",
+         snapshots = COALESCE(?, snapshots), snapshot_days = COALESCE(?, snapshot_days), \
+         claude_oversight = COALESCE(?, claude_oversight), claude_limit_pauses = COALESCE(?, claude_limit_pauses), \
+         claude_admin_email = COALESCE(?, claude_admin_email), updated_at = ? WHERE id = ?",
         &[
             os(name.as_deref()),
             os(slug.as_deref()),
@@ -270,6 +287,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             body.autopilots.map_or(crate::db::null(), crate::db::b),
             body.snapshots.map_or(crate::db::null(), crate::db::b),
             crate::db::on(body.snapshot_days.map(i64::from)),
+            os(body.claude_oversight.map(ClaudeOversight::as_str)),
+            body.claude_limit_pauses.map_or(crate::db::null(), crate::db::b),
+            os(body.claude_admin_email.map(ClaudeAdminEmail::as_str)),
             n(ctx.now),
             s(a.id()),
         ],
@@ -537,6 +557,15 @@ pub async fn members(ctx: &Ctx, id: &str) -> AppResult<Response> {
             .collect(),
         invitations: invitations.iter().map(|i| i.to_invitation(false)).collect(),
     })
+}
+
+/// `GET /api/v1/workspaces/{id}/claude` (its admins): what each member's
+/// sessions there run on, as much as its admins see.
+pub async fn claude(ctx: &Ctx, id: &str) -> AppResult<Response> {
+    let a = ws::load(ctx, id).await?;
+    a.require_admin()?;
+    let settings = ctx.settings();
+    http::ok(&crate::claude_oversight::workspace(ctx, &a.row, &settings).await?)
 }
 
 /// `PATCH /api/v1/workspaces/{id}/members/{user}`: admin or member.

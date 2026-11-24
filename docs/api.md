@@ -544,7 +544,7 @@ itself.
 | `GET /api/v1/admin/users/{user}` | one person |
 | `PATCH /api/v1/admin/users/{user}` | `{"given_name", "family_name", "name", "preferred_name", "email", "commit_email", "status"}`: a new `email` becomes their primary address, and the one it replaces stops signing in; `""` clears `family_name`, `preferred_name` and `commit_email`; `"status": "disabled"` signs them out and stops the sessions on their subscription, `"active"` lets them in again |
 | `PUT`, `DELETE /api/v1/admin/users/{user}/avatar` | their picture, a PNG, JPEG, GIF or WebP image of at most 256 KB as `application/octet-stream`; or their initials again |
-| `PUT`, `DELETE /api/v1/admin/users/{user}/claude` | the Claude token their sessions run on, `{"token": "sk-ant-oat01-…", "label": "Acme seat"}` from `claude setup-token`: setting it again replaces it, and the first becomes their default; their own Claude connections stay theirs |
+| `PUT`, `DELETE /api/v1/admin/users/{user}/claude` | the Claude token their sessions run on, `{"token": "sk-ant-oat01-…", "label": "Acme seat", "made_at": 1795435200000}` from `claude setup-token`: setting it again replaces it, and the first becomes their default; their own Claude connections stay theirs. `made_at`, when `claude setup-token` made it, says when it runs out, a year on; without it fctl counts the year from now and the answer's `claude.expiry_estimated` says so. Setting the same token again keeps the date it had |
 | `PUT /api/v1/admin/users/{user}/workspaces/{workspace}` | makes them a workspace's member, `{"role": "member"}`, or admin, `"admin"`, as their primary address, or gives them that role there |
 | `DELETE /api/v1/admin/users/{user}/workspaces/{workspace}` | takes them out of it, with its projects; their sessions there stop |
 | `PUT`, `DELETE /api/v1/admin/users/{user}/projects/{project}` | makes a member of its workspace a project's `viewer`, `editor`, `maintainer` or `owner` (`{"role": "editor"}`), or takes them out of it |
@@ -595,6 +595,24 @@ admins choose whether its sessions keep snapshots and for how long
 (`PATCH /api/v1/workspaces/{id}` with `snapshots` and `snapshot_days`),
 and an instance's admins whether any workspace does and how large one may
 be (`snapshots`, `max_snapshot_mb` in `PATCH /api/v1/admin/settings`).
+
+A workspace's admins read what each member's sessions there run on with
+`GET /api/v1/workspaces/{id}/claude`
+([`ClaudeOverview`](../crates/fctl-proto/src/api.rs)): each member's
+state (`none`, `unused`, `works`, `ended`), when their long-lived token
+runs out (`runs_out_at`, `runs_out_estimated`), whether their sessions
+wait for a usage limit to reset (`paused_until`), and, as much as they
+see, the connection's kind, plan and last answer and the limit pauses of
+7 and 30 days; never a token, its account or its label. They choose how
+much they see and how they hear by email (`claude_oversight`,
+`claude_limit_pauses`, `claude_admin_email` in `PATCH
+/api/v1/workspaces/{id}`), within what the instance's admins let them
+(`claude_oversight`, `claude_limit_pauses` in `PATCH
+/api/v1/admin/settings`, with `claude_instance_view`, which opens `GET
+/api/v1/admin/claude` to them, and `claude_refusals`)
+([Claude seats](organizations.md#claude-seats)). People connect a
+long-lived token with `POST /api/v1/me/claude/token`, `{"token", "label",
+"made_at"}`.
 
 ## Sign-in rules
 

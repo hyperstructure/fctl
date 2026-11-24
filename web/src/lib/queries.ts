@@ -114,6 +114,8 @@ export const keys = {
   workspaces: ["workspaces"] as const,
   workspace: (id: string) => ["workspace", id] as const,
   workspaceMembers: (id: string) => ["workspace", id, "members"] as const,
+  /** What its members' sessions run on, as its admins see it. */
+  workspaceClaude: (id: string) => ["workspace", id, "claude"] as const,
   workspaceRunners: (id: string) => ["workspace", id, "runners"] as const,
   enrollmentTokens: (id: string) => ["workspace", id, "enrollment-tokens"] as const,
   workspaceGithub: (id: string) => ["workspace", id, "github"] as const,
@@ -130,6 +132,8 @@ export const keys = {
   audit: ["audit"] as const,
   instanceSettings: ["admin", "settings"] as const,
   signIn: ["admin", "sign-in"] as const,
+  /** What every account's sessions run on, where instance admins see it. */
+  adminClaude: ["admin", "claude"] as const,
   reservedSlugs: ["admin", "reserved-slugs"] as const,
   adminTokens: ["admin", "tokens"] as const,
   accountDeletion: ["me", "deletion"] as const,

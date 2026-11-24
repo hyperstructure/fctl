@@ -1367,6 +1367,18 @@ pub struct AdminClaudeToken {
     pub is_default: bool,
     pub created_at: Millis,
     pub updated_at: Millis,
+    /// When it runs out: a year after `claude setup-token` made it, or,
+    /// with `expiry_estimated`, after it was set, as nobody said when it
+    /// was made. Setting the same token again keeps it. Absent from control
+    /// planes before it.
+    pub expires_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub expiry_estimated: bool,
+    /// When Claude last answered it.
+    pub answered_at: Option<Millis>,
+    /// When fctl found it ended: Claude refused it.
+    pub ended_at: Option<Millis>,
 }
 
 /// `PUT /api/v1/admin/users/{user}/workspaces/{workspace}` (admin tokens):
@@ -1737,6 +1749,26 @@ pub struct InstanceSettings {
     /// make accounts: a domain's entry admits the accounts at it, and makes
     /// none. On by default.
     pub self_sign_up: bool,
+    /// The most a workspace's admins may see of their members' Claude
+    /// connections ([`ClaudeOversightSettings`]), never a token, its
+    /// account or its label: each workspace chooses within it.
+    /// [`ClaudeOversight::Details`] by default; lowering it lowers the
+    /// workspaces that chose more.
+    pub claude_oversight: ClaudeOversight,
+    /// Workspace admins may see how often their members' sessions paused
+    /// on usage limits, in the last 7 and 30 days. Whatever it says, they
+    /// see whose sessions wait for a limit to reset now. On by default.
+    pub claude_limit_pauses: bool,
+    /// Instance admins see every account's Claude connection in Admin →
+    /// People (`GET /api/v1/admin/claude`), as workspace admins see their
+    /// members', with its limit pauses: for instances that set people's
+    /// seats with admin tokens. Off by default.
+    pub claude_instance_view: bool,
+    /// In how many sessions Claude must refuse a long-lived token, since
+    /// it last answered it, before fctl marks it ended, so that a moment's
+    /// trouble at Claude doesn't: [`DEFAULT_CLAUDE_REFUSALS`] by default,
+    /// 1 to [`MAX_CLAUDE_REFUSALS`].
+    pub claude_refusals: u32,
 }
 
 /// How the people at some domains sign in ([`InstanceSettings::sign_in`]):
@@ -1922,6 +1954,13 @@ pub enum SignInYou {
     SignsOut,
 }
 
+/// In how many sessions Claude refuses a long-lived token before fctl marks
+/// it ended, until an instance's admins choose another number
+/// ([`InstanceSettings::claude_refusals`]).
+pub const DEFAULT_CLAUDE_REFUSALS: u32 = 2;
+/// The most they may choose.
+pub const MAX_CLAUDE_REFUSALS: u32 = 5;
+
 /// How many MiB one session snapshot may take until an instance's admins
 /// choose another limit ([`InstanceSettings::max_snapshot_mb`]).
 pub const DEFAULT_MAX_SNAPSHOT_MB: u32 = 200;
@@ -1948,6 +1987,10 @@ impl Default for InstanceSettings {
             max_snapshot_mb: DEFAULT_MAX_SNAPSHOT_MB,
             sign_in: Vec::new(),
             self_sign_up: true,
+            claude_oversight: ClaudeOversight::Details,
+            claude_limit_pauses: true,
+            claude_instance_view: false,
+            claude_refusals: DEFAULT_CLAUDE_REFUSALS,
         }
     }
 }
@@ -1976,6 +2019,11 @@ pub struct UpdateInstanceSettingsRequest {
     /// the admin who saves it is refused ([`SignInYou::SignsOut`]).
     pub sign_in: Option<Vec<SignInRule>>,
     pub self_sign_up: Option<bool>,
+    pub claude_oversight: Option<ClaudeOversight>,
+    pub claude_limit_pauses: Option<bool>,
+    pub claude_instance_view: Option<bool>,
+    /// 1 to [`MAX_CLAUDE_REFUSALS`].
+    pub claude_refusals: Option<u32>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -2099,6 +2147,10 @@ pub struct Workspace {
     /// it goes, and the session resumes elsewhere from its task and branch.
     /// Absent from control planes before snapshots.
     pub snapshot_days: Option<u32>,
+    /// What its admins see of its members' Claude connections, and how
+    /// they hear of those that run out or stop working: its members read it
+    /// too. Absent from control planes before it.
+    pub claude_oversight: Option<ClaudeOversightSettings>,
     /// Its own autopilot, which works in all its projects: the project it
     /// works from, and how it stands. Absent while it has none.
     pub autopilot: Option<WorkspaceAutopilot>,
@@ -2215,6 +2267,15 @@ pub struct UpdateWorkspaceRequest {
     pub snapshots: Option<bool>,
     /// See [`Workspace::snapshot_days`].
     pub snapshot_days: Option<u32>,
+    /// What its admins see of members' Claude connections: no more than
+    /// the instance lets them ([`ClaudeOversightSettings::most`]).
+    pub claude_oversight: Option<ClaudeOversight>,
+    /// Its admins see how often members' sessions paused on usage limits,
+    /// where the instance lets them.
+    pub claude_limit_pauses: Option<bool>,
+    /// How its admins hear by email of members' Claude connections that
+    /// run out or stop working.
+    pub claude_admin_email: Option<ClaudeAdminEmail>,
 }
 
 /// Someone in a workspace.
@@ -5127,6 +5188,241 @@ pub struct ClaudeCredentialInfo {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub on_runners: bool,
+    /// When Claude last answered it: a session's first answer from Claude,
+    /// or a usage reading, either of which means Claude accepted it.
+    /// Absent until a session runs on it, and from control planes before
+    /// it.
+    pub answered_at: Option<Millis>,
+    /// For a long-lived token, `expires_at` is when it runs out: a year
+    /// after `claude setup-token` made it. This says fctl counted the
+    /// year from when the token was connected, as nobody said when it was
+    /// made, so it runs out around then, maybe sooner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub expiry_estimated: bool,
+    /// When fctl found it ended (`status` is `invalid`): Claude refused the
+    /// token in sessions, or the login in renewing it.
+    pub ended_at: Option<Millis>,
+    /// An admin token set it (`PUT /api/v1/admin/users/{user}/claude`):
+    /// their admins set the next one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub provisioned: bool,
+}
+
+/// How much a workspace's admins see of its members' Claude connections,
+/// never a token, its account or the label its person gave it. Ordered from
+/// least to most: an instance's admins choose the most
+/// ([`InstanceSettings::claude_oversight`]), and each workspace's within it
+/// ([`ClaudeOversightSettings::oversight`]).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeOversight {
+    /// Nothing of them.
+    Off,
+    /// Whether each member's sessions there can run: whether they have a
+    /// connection, whether Claude still takes it, when its token runs out,
+    /// and whether their sessions wait for a usage limit to reset.
+    Readiness,
+    /// Also what kind of connection it is and who set it, its plan, and
+    /// when Claude last answered it.
+    #[default]
+    Details,
+}
+
+impl ClaudeOversight {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Readiness => "readiness",
+            Self::Details => "details",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "readiness" => Some(Self::Readiness),
+            "details" => Some(Self::Details),
+            _ => None,
+        }
+    }
+}
+
+/// How a workspace's admins hear by email, where the instance sends email,
+/// of members' Claude connections that run out or stop working. The People
+/// tab shows them whatever it says, and each member hears of their own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeAdminEmail {
+    /// Not by email.
+    Off,
+    /// As each member hears: 30 and 7 days before their token runs out,
+    /// and as soon as one stops working.
+    Each,
+    /// One email a week, while a member's token runs out within 30 days or
+    /// stopped working.
+    #[default]
+    Weekly,
+}
+
+impl ClaudeAdminEmail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Each => "each",
+            Self::Weekly => "weekly",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "each" => Some(Self::Each),
+            "weekly" => Some(Self::Weekly),
+            _ => None,
+        }
+    }
+}
+
+/// What a workspace's admins see of its members' Claude connections, and
+/// how they hear of them ([`Workspace::claude_oversight`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClaudeOversightSettings {
+    /// What its admins see: its own choice, within `most`.
+    pub oversight: ClaudeOversight,
+    /// The most the instance lets them see.
+    pub most: ClaudeOversight,
+    /// Its admins see how often members' sessions paused on usage limits
+    /// (with [`ClaudeOversight::Details`]).
+    pub limit_pauses: bool,
+    /// The instance lets them ([`InstanceSettings::claude_limit_pauses`]).
+    pub limit_pauses_allowed: bool,
+    pub admin_email: ClaudeAdminEmail,
+}
+
+/// `GET /api/v1/workspaces/{id}/claude` (its admins), and `GET
+/// /api/v1/admin/claude` (instance admins, where the instance lets them):
+/// what each person's sessions run on, as much of it as they see.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClaudeOverview {
+    /// How much they see: with [`ClaudeOversight::Off`], nobody is listed.
+    pub oversight: ClaudeOversight,
+    /// They see [`MemberClaude::pauses`].
+    pub limit_pauses: bool,
+    /// The instance takes admin tokens, which set people's Claude tokens
+    /// (`fctl admin users set … --claude-token`).
+    pub admin_tokens: bool,
+    pub members: Vec<MemberClaude>,
+}
+
+/// Whether someone's sessions can run on Claude, there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeState {
+    /// No Claude connection: their sessions can't start.
+    None,
+    /// Connected, and no session ran on it yet.
+    Unused,
+    /// Claude takes it.
+    Works,
+    /// Claude refused it, or ended the login, and they have no other
+    /// connection: their sessions can't run.
+    Ended,
+}
+
+/// One person's Claude connection, as their admins see it: the one their
+/// sessions run on there (the one they chose for the workspace, else their
+/// default, else their newest that works), or, when none works, the one
+/// that ended.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct MemberClaude {
+    pub user: UserRef,
+    /// The address they are a member as (their primary one in Admin →
+    /// People).
+    pub email: String,
+    pub state: ClaudeState,
+    /// When its long-lived token runs out. Absent for logins, which Claude
+    /// renews, and for tokens kept on runners, which fctl never reads.
+    pub runs_out_at: Option<Millis>,
+    /// `runs_out_at` is a year after the token was connected, as nobody
+    /// said when `claude setup-token` made it: around then, maybe sooner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub runs_out_estimated: bool,
+    /// When fctl found it ended (`state` is `ended`).
+    pub ended_at: Option<Millis>,
+    /// Their sessions there wait for a usage limit to reset, until then.
+    pub paused_until: Option<Millis>,
+    /// Which limit: Claude's name for it (`five_hour`, `seven_day`,
+    /// `seven_day_opus`, …).
+    pub paused_limit: Option<String>,
+    /// With [`ClaudeOversight::Details`].
+    pub connection: Option<MemberClaudeConnection>,
+    /// Where they see them ([`ClaudeOverview::limit_pauses`]).
+    pub pauses: Option<LimitPauses>,
+}
+
+/// What kind of Claude connection someone's sessions run on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeConnectionKind {
+    /// A long-lived token from `claude setup-token`, which fctl keeps.
+    Token,
+    /// A full Claude login, which Claude renews.
+    Login,
+    /// A long-lived token kept on their runners, never given to fctl.
+    OnRunners,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct MemberClaudeConnection {
+    pub kind: ClaudeConnectionKind,
+    /// An admin token set it (`PUT /api/v1/admin/users/{user}/claude`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub set_by_admin_token: bool,
+    /// They chose it for this workspace; otherwise it is their default, or
+    /// their newest.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub chosen_here: bool,
+    /// Its plan: `pro`, `max`, `team`, `enterprise`, as its login said, or
+    /// `ultra`, as its limits show. Absent while unknown: a long-lived
+    /// token says none.
+    pub plan: Option<String>,
+    pub connected_at: Millis,
+    /// When Claude last answered it.
+    pub answered_at: Option<Millis>,
+    /// When a session last took it.
+    pub used_at: Option<Millis>,
+}
+
+/// How often someone's sessions paused on a Claude usage limit, as fctl
+/// counts them for 30 days.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct LimitPauses {
+    /// In the last 7 days.
+    pub week: u32,
+    /// In the last 30 days.
+    pub month: u32,
+    pub last_at: Option<Millis>,
+    /// The limit of the last one (`five_hour`, `seven_day`, …).
+    pub last_limit: Option<String>,
 }
 
 /// Where a Claude plan limit stands, as Claude reported it for the limit
@@ -5190,6 +5486,11 @@ pub struct AddClaudeTokenRequest {
     /// The output of `claude setup-token` (`sk-ant-oat01-…`).
     pub token: String,
     pub label: Option<String>,
+    /// When `claude setup-token` made it, if the person knows: it runs out
+    /// a year on. Absent, fctl counts the year from now and says it runs
+    /// out around then ([`ClaudeCredentialInfo::expiry_estimated`]). The
+    /// same token connected again keeps the date it had.
+    pub made_at: Option<Millis>,
 }
 
 /// `POST /api/v1/me/claude/on-runners`: connects the Claude token the

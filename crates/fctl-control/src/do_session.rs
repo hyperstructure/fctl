@@ -243,6 +243,9 @@ const AUTOPILOT_OWED: &str = "autopilot_owed";
 /// heard: a merge before then happened as it worked
 /// (`fctl_domain::follow_ups::at_work_then`).
 const TURN_ENDED_AT: &str = "turn_ended_at";
+/// When the session last recorded that Claude answered on its connection
+/// (`crate::claude_oversight::record`).
+const CLAUDE_ANSWERED_AT: &str = "claude_answered_at";
 /// The meta key that keeps when the agent last ran a command that merges or
 /// closes a pull request, as the session heard
 /// (`fctl_domain::follow_ups::merges_or_closes`): a merge by fctl's app
@@ -2879,6 +2882,8 @@ impl SessionObject {
                 let mut turn_ended = false;
                 let mut ran_merge = false;
                 let mut usage = Vec::new();
+                // What Claude said of the connection the session runs on.
+                let mut claude_seen = crate::claude_oversight::Seen::default();
                 // The windows the latest report that lists them listed.
                 let mut listed = None;
                 // Images from the results of the agent's tools were kept.
@@ -2940,6 +2945,7 @@ impl SessionObject {
                         self.mirror_to_linear(s, v, now);
                         plan::merge(&mut usage, plan::readings(v, now));
                         listed = plan::listed(v).or(listed);
+                        claude_seen.note(v);
                         kept_some |= self.keep_images(v, now);
                         ev::shape_for_storage(v);
                     }
@@ -3014,6 +3020,7 @@ impl SessionObject {
                 self.broadcast_events(&out);
                 self.send_uplink(&UplinkDown::Ack { agent_seq: acked });
                 self.record_usage(usage, listed, now);
+                self.record_claude(claude_seen, now);
                 if kept_some {
                     self.arm(kept_images::expires_at(now)).await;
                 }
@@ -3707,6 +3714,35 @@ impl SessionObject {
             if let Err(e) = crate::usage::record(&env, s.id.as_str(), &readings, listed, now).await
             {
                 worker::console_error!("recording plan usage failed: {}", e.0.message);
+            }
+        });
+    }
+
+    /// Keeps what Claude said of the session's Claude connection
+    /// (`crate::claude_oversight`): that it answered, at most every ten
+    /// minutes, each refusal and each usage limit it paused on.
+    fn record_claude(&self, mut seen: crate::claude_oversight::Seen, now: fctl_proto::Millis) {
+        if seen.answered {
+            let last = self
+                .meta(CLAUDE_ANSWERED_AT)
+                .and_then(|v| v.parse::<i64>().ok());
+            if last.is_some_and(|l| now - l < crate::claude_oversight::ANSWERED_EVERY_MS) {
+                seen.answered = false;
+            } else {
+                self.set_meta(CLAUDE_ANSWERED_AT, &now.to_string());
+            }
+        }
+        if seen.is_empty() {
+            return;
+        }
+        let Some(s) = self.summary() else { return };
+        let env = self.env.clone();
+        self.state.wait_until(async move {
+            if let Err(e) = crate::claude_oversight::record(&env, s.id.as_str(), seen, now).await {
+                worker::console_error!(
+                    "recording what Claude said of a connection: {}",
+                    e.0.message
+                );
             }
         });
     }
