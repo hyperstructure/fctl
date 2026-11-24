@@ -186,13 +186,14 @@ export function poolShapeWords(d: G.PoolDemand): string {
  * Of `pools`, the one a project with `labels` waits for and counts towards first: the one whose
  * labels and its runners' include them all with the fewest others, then the oldest
  * (`fctl_domain::pools::first_with`). Undefined for no labels, or when no pool has them. A member's
- * own pool runs only their sessions (`do_fleet.rs`'s `pool_for`), so it is no project's.
+ * own pool runs only their sessions (`do_fleet.rs`'s `pool_for`), so it is no project's; nor is one
+ * whose token ended with no runners left, which the server no longer counts (`pools::named`).
  */
 export function poolFor(labels: readonly string[], pools: readonly G.PoolDemand[]): G.PoolDemand | undefined {
   if (labels.length === 0) return undefined;
   let best: { p: G.PoolDemand; n: number; i: number } | undefined;
   pools.forEach((p, i) => {
-    if (p.pool.owner) return;
+    if (p.pool.owner || (p.pool.closed && enrolled(p.runners) === 0)) return;
     const have = [
       ...(p.pool.labels ?? []),
       ...(p.shape?.labels ?? []).filter((l) => !(p.pool.labels ?? []).includes(l)),

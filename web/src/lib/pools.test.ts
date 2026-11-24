@@ -171,6 +171,10 @@ describe("choosing a pool", () => {
     });
     expect(poolFor(["aws", "large"], [own])).toBeUndefined();
     expect(poolFor(["aws", "large"], [own, large])?.pool.id).toBe("enr_l");
+    // Nor does one whose token ended with no runners left; one with runners still counts.
+    const ended = demand({ pool: { id: "enr_e", labels: ["aws", "large"], closed: true } });
+    expect(poolFor(["aws", "large"], [ended])).toBeUndefined();
+    expect(poolFor(["aws", "large"], [demand({ ...ended, runners: { online: 1 } })])?.pool.id).toBe("enr_e");
   });
 });
 
