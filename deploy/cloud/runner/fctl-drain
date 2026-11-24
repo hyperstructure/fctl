@@ -1,0 +1,7 @@
+#!/bin/sh
+# fctl-drain SECONDS: no new sessions start here; the turns under way get SECONDS
+# to end, then what still runs stops, and its agents push what they committed.
+# Then the runner is removed.
+set -u
+fctl="runuser -u fctl -- env XDG_RUNTIME_DIR=/run/user/$(id -u fctl) /home/fctl/.local/bin/fctl"
+timeout "$1" $fctl host uninstall --wait || $fctl host uninstall --force

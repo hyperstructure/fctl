@@ -62,12 +62,12 @@ const projects = [
   project("watched-web", watched, "viewer"),
 ];
 
-/** The Agent Floor, for Ada in Frog, Kind Machine and Watched. */
-function open() {
+/** The Agent Floor, for Ada in Frog, Kind Machine and Watched, with her Claude connections. */
+function open(claude: G.ClaudeCredentialInfo[] = []) {
   const client = new QueryClient();
   client.setQueryData(keys.me, {
     user: { id: "usr_ada", name: "Ada Lovelace", role: "member" },
-    claude: [],
+    claude,
   } as unknown as G.Me);
   client.setQueryData(keys.workspaces, { workspaces: [frog, kind, watched], invitations: [], limit: 5 });
   client.setQueryData(keys.projects, { projects });
@@ -91,6 +91,7 @@ function open() {
   const picker = () =>
     container.querySelector<HTMLElement>('[role=combobox][aria-label="Workspace and project"]');
   return {
+    container,
     /** The project the composer starts a session in, as its picker says it. */
     project: () =>
       picker()?.querySelector(":scope > .grid:not([aria-hidden]) > span:not([aria-hidden])")?.textContent,
@@ -206,5 +207,49 @@ describe("the Agent Floor's composer", () => {
     await floor.start();
     floor.show("Kind Machine");
     expect(floor.project()).toBe("Frog / cook-it");
+  });
+});
+
+describe("your Claude connection on the Agent Floor", () => {
+  const day = 86_400_000;
+  const token = (c: Partial<G.ClaudeCredentialInfo> = {}): G.ClaudeCredentialInfo => ({
+    id: "crd_1",
+    kind: "setup_token",
+    remote_control: false,
+    status: "active",
+    is_default: true,
+    created_at: Date.now() - 360 * day,
+    ...c,
+  });
+
+  it("says nothing of a token with more than a week left", () => {
+    const view = open([token({ expires_at: Date.now() + 20 * day, expiry_estimated: true })]);
+    expect(view.container.textContent).not.toContain("Your Claude token");
+  });
+
+  it("warns in its last week, with the way to a new one", () => {
+    const view = open([token({ expires_at: Date.now() + 4.5 * day, expiry_estimated: true })]);
+    expect(view.container.textContent).toMatch(
+      /Your Claude token runs out around .+, in 5 days\. Make a new one with claude setup-token and connect it before then, or your sessions stop\./,
+    );
+    expect(view.container.querySelector('a[href="/settings"]')?.textContent).toBe("Connect a new token");
+  });
+
+  it("says a token past its date ran out, rather than asking for a new one before then", () => {
+    const view = open([token({ expires_at: Date.now() - 2 * day })]);
+    expect(view.container.textContent).toMatch(
+      /Your Claude token ran out on .+: sessions on it fail once Claude refuses it\. Make a new one with claude setup-token and connect it\./,
+    );
+    expect(view.container.textContent).not.toContain("before then");
+  });
+
+  it("says when Claude refused your only token, which sessions can't run without", () => {
+    const view = open([token({ status: "invalid", ended_at: Date.now() - day })]);
+    expect(view.container.textContent).toMatch(
+      /Claude refused your Claude token on .+, so your sessions can't run: connect a new one\./,
+    );
+    // Another that works runs them: nothing to say here.
+    const fine = open([token({ status: "invalid" }), token({ id: "crd_2", kind: "oauth" })]);
+    expect(fine.container.textContent).not.toContain("Claude refused");
   });
 });

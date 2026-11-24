@@ -164,10 +164,48 @@ describe("connecting Claude", () => {
     type(input, "  sk-ant-oat01-abc  ");
     // Having a token to paste means step 1 is done.
     expect(view.querySelectorAll('[aria-label="Done"]')).toHaveLength(1);
+    const before = Date.now();
     await act(async () => button(view, "Connect")?.click());
-    expect(claudeToken).toHaveBeenCalledWith({ token: "sk-ant-oat01-abc" });
+    // Just made, as the steps above have people do: it runs out a year from now, exactly.
+    const sent = claudeToken.mock.calls.at(-1)?.[0] as G.AddClaudeTokenRequest;
+    expect(sent.token).toBe("sk-ant-oat01-abc");
+    expect(sent.made_at).toBeGreaterThanOrEqual(before);
     expect(queryClient.getQueryData(keys.me)).toBe(connected);
     expect(ways.at(-1)).toBeNull();
+  });
+
+  it("asks when the token was made, and says when it runs out, or that fctl can only say around", async () => {
+    const { view } = render([], "token");
+    type(view.querySelector<HTMLInputElement>('input[aria-label="Token to paste"]'), "sk-ant-oat01-abc");
+    expect(view.textContent).toContain("When did claude setup-token make it?");
+    expect(view.textContent).toMatch(
+      /It runs out on .+, a year on\. fctl tells you a month and a week before\./,
+    );
+    // Made earlier: the day it was made, which Connect waits for.
+    act(() => radio(view, "earlier")?.click());
+    expect(button(view, "Connect")?.disabled).toBe(true);
+    const day = view.querySelector<HTMLInputElement>(
+      'input[aria-label="The day claude setup-token made it"]',
+    );
+    type(day, "2026-03-02");
+    expect(button(view, "Connect")?.disabled).toBe(false);
+    expect(view.textContent).toContain("It runs out on Mar 2, 2027, a year on.");
+    await act(async () => button(view, "Connect")?.click());
+    expect(claudeToken).toHaveBeenLastCalledWith({
+      token: "sk-ant-oat01-abc",
+      made_at: new Date(2026, 2, 2).getTime(),
+    });
+  });
+
+  it("sends no date for a token nobody knows the age of, and says fctl counts a year from today", async () => {
+    const { view } = render([], "token");
+    type(view.querySelector<HTMLInputElement>('input[aria-label="Token to paste"]'), "sk-ant-oat01-abc");
+    act(() => radio(view, "unknown")?.click());
+    expect(view.textContent).toMatch(
+      /fctl counts a year from today and says it runs out around .+: it may be sooner\./,
+    );
+    await act(async () => button(view, "Connect")?.click());
+    expect(claudeToken).toHaveBeenLastCalledWith({ token: "sk-ant-oat01-abc", made_at: undefined });
   });
 
   it("keeps a pasted token, and who keeps it, while you look at the other way", () => {

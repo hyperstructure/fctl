@@ -16,6 +16,7 @@ import { Button, calledName, GLCanvas, Skeleton, toast } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { workspaces as wsApi } from "@/lib/api";
+import { daysLeft, runsOutWords, shortDay, yourClaude } from "@/lib/claude-oversight";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
@@ -578,6 +579,7 @@ export function Home() {
               </Link>
             </div>
           ))}
+          {me && <YourClaude claude={me.claude} />}
           <RunnerApprovals />
           {me && <RunnerUpdate user={me.user.id} />}
           {workspaces.data && mine.length === 0 && (
@@ -635,6 +637,53 @@ export function Home() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Your Claude connection, when it needs you: a long-lived token in its last week, before your sessions
+ * stop, or every connection of yours ended, which they can't run without. Settings → Claude has the way.
+ */
+function YourClaude({ claude }: { claude: G.ClaudeCredentialInfo[] }) {
+  const now = Date.now();
+  const { ending, ended } = yourClaude(claude, now);
+  if (ended) {
+    const on = ended.ended_at ? ` on ${shortDay(ended.ended_at, now)}` : "";
+    return (
+      <div className="flex items-center gap-3 rounded-xl border border-danger/25 bg-danger-soft px-4 py-3 text-[13.5px] text-ink-2 max-sm:flex-col max-sm:items-start">
+        <KeyRound aria-hidden="true" className="size-4 shrink-0 text-danger max-sm:hidden" />
+        <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+          {ended.kind === "oauth"
+            ? `Claude ended your login${on}, so your sessions can't run: sign in again, or connect a long-lived token.`
+            : `Claude refused your Claude token${on}, so your sessions can't run: connect a new one.`}
+        </span>
+        <Link to="/settings" search={{ tab: "claude" }}>
+          <Button size="sm" variant="primary" icon={<KeyRound className="size-3.5" />}>
+            Connect Claude
+          </Button>
+        </Link>
+      </div>
+    );
+  }
+  if (!ending?.expires_at) return null;
+  const days = daysLeft(ending.expires_at, now);
+  // Past its date while Claude still took it last: it ran out, or soon will be refused.
+  const past = ending.expires_at <= now;
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-amber/25 bg-amber-soft px-4 py-3 text-[13.5px] text-ink-2 max-sm:flex-col max-sm:items-start">
+      <KeyRound aria-hidden="true" className="size-4 shrink-0 text-amber max-sm:hidden" />
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+        Your Claude token {runsOutWords(ending.expires_at, ending.expiry_estimated, now)}
+        {past
+          ? ": sessions on it fail once Claude refuses it. Make a new one with claude setup-token and connect it."
+          : `, in ${days === 1 ? "a day" : `${days} days`}. Make a new one with claude setup-token and connect it before then, or your sessions stop.`}
+      </span>
+      <Link to="/settings" search={{ tab: "claude" }}>
+        <Button size="sm" icon={<KeyRound className="size-3.5" />}>
+          Connect a new token
+        </Button>
+      </Link>
     </div>
   );
 }

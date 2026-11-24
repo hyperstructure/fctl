@@ -2,7 +2,7 @@
 
 use crate::auth;
 use crate::ctx::Ctx;
-use crate::db::{n, os, q, s};
+use crate::db::{n, on, os, q, s};
 use crate::error::{AppResult, not_found, unavailable, validation};
 use crate::http;
 use crate::internal::{self, LoginCode, LoginStart};
@@ -31,26 +31,86 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         .as_deref()
         .map(|l| fctl_domain::validate::name("label", l))
         .transpose()?;
+    if let Some(problem) = body
+        .made_at
+        .and_then(|m| fctl_domain::claude_oversight::made_at_problem(m, ctx.now))
+    {
+        return Err(validation("made_at", &problem));
+    }
     ctx.verified(Sensitive::ConnectClaude)?;
+    let keys = ctx.keys()?;
+    // The same token again: the connection that has it takes it back, as it
+    // was, and runs out when it did, unless they give a day it could have
+    // been made (not "just now" for one fctl got long ago). Its person says
+    // it works: Claude's refusals of it count afresh.
+    if let Some(same) = same_token(&ctx.db, &keys, &user.id, &token, false).await? {
+        let had = (
+            same.expires_at.unwrap_or_else(|| {
+                fctl_domain::claude_oversight::runs_out(None, same.created_at).0
+            }),
+            same.made_at,
+        );
+        let (expires_at, made_at) =
+            fctl_domain::claude_oversight::again(body.made_at, had, same.created_at);
+        q(
+            &ctx.db,
+            "DELETE FROM claude_refusals WHERE credential_id = ?",
+            &[s(&same.id)],
+        )?
+        .run()
+        .await?;
+        q(
+            &ctx.db,
+            "UPDATE claude_credentials SET label = COALESCE(?1, label), status = 'active', ended_at = NULL, \
+             warned_at = CASE WHEN expires_at = ?2 THEN warned_at END, expires_at = ?2, made_at = ?3, updated_at = ?4 \
+             WHERE id = ?5",
+            &[
+                os(label.as_deref()),
+                n(expires_at),
+                on(made_at),
+                n(ctx.now),
+                s(&same.id),
+            ],
+        )?
+        .run()
+        .await?;
+        q(
+            &ctx.db,
+            "UPDATE users SET default_credential_id = ? WHERE id = ?",
+            &[s(&same.id), s(&user.id)],
+        )?
+        .run()
+        .await?;
+        ctx.audit(
+            "claude.token_added",
+            Some(&same.id),
+            Some(serde_json::json!({ "again": true })),
+        );
+        crate::autopilots::owner_moved(&ctx.env, &ctx.db, &user.id, ctx.now).await;
+        let user = auth::user_by_id(ctx, &user.id)
+            .await?
+            .ok_or_else(|| not_found("User"))?;
+        return http::ok(&auth::me(ctx, &user).await?);
+    }
     let id = fctl_domain::ids::credential_id(ctx.now);
     let secret = CredentialSecret {
         access_token: token,
         refresh_token: None,
         expires_at: None,
     };
-    let sealed = ctx
-        .keys()?
-        .seal_json(&CredentialRow::aad(id.as_str(), &user.id), &secret)?;
+    let sealed = keys.seal_json(&CredentialRow::aad(id.as_str(), &user.id), &secret)?;
+    let (expires_at, _) = fctl_domain::claude_oversight::runs_out(body.made_at, ctx.now);
     q(
         &ctx.db,
-        "INSERT INTO claude_credentials (id, user_id, kind, label, secret_enc, scopes, status, expires_at, created_at, updated_at) \
-         VALUES (?, ?, 'setup_token', ?, ?, 'user:inference', 'active', ?, ?, ?)",
+        "INSERT INTO claude_credentials (id, user_id, kind, label, secret_enc, scopes, status, expires_at, made_at, created_at, updated_at) \
+         VALUES (?, ?, 'setup_token', ?, ?, 'user:inference', 'active', ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&user.id),
             os(label.as_deref()),
             s(&sealed),
-            n(ctx.now + 365 * auth::DAY_MS),
+            n(expires_at),
+            on(body.made_at),
             n(ctx.now),
             n(ctx.now),
         ],
@@ -78,6 +138,30 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         .await?
         .ok_or_else(|| not_found("User"))?;
     http::created(&auth::me(ctx, &user).await?)
+}
+
+/// The connection of `user_id`'s that keeps `token`, a long-lived token
+/// fctl keeps: among those an admin token set (`provisioned`), or among
+/// their own.
+pub async fn same_token(
+    db: &worker::D1Database,
+    keys: &crate::crypto::Keys,
+    user_id: &str,
+    token: &str,
+    provisioned: bool,
+) -> AppResult<Option<CredentialRow>> {
+    let rows: Vec<CredentialRow> = q(
+        db,
+        "SELECT * FROM claude_credentials WHERE user_id = ? AND kind = 'setup_token' AND on_runners = 0 \
+         AND provisioned = ? AND secret_enc != ''",
+        &[s(user_id), n(i64::from(provisioned))],
+    )?
+    .all()
+    .await?;
+    Ok(rows.into_iter().find(|r| {
+        keys.open_json::<CredentialSecret>(&CredentialRow::aad(&r.id, &r.user_id), &r.secret_enc)
+            .is_ok_and(|secret| secret.access_token == token)
+    }))
 }
 
 /// What a new Claude connection is, for the email about it.
@@ -153,15 +237,23 @@ pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     .await?;
     let (id, created) = match existing {
         Some(e) => {
-            if let Some(l) = &label {
-                q(
-                    &ctx.db,
-                    "UPDATE claude_credentials SET label = ?, updated_at = ? WHERE id = ?",
-                    &[s(l), n(ctx.now), s(&e.id)],
-                )?
-                .run()
-                .await?;
-            }
+            // Connected again, it works again: a token Claude refused is
+            // replaced on the runners before, and its refusals count afresh.
+            q(
+                &ctx.db,
+                "DELETE FROM claude_refusals WHERE credential_id = ?",
+                &[s(&e.id)],
+            )?
+            .run()
+            .await?;
+            q(
+                &ctx.db,
+                "UPDATE claude_credentials SET label = COALESCE(?, label), status = 'active', ended_at = NULL, \
+                 updated_at = ? WHERE id = ?",
+                &[os(label.as_deref()), n(ctx.now), s(&e.id)],
+            )?
+            .run()
+            .await?;
             (e.id, false)
         }
         None => {

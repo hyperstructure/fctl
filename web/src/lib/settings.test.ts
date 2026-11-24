@@ -106,6 +106,28 @@ describe("what the list of pages says", () => {
     });
   });
 
+  it("marks a long-lived token in its last week, before its sessions stop", () => {
+    const now = Date.UTC(2026, 10, 23, 12);
+    const day = 86_400_000;
+    const token = claude({ kind: "setup_token", label: "Laptop", expires_at: now + 5 * day });
+    expect(claudeGist([token], now)).toEqual({ text: "Runs out in 5 days", attention: true });
+    expect(claudeGist([token, claude({ id: "crd_2", is_default: false })], now)).toEqual({
+      text: "Laptop runs out in 5 days",
+      attention: true,
+    });
+    // A month away is no news yet; the page says it under the token.
+    expect(claudeGist([{ ...token, expires_at: now + 20 * day }], now)).toEqual({ text: "Laptop" });
+    // Past its date, it ran out, or may have where the date is an estimate.
+    expect(claudeGist([{ ...token, expires_at: now - day }], now)).toEqual({
+      text: "Ran out",
+      attention: true,
+    });
+    expect(claudeGist([{ ...token, expires_at: now - day, expiry_estimated: true }], now)).toEqual({
+      text: "May have run out",
+      attention: true,
+    });
+  });
+
   it("says first what Security needs", () => {
     expect(securityGist({ two_factor: twoFactor(), passkeys: [] })).toEqual({
       text: "Two-factor sign-in off",
