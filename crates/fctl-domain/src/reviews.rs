@@ -3164,6 +3164,9 @@ pub fn passed_on(f: &Found<'_>) -> String {
         if threads == 0 {
             s.push_str(&reply_to_open(f));
         }
+        if f.still_open.iter().any(|o| o.in_text) {
+            s.push_str(&format!("\n{}\n", answer_in_text(f)));
+        }
     }
     s
 }
@@ -3192,12 +3195,9 @@ fn nothing_new(f: &Found<'_>) -> String {
     s.push('\n');
     s.push_str(&reply_to_open(f));
     let threads = f.still_open.iter().filter(|o| !o.in_text).count();
-    let (owner, name, number) = (&f.repo.owner, &f.repo.name, f.number);
     let mut after = Vec::new();
     if f.still_open.iter().any(|o| o.in_text) {
-        after.push(format!(
-            "Findings in an earlier review's summary have no thread: answer them in a comment on the pull request (`gh pr comment {number} --repo {owner}/{name} --body '…'`)."
-        ));
+        after.push(answer_in_text(f));
     }
     match threads {
         0 => {}
@@ -3214,6 +3214,14 @@ fn nothing_new(f: &Found<'_>) -> String {
         s.push('\n');
     }
     s
+}
+
+/// How to answer the earlier findings still open in a summary's text.
+fn answer_in_text(f: &Found<'_>) -> String {
+    let (owner, name, number) = (&f.repo.owner, &f.repo.name, f.number);
+    format!(
+        "Findings in an earlier review's summary have no thread: answer them in a comment on the pull request (`gh pr comment {number} --repo {owner}/{name} --body '…'`)."
+    )
 }
 
 /// "1 finding of an earlier review is", "3 findings of earlier reviews are".
@@ -5798,6 +5806,9 @@ mod tests {
         assert!(new_at.is_some() && new_at < too && too < listed, "{m}");
         // The new ones have no thread: how to answer comes with the earlier.
         assert!(m.contains("/comments/77/replies"));
+        assert!(m.trim_end().ends_with(
+            "Findings in an earlier review's summary have no thread: answer them in a comment on the pull request (`gh pr comment 12 --repo acme/web --body '…'`)."
+        ));
         let threaded = [Spot::Comment {
             id: 101,
             url: "https://github.com/acme/web/pull/12#discussion_r101".into(),
