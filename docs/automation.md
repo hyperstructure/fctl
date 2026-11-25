@@ -455,7 +455,7 @@ receiver switches without missing a request.
 | `session.finished` | Its agent's turn ended with no background work running, and it waits for a message: with the start of its reply (`data.message`). Sent once it has waited 5 seconds, as background work's own turn comes within them. |
 | `session.ready_for_review` | Its agent finished, and its open pull requests (not drafts) passed every check, with no review agent at work on them, for two minutes: they wait for a person (`data.ready`). Once for each set of commits. It needs the instance's GitHub webhook, which tells fctl of checks ([Self-hosting](self-hosting.md#pull-request-state-and-checks)). |
 | `session.question` | Its agent asked something with `fctl ask`, with the answers people can click. |
-| `session.follow_up` | fctl brought its agent back to its pull request: a comment that addresses it, failed checks, conflicts, a merge or a close (`data.follow_up.kind` is `github`, with GitHub's `events`), or a review's findings (`review`). |
+| `session.follow_up` | fctl brought its agent back to its pull request: a comment that addresses it, failed checks, conflicts, a merge or a close (`data.follow_up.kind` is `github`, with GitHub's `events`), or a review's findings (`review`, with `review.still_open`: earlier reviews' findings still open, alone when the review found nothing new). |
 | `session.paused` | Its Claude plan reached a usage limit; it carries on once the limit resets. |
 | `session.stopped` | Its sandbox stopped: it waited long enough, its work ran out of time, or someone stopped it. A message resumes it. |
 | `session.failed` | It couldn't start or carry on (`data.session.status_reason` says why). |

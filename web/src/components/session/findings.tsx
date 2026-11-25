@@ -1,14 +1,15 @@
 // A message from fctl that passed a review's findings on to the agent that opened the pull request, as
 // the transcript shows it: what the review agent found, a line for each finding, which opens its
-// comment on GitHub, with what fctl told the agent (each finding in full, and how to answer it) a
-// click away.
+// comment on GitHub, then the earlier reviews' findings still open, which the agent may have missed
+// (alone where the review found nothing new), with what fctl told the agent (each finding in full,
+// and how to answer it) a click away.
 
 import { Link } from "@tanstack/react-router";
-import { memo } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 import { ReviewIcon } from "@/components/ui";
 import type * as G from "@/gen";
 import { lines } from "@/lib/follow-ups";
-import { issues, severityLabel, shortSha } from "@/lib/reviews";
+import { issues, severityLabel, shortSha, stillOpen } from "@/lib/reviews";
 import { PullLink, Told, When } from "./follow-up";
 import { RailIcon } from "./lines";
 
@@ -27,6 +28,8 @@ export const FindingsMessage = memo(function FindingsMessage({
 }) {
   // A finding's comment, else the review's summary, which GitHub shows above the comments.
   const where = review.summary_url ?? review.url;
+  const open = review.still_open ?? [];
+  const found = review.findings.length > 0 ? `found ${issues(review.findings.length)}` : "found nothing new";
   return (
     <div className="group/msg animate-rise py-3">
       <div className="flex items-start gap-2.5 text-[12.5px]">
@@ -43,7 +46,7 @@ export const FindingsMessage = memo(function FindingsMessage({
               >
                 fctl's review agent
               </Link>{" "}
-              found {issues(review.findings.length)}
+              {found}
             </span>
             <span className="inline-flex items-center gap-1.5 text-ink-4">
               in <PullLink f={review} href={where} />
@@ -59,27 +62,68 @@ export const FindingsMessage = memo(function FindingsMessage({
             </span>
             <When at={ts} />
           </div>
-          <ul aria-label="Its findings" className="mt-1 flex flex-col gap-1 text-[13px] leading-5">
-            {review.findings.map((f, i) => (
-              <li key={`${i}-${f.title}`} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                <a
-                  href={f.url ?? where}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="min-w-0 text-ink-2 underline-offset-2 transition-colors [overflow-wrap:anywhere] hover:text-ink hover:underline"
-                >
-                  {f.title}
-                </a>
-                <span className="min-w-0 text-[12px] text-ink-4 [overflow-wrap:anywhere]">
-                  {severityLabel(f.severity)} · <span className="font-mono text-[11.5px]">{lines(f)}</span>
-                  {f.deleted && " (old version)"}
-                </span>
-              </li>
-            ))}
-          </ul>
+          {review.findings.length > 0 && (
+            <ul aria-label="Its findings" className="mt-1 flex flex-col gap-1 text-[13px] leading-5">
+              {review.findings.map((f, i) => (
+                <li key={`${i}-${f.title}`} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                  <a
+                    href={f.url ?? where}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="min-w-0 text-ink-2 underline-offset-2 transition-colors [overflow-wrap:anywhere] hover:text-ink hover:underline"
+                  >
+                    {f.title}
+                  </a>
+                  <span className="min-w-0 text-[12px] text-ink-4 [overflow-wrap:anywhere]">
+                    {severityLabel(f.severity)} · <span className="font-mono text-[11.5px]">{lines(f)}</span>
+                    {f.deleted && " (old version)"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {open.length > 0 && (
+            <>
+              <div className="mt-2 text-[12px] text-ink-4">{stillOpen(open.length)}</div>
+              <ul
+                aria-label="Earlier findings still open"
+                className="mt-1 flex flex-col gap-1 text-[13px] leading-5"
+              >
+                {open.map((f, i) => (
+                  <li key={`${i}-${f.title}`} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                    <a
+                      href={f.url ?? review.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-w-0 text-ink-2 underline-offset-2 transition-colors [overflow-wrap:anywhere] hover:text-ink hover:underline"
+                    >
+                      {f.title}
+                    </a>
+                    <span className="min-w-0 text-[12px] text-ink-4 [overflow-wrap:anywhere]">
+                      {openAbout(f)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       </div>
       <Told text={text} findKey={findKey} />
     </div>
   );
 });
+
+/** What a finding still open says after its title: "Medium · src/auth.rs:9 · 1 reply". */
+function openAbout(f: G.OpenFinding) {
+  const about: ReactNode[] = [];
+  if (f.severity) about.push(severityLabel(f.severity));
+  if (f.path) about.push(<span className="font-mono text-[11.5px]">{lines(f)}</span>);
+  if (f.replies) about.push(f.replies === 1 ? "1 reply" : `${f.replies} replies`);
+  return about.map((a, i) => (
+    <Fragment key={i}>
+      {i > 0 && " · "}
+      {a}
+    </Fragment>
+  ));
+}

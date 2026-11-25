@@ -1689,13 +1689,17 @@ pub fn follow_up(f: &FollowUp) -> (Value, String) {
 }
 
 /// A review's findings that fctl passed on to the agent that opened the
-/// pull request, as `session.follow_up` carries them, and its words for
-/// the log: "a review's 2 findings on web#45".
+/// pull request, as `session.follow_up` carries them, with earlier
+/// reviews' findings still open, and its words for the log: "a review's 2
+/// findings on web#45", or, where it found nothing new, "2 earlier
+/// findings still open on web#45".
 pub fn findings(r: &PassedOnReview) -> (Value, String) {
     let pr = format!("{}#{}", r.repo.name, r.number);
-    let what = match r.findings.len() {
-        1 => format!("a review's finding on {pr}"),
-        n => format!("a review's {n} findings on {pr}"),
+    let what = match (r.findings.len(), r.still_open.len()) {
+        (0, 1) => format!("an earlier finding still open on {pr}"),
+        (0, n) => format!("{n} earlier findings still open on {pr}"),
+        (1, _) => format!("a review's finding on {pr}"),
+        (n, _) => format!("a review's {n} findings on {pr}"),
     };
     let data = json!({
         "kind": "review",
@@ -1710,6 +1714,7 @@ pub fn findings(r: &PassedOnReview) -> (Value, String) {
             "summary_url": r.summary_url,
             "session_id": r.session,
             "findings": r.findings,
+            "still_open": r.still_open,
         },
     });
     (data, what)
@@ -3334,7 +3339,33 @@ mod tests {
         let (data, what) = r.as_ref().map(findings).unwrap_or_default();
         assert_eq!(what, "a review's 2 findings on web#45");
         assert_eq!(data["review"]["findings"][0]["title"], "Retries never stop");
+        assert_eq!(data["review"]["still_open"], json!([]));
         assert_eq!(data["kind"], "review");
+        // Nothing new, but earlier findings are still open.
+        let r: Option<PassedOnReview> = serde_json::from_value(json!({
+            "repo": { "owner": "acme", "name": "web" },
+            "number": 45,
+            "url": "https://github.com/acme/web/pull/45",
+            "sha": "3f2a1c9",
+            "session": "ses_r",
+            "findings": [],
+            "still_open": [
+                { "severity": "high", "title": "Retries never stop", "path": "src/sync/upload.rs", "line": 12, "replies": 1 },
+                { "title": "Typo" }
+            ]
+        }))
+        .ok();
+        let (data, what) = r.as_ref().map(findings).unwrap_or_default();
+        assert_eq!(what, "2 earlier findings still open on web#45");
+        assert_eq!(data["review"]["still_open"][0]["replies"], 1);
+        let one = r.map(|r| PassedOnReview {
+            still_open: r.still_open[..1].to_vec(),
+            ..r
+        });
+        assert_eq!(
+            one.as_ref().map(findings).unwrap_or_default().1,
+            "an earlier finding still open on web#45"
+        );
     }
 
     #[test]

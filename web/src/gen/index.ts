@@ -241,6 +241,7 @@ export type { NotificationSettings } from "./NotificationSettings";
 export type { Notifications } from "./Notifications";
 export type { Ok } from "./Ok";
 export type { OpenAutopilotAsk } from "./OpenAutopilotAsk";
+export type { OpenFinding } from "./OpenFinding";
 export type { OutcomeCounts } from "./OutcomeCounts";
 export type { PassedOnFinding } from "./PassedOnFinding";
 export type { PassedOnReview } from "./PassedOnReview";

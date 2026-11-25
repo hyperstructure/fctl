@@ -99,4 +99,46 @@ describe("review findings in the transcript", () => {
     const finding = [...c.querySelectorAll("a")].find((a) => a.textContent === "A slow query");
     expect(finding?.getAttribute("href")).toBe(url);
   });
+
+  it("show earlier findings still open, alone where the review found nothing new", () => {
+    const open: G.OpenFinding[] = [
+      {
+        severity: "medium",
+        title: "The token never expires",
+        path: "src/auth.rs",
+        line: 9,
+        url: `${url}#discussion_r77`,
+        replies: 1,
+      },
+      { title: "An old finding", path: "README.md", replies: 2 },
+      { title: "One fctl read less of" },
+    ];
+    const r = { ...review([]), summary_url: undefined, still_open: open };
+    const c = render(<FindingsMessage review={r} text={text} ts={1} />);
+    const shown = c.textContent ?? "";
+    expect(shown).toContain("fctl's review agent found nothing new");
+    expect(shown).toContain("3 earlier findings still open");
+    expect(c.querySelector('[aria-label="Its findings"]')).toBeNull();
+    expect(items(c)).toEqual([
+      ["The token never expires", "Medium · src/auth.rs:9 · 1 reply"],
+      ["An old finding", "README.md · 2 replies"],
+      ["One fctl read less of", ""],
+    ]);
+    const links = [...c.querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href")]);
+    expect(links).toContainEqual(["The token never expires", `${url}#discussion_r77`]);
+    expect(links).toContainEqual(["One fctl read less of", url]);
+
+    // After the review's own findings.
+    const both = {
+      ...review([{ severity: "high", title: "A slow query", path: "src/db.rs", line: 3 }]),
+      still_open: open.slice(0, 1),
+    };
+    const c2 = render(<FindingsMessage review={both} text={text} ts={1} />);
+    expect(c2.textContent).toContain("found 1 issue");
+    expect(c2.textContent).toContain("1 earlier finding still open");
+    expect(items(c2)).toEqual([
+      ["A slow query", "High · src/db.rs:3"],
+      ["The token never expires", "Medium · src/auth.rs:9 · 1 reply"],
+    ]);
+  });
 });

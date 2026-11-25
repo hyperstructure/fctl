@@ -1088,9 +1088,11 @@ fn print_posted(p: &PostedReview) {
     if p.sent_to.is_some() {
         println!(
             "  {}",
-            style::dim(
+            style::dim(if p.comments + p.in_text == 0 {
+                "fctl told the agent of the session that opened the pull request about them."
+            } else {
                 "fctl sent the findings to the agent of the session that opened the pull request."
-            )
+            })
         );
     }
 }
