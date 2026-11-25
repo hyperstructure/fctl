@@ -616,7 +616,8 @@ mod d1_tests {
         .run()
         .await?;
         // id, kind, user, created, last used, expires.
-        let tokens: [(&str, TokenKind, &str, i64, Option<i64>, Option<i64>); 9] = [
+        type Row<'a> = (&'a str, TokenKind, &'a str, i64, Option<i64>, Option<i64>);
+        let tokens: [Row; 9] = [
             // A browser signed in 13 hours ago, used a minute ago.
             (
                 "tok_web_old",
