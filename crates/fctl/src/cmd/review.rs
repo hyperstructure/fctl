@@ -1089,7 +1089,7 @@ fn print_posted(p: &PostedReview) {
         println!(
             "  {}",
             style::dim(if p.comments + p.in_text == 0 {
-                "fctl told the agent of the session that opened the pull request which are still open."
+                "fctl told the agent of the session that opened the pull request about them."
             } else {
                 "fctl sent the findings to the agent of the session that opened the pull request."
             })

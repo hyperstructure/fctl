@@ -156,8 +156,8 @@ pub struct PassedOnReview {
     /// are still open.
     pub findings: Vec<PassedOnFinding>,
     /// The findings of earlier reviews still open after it, most severe
-    /// first, as the message lists them. Absent from control planes before
-    /// it.
+    /// first: all of them, of which the message lists the first 25. Absent
+    /// from control planes before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<OpenFinding>>", optional))]
     pub still_open: Vec<OpenFinding>,

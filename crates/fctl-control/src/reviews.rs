@@ -2378,8 +2378,9 @@ enum Sent {
     /// findings of as many reviews in a row as the project's review agents
     /// pass on (`rv::Unsent::rounds`), for a person to pass on.
     Held,
-    /// To no session: none that lists the pull request takes them, or
-    /// another call sent them already.
+    /// To no session: none that lists the pull request takes them, another
+    /// call sent them already, or the review found nothing new and the
+    /// agent heard of the findings still open as they stand.
     Nowhere,
 }
 
@@ -2456,6 +2457,11 @@ async fn send(env: &Env, db: &D1Database, row: &ReviewRow, repo: &RepoRef) -> Ap
         worker::console_log!("not passing {pr}'s review on to session {id}: {why}");
         if told.held {
             return Ok(Sent::Held);
+        }
+        // Nothing to keep for another session: the agent that opened the
+        // pull request heard of it all.
+        if told.heard {
+            return Ok(Sent::Nowhere);
         }
         unclaim(db, &row.session_id, &unsent).await;
         return Ok(Sent::Nowhere);

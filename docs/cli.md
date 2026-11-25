@@ -703,7 +703,8 @@ they choose: their pull requests from the repository's branches get one
 by themselves, from an agent that installs and runs nothing of them.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, with the earlier reviews' findings still open
-(those alone when a review finds nothing new), decides what to do about
+(those alone when a review finds nothing new, unless the agent heard of
+each as it stands), decides what to do about
 them and answers in their threads: those of up to five reviews in a row
 while nobody messages the agent, or as many as the project's owners
 chose, from one to ten

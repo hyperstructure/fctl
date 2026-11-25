@@ -35,7 +35,7 @@ session: SessionId,
 findings: Array<PassedOnFinding>, 
 /**
  * The findings of earlier reviews still open after it, most severe
- * first, as the message lists them. Absent from control planes before
- * it.
+ * first: all of them, of which the message lists the first 25. Absent
+ * from control planes before it.
  */
 still_open?: Array<OpenFinding>, };

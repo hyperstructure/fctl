@@ -231,6 +231,10 @@ const REVIEWS_PASSED_ON: &str = "reviews_passed_on";
 /// the agent, one for each pull request, until a person passes them on or
 /// writes to it (`fctl_domain::reviews::Held`).
 const HELD_REVIEWS: &str = "held_reviews";
+/// The meta key that keeps what the agent last heard of the findings on
+/// each of its pull requests, in messages from fctl about their reviews
+/// (`fctl_domain::reviews::Told`).
+const REVIEWS_TOLD: &str = "reviews_told";
 /// The meta key that counts the failed checks the agent heard of in a row,
 /// which a person's message, or their comment on GitHub, ends
 /// (`fctl_domain::follow_ups::MAX_CHECKS_IN_A_ROW`).
@@ -1187,8 +1191,10 @@ impl SessionObject {
     /// row as the project's review agents pass on (`b.rounds`) while
     /// nobody messaged the agent, the transcript says what was found
     /// instead, so that the agent and the review agent don't go back and
-    /// forth for good. A review's findings come once; archived and failed
-    /// sessions, and review agents', get none.
+    /// forth for good. A review that found nothing new tells the agent
+    /// nothing when it heard of each finding still open as it stands. A
+    /// review's findings come once; archived and failed sessions, and
+    /// review agents', get none.
     async fn review_findings(
         &self,
         b: internal::ReviewFindings,
@@ -1200,6 +1206,7 @@ impl SessionObject {
             delivery_id: None,
             not_sent: Some(why),
             held: false,
+            heard: false,
         };
         if s.review.is_some() {
             return Ok(not_sent("it is a review agent's session".into()));
@@ -1229,9 +1236,23 @@ impl SessionObject {
                     delivery_id: Some(fctl_proto::DeliveryId(id)),
                     not_sent: None,
                     held: false,
+                    heard: false,
                 });
             }
             None => {}
+        }
+        // A review that found nothing new, whose findings still open the
+        // agent heard of as they stand, tells it nothing, and counts as no
+        // review in a row: an answer to a finding costs one message, not one
+        // after each review.
+        if b.shown
+            .as_ref()
+            .is_some_and(|r| fctl_domain::reviews::heard_already(r, &self.reviews_told()))
+        {
+            return Ok(internal::FindingsTold {
+                heard: true,
+                ..not_sent("its agent heard of each finding still open as it stands".into())
+            });
         }
         let now = now_ms();
         if in_a_row >= b.rounds.max(1) {
@@ -1278,6 +1299,7 @@ impl SessionObject {
             delivery_id: Some(delivered.delivery_id),
             not_sent: None,
             held: false,
+            heard: false,
         })
     }
 
@@ -1293,6 +1315,10 @@ impl SessionObject {
     ) -> std::result::Result<Delivered, ApiError> {
         let id = fctl_domain::ids::delivery_id(now);
         let told = shown.as_ref().map(hooks::findings);
+        let mut heard = self.reviews_told();
+        if let Some(r) = &shown {
+            fctl_domain::reviews::tell(&mut heard, r);
+        }
         let delivered = self
             .deliver(Deliver {
                 delivery: Delivery {
@@ -1324,7 +1350,18 @@ impl SessionObject {
         if let Some(told) = told {
             self.follow_up_to_webhooks(told, now);
         }
+        if let Ok(text) = serde_json::to_string(&heard) {
+            self.set_meta(REVIEWS_TOLD, &text);
+        }
         Ok(delivered)
+    }
+
+    /// What the agent last heard of the findings on each of its pull
+    /// requests ([`REVIEWS_TOLD`]).
+    fn reviews_told(&self) -> Vec<fctl_domain::reviews::Told> {
+        self.meta(REVIEWS_TOLD)
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
     }
 
     /// Someone passes on the findings of a review that fctl held back from

@@ -34,13 +34,16 @@ what it decided in each finding's thread.
 - **Findings still open, too.** Since 2026-11-25 the message also lists
   the earlier reviews' findings still open after the review (threads it
   didn't resolve, and those in earlier summaries' text that it didn't find
-  fixed), with their comments' ids and how many replies each has, so that
-  an agent that missed one, or whose fix the review didn't find, hears of
-  it. A review that finds nothing new while some are open sends those
-  alone: otherwise the agent wouldn't hear that the review finished. It
-  checks each, and leaves alone those it already answered as not a
+  fixed), with each thread's comment id and how many replies it has (a
+  finding in a summary's text has no thread: the summary's link instead),
+  so that an agent that missed one, or whose fix the review didn't find,
+  hears of it. A review that finds nothing new while some are open sends
+  those alone: otherwise the agent wouldn't hear that the review finished.
+  It checks each, and leaves alone those it already answered as not a
   problem or intended. Such a message counts as one of the reviews in a
-  row below.
+  row below, so it goes only where the agent hasn't heard of each finding
+  as it stands: one it answered comes up once more, its reply counted, not
+  after every later review.
 - **Only fctl's own pull requests.** A pull request a person opened is
   theirs to act on, even when an agent pushed to it since, and so is a
   pull request of another app. Pull requests that merged or closed,
@@ -56,9 +59,10 @@ what it decided in each finding's thread.
 
 ## Consequences
 
-- Each review with findings can start a turn of the session that opened
-  the pull request, on that session's subscription, besides the review's
-  on the operator's.
+- Each review with findings, or with earlier ones still open that the
+  agent hasn't heard of as they stand, can start a turn of the session
+  that opened the pull request, on that session's subscription, besides
+  the review's on the operator's.
 - A finding steers an agent only as far as a message of its own would:
   the review agent reads the pull request, whose text anyone may write,
   so the message calls the findings material to weigh, and the agent can

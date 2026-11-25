@@ -2454,11 +2454,18 @@ posts what it found on GitHub
    still open after this one (`rv::still_open`: fctl's unresolved threads
    that it didn't fix, and those in the text of earlier summaries still
    shown that it didn't find fixed), most severe first, each with its
-   comment's id and how many replies its thread has, so that an agent
-   that missed one, or whose fix the review didn't find, checks it again;
-   one it answered as not a problem or intended needs nothing more. A
-   review that found nothing new while some are open sends those alone
-   (`nothing_new`), and one with neither sends nothing. The message
+   thread's comment id and how many replies it has, or, in a summary's
+   text, the summary's link, so that an agent that missed one, or whose
+   fix the review didn't find, checks it again; one it answered as not a
+   problem or intended needs nothing more. A review that found nothing
+   new while some are open sends those alone (`nothing_new`), and one
+   with neither sends nothing. Nor does one whose findings still open the
+   agent heard of as they stand: SessionObject keeps what each message
+   about a pull request told its agent (`reviews::Told`, `tell`), each
+   finding with its thread's replies then, and `/review-findings` answers
+   `heard` without a message or a round in a row where nothing changed
+   (`heard_already`), so that an answered finding comes up once more, not
+   after every review. The message
    carries the review (`UserMessage.review`, `passed_on_review`, with
    `still_open`), which the session's transcript shows in a few lines: a
    line for each finding, with its severity and lines, that opens its

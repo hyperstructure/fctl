@@ -3308,7 +3308,9 @@ fn reply_to_open(f: &Found<'_>) -> String {
 /// What the transcript of the session that opened the pull request shows
 /// of the message [`passed_on`] writes: the review, and its findings in
 /// the message's order, each with where it is on GitHub (the comment that
-/// starts its thread, or the review's summary).
+/// starts its thread, or the review's summary); then all the earlier
+/// findings still open, of which the message lists the first
+/// [`STILL_OPEN_LISTED`], since [`heard_already`] weighs them all.
 pub fn passed_on_review(f: &Found<'_>) -> PassedOnReview {
     let title = f.title.trim();
     PassedOnReview {
@@ -3463,6 +3465,70 @@ pub fn shows_held(prs: &[PullRequestRef], review: &SessionId) -> bool {
     prs.iter()
         .filter_map(|p| p.checks.as_ref()?.review.as_ref())
         .any(|r| r.held_after.is_some() && r.session_id.as_ref() == Some(review))
+}
+
+/// What the agent of a session last heard of the findings on one of its
+/// pull requests, in a message from fctl about a review of it
+/// ([`passed_on`]): each finding, the review's own and those still open,
+/// with the replies in its thread then. A review that finds nothing new
+/// tells the agent nothing when it heard of each finding still open as it
+/// stands ([`heard_already`]): an agent that answered a finding, as not a
+/// problem say, hears of it once more after that, not after each review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Told {
+    /// The pull request, by its URL.
+    pub url: String,
+    /// Each finding, as [`told_keys`] names it.
+    pub findings: Vec<String>,
+}
+
+/// A finding as the agent heard of it: where it is on GitHub, its title,
+/// and the replies in its thread.
+fn told_key(url: Option<&str>, title: &str, replies: u32) -> String {
+    format!("{}\n{}\n{replies}", url.unwrap_or_default(), title.trim())
+}
+
+/// The findings a message about review `r` tells the agent of
+/// ([`passed_on_review`]): its own, which have no replies yet, and the
+/// earlier ones still open.
+pub fn told_keys(r: &PassedOnReview) -> Vec<String> {
+    let own = r
+        .findings
+        .iter()
+        .map(|f| told_key(f.url.as_deref(), &f.title, 0));
+    let open = r
+        .still_open
+        .iter()
+        .map(|o| told_key(o.url.as_deref(), &o.title, o.replies));
+    own.chain(open).collect()
+}
+
+/// Whether the agent heard of all that a message about review `r` would
+/// tell it, by `told`: the review found nothing new, and the last message
+/// about its pull request named each finding still open, with as many
+/// replies in its thread as now.
+pub fn heard_already(r: &PassedOnReview, told: &[Told]) -> bool {
+    if !r.findings.is_empty() {
+        return false;
+    }
+    let Some(t) = told.iter().find(|t| t.url.eq_ignore_ascii_case(&r.url)) else {
+        return false;
+    };
+    let heard: BTreeSet<&str> = t.findings.iter().map(String::as_str).collect();
+    told_keys(r).iter().all(|k| heard.contains(k.as_str()))
+}
+
+/// Keeps what the agent heard of review `r`'s pull request, in place of
+/// what it heard of it before: one for each of the session's pull
+/// requests.
+pub fn tell(told: &mut Vec<Told>, r: &PassedOnReview) {
+    told.retain(|t| !t.url.eq_ignore_ascii_case(&r.url));
+    told.push(Told {
+        url: r.url.clone(),
+        findings: told_keys(r),
+    });
+    let over = told.len().saturating_sub(crate::pulls::MAX_PULL_REQUESTS);
+    told.drain(..over);
 }
 
 /// What the transcript says when `name` passes on the findings fctl held
@@ -5836,6 +5902,88 @@ mod tests {
         });
         assert!(m.contains("\n25. Retries never stop\n") && !m.contains("\n26. "));
         assert!(m.contains("\n…and 2 more, which the pull request's unresolved threads show.\n"));
+    }
+
+    #[test]
+    fn a_review_with_nothing_new_tells_the_agent_only_what_changed() {
+        let web = "https://github.com/acme/web/pull/12";
+        let open = |title: &str, replies: u32| OpenFinding {
+            title: title.into(),
+            severity: Some(Severity::Medium),
+            path: Some("a.rs".into()),
+            line: Some(1),
+            url: Some(format!("{web}#discussion_r{}", title.len())),
+            replies,
+        };
+        let review =
+            |findings: Vec<PassedOnFinding>, still_open: Vec<OpenFinding>| PassedOnReview {
+                repo: pr().repo,
+                number: 12,
+                url: web.into(),
+                title: None,
+                sha: SHA.into(),
+                summary_url: None,
+                session: SessionId("ses_r1".into()),
+                findings,
+                still_open,
+            };
+        // The agent heard of a review's finding, which has a thread.
+        let found = PassedOnFinding {
+            severity: Severity::Medium,
+            title: "Retries".into(),
+            path: "a.rs".into(),
+            line: 1,
+            start_line: None,
+            deleted: false,
+            url: Some(format!("{web}#discussion_r7")),
+        };
+        let first = review(vec![found], vec![open("Old", 0)]);
+        let mut told = Vec::new();
+        assert!(!heard_already(&first, &told));
+        tell(&mut told, &first);
+        // A later review found nothing new, and both are still open as
+        // they were: the agent hears nothing.
+        let same = review(Vec::new(), vec![open("Retries", 0), open("Old", 0)]);
+        assert!(heard_already(&same, &told));
+        // Fewer still open: nothing new either.
+        assert!(heard_already(
+            &review(Vec::new(), vec![open("Old", 0)]),
+            &told
+        ));
+        // The agent answered one, or someone did: it hears of it once more.
+        let answered = review(Vec::new(), vec![open("Retries", 1), open("Old", 0)]);
+        assert!(!heard_already(&answered, &told));
+        tell(&mut told, &answered);
+        assert!(heard_already(&answered, &told));
+        // One it never heard of.
+        assert!(!heard_already(
+            &review(Vec::new(), vec![open("New", 0)]),
+            &told
+        ));
+        // A review that found something always tells it.
+        assert!(!heard_already(&first, &told));
+        // Another pull request's are its own.
+        let other = PassedOnReview {
+            url: "https://github.com/acme/api/pull/3".into(),
+            ..same.clone()
+        };
+        assert!(!heard_already(&other, &told));
+        tell(&mut told, &other);
+        assert_eq!(told.len(), 2);
+        // A pull request's newest message takes its older one's place,
+        // whatever the case of its URL.
+        tell(
+            &mut told,
+            &PassedOnReview {
+                url: web.to_uppercase(),
+                ..same.clone()
+            },
+        );
+        assert_eq!(told.len(), 2);
+        assert!(!heard_already(&answered, &told));
+        // As SessionObject keeps it.
+        let json = serde_json::to_string(&told).unwrap_or_default();
+        assert_eq!(serde_json::from_str::<Vec<Told>>(&json).ok(), Some(told));
     }
 
     #[test]

@@ -3668,9 +3668,11 @@ fn posted_message(r: &fctl_proto::api::PostedReview) -> String {
         n => s.push_str(&format!(" {n} earlier findings are still open.")),
     }
     if r.sent_to.is_some() {
-        s.push_str(
-            " fctl sent the findings to the agent of the session that opened the pull request.",
-        );
+        s.push_str(if findings == 0 {
+            " fctl told the agent of the session that opened the pull request about them."
+        } else {
+            " fctl sent the findings to the agent of the session that opened the pull request."
+        });
     }
     s
 }
@@ -6700,6 +6702,21 @@ done
         assert!(posted_message(&r).ends_with(
             " fctl sent the findings to the agent of the session that opened the pull request."
         ));
+        // Nothing new, but earlier findings are still open.
+        let r = fctl_proto::api::PostedReview {
+            state: fctl_proto::api::ReviewState::Commented,
+            url: None,
+            comments: 0,
+            in_text: 0,
+            resolved: Vec::new(),
+            still_open: 2,
+            again: false,
+            sent_to: Some(SessionId("ses_7".into())),
+        };
+        assert_eq!(
+            posted_message(&r),
+            "fctl posted the review: nothing to point out. 2 earlier findings are still open. fctl told the agent of the session that opened the pull request about them."
+        );
     }
 
     fn summarize() -> AgentCall {

@@ -184,6 +184,11 @@ pub struct FindingsTold {
     /// after the findings of [`ReviewFindings::rounds`] reviews in a row.
     #[serde(default)]
     pub held: bool,
+    /// Its agent heard of them all as they stand: the review found nothing
+    /// new, and the findings still open are as the agent last heard of
+    /// them (`fctl_domain::reviews::heard_already`). Nothing waits.
+    #[serde(default)]
+    pub heard: bool,
 }
 
 /// What GitHub says of pull requests a session lists (`/pull-requests`,
