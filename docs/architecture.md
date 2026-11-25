@@ -5,7 +5,7 @@ agents do it in isolated sandboxes on machines you own. This document is
 the map. Read it before changing anything that crosses a component
 boundary.
 
-```
+```text
                          ┌──────── Cloudflare, or a container ────────┐
   browser (web app) ───► │  fctl-control  (Rust → wasm Worker)        │
   fctl CLI ────────────► │   ├─ REST API  /api/v1/*                   │
@@ -981,7 +981,7 @@ Signing in to GitHub needs the app's client ID and secret
 setup URL with Redirect on update; without the first two a workspace keeps
 the accounts it has but connects no new one (`can_connect` is false). Instance admins
 connect and approve nothing: Admin → GitHub lists the installations and the
-workspaces that use each (`fctl admin github`), and an instance admin can
+workspaces that use each (`fctl admin github list`), and an instance admin can
 take an account from a workspace, not give one. Project repositories must
 be within the workspace's connections (`fctl_domain::repos::check_scope`),
 and every token a session gets is minted within them (`repos::narrow`), for
