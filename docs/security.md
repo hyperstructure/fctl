@@ -549,7 +549,8 @@ its VM, and nothing outside it except through these channels:
   projects from before the setting keep their connectors
   until a maintainer turns them off.
 - **fctl.** No fctl credentials enter a sandbox. Through fctl-agent's
-  session socket, anything the agent runs can rename its own session and
+  session socket, anything the agent or the project's setup script runs
+  can rename its own session and
   describe it (`fctl edit`); in projects that publish screenshots, publish
   images at public links (`fctl publish`); and in projects that keep a
   memory or ask for retrospectives, read the project's notes, add notes,
