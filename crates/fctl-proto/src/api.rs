@@ -56,6 +56,13 @@ pub struct SignInInfo {
     /// ([`InstanceSettings::self_sign_up`]). Off, the page tells people
     /// without an account to ask an admin.
     pub self_sign_up: bool,
+    /// This request comes from outside the networks the instance takes
+    /// sign-ins from ([`InstanceSettings::networks`]): the page says so,
+    /// as only the primary instance owner signs in from here. Absent from
+    /// control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub outside: bool,
 }
 
 /// A provider people sign in with: Google, or (later) another OpenID
@@ -1797,6 +1804,14 @@ pub struct InstanceSettings {
     /// primary instance owner make them, and members' stop working: they
     /// use the CLI, signed in as themselves. On by default.
     pub member_access_tokens: bool,
+    /// The networks people sign in and send requests from, as CIDR ranges
+    /// (`203.0.113.0/24`, `2001:db8::/32`): an office's, a VPN's. Browsers,
+    /// CLIs, access tokens, admin tokens and service accounts outside them
+    /// are refused; runners, webhooks and published links aren't held to
+    /// them, and the primary instance owner signs in from anywhere, in a
+    /// browser or the CLI. None (the default): anywhere. At most
+    /// `fctl_domain::networks::MAX_NETWORKS`.
+    pub networks: Vec<String>,
 }
 
 /// How long sign-ins last and who makes access tokens: the instance's
@@ -1922,7 +1937,15 @@ pub struct SignInOverview {
     /// How long sign-ins last and who makes access tokens. Its defaults
     /// from control planes before it.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<SessionPolicy>", optional))]
     pub sessions: SessionPolicy,
+    /// [`InstanceSettings::networks`]. None from control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub networks: Vec<String>,
+    /// The address this request comes from, as the instance sees it: what a
+    /// network has to hold for the admin to stay in.
+    pub address: Option<String>,
 }
 
 /// A provider as instance admins see it ([`SignInOverview::providers`]).
@@ -2094,6 +2117,7 @@ impl Default for InstanceSettings {
             cli_max_days: 0,
             access_token_max_days: 0,
             member_access_tokens: true,
+            networks: Vec::new(),
         }
     }
 }
@@ -2138,6 +2162,10 @@ pub struct UpdateInstanceSettingsRequest {
     /// 0 to [`MAX_ACCESS_TOKEN_DAYS`].
     pub access_token_max_days: Option<u32>,
     pub member_access_tokens: Option<bool>,
+    /// Replaces the networks: `[]` for anywhere. Refused (`409`) where the
+    /// caller's own address would be outside them, unless they're the
+    /// primary instance owner.
+    pub networks: Option<Vec<String>>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────

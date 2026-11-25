@@ -79,6 +79,13 @@ pub enum SignInCmd {
         /// themselves.
         #[arg(long, value_name = "ON|OFF", value_parser = clap::builder::BoolishValueParser::new(), hide_possible_values = true)]
         member_tokens: Option<bool>,
+        /// The networks people sign in and send requests from, as CIDR
+        /// ranges separated by commas (203.0.113.0/24,2001:db8::/32), or
+        /// `any`. Runners and webhooks connect from anywhere, and the
+        /// primary instance owner signs in from anywhere. Your own address
+        /// has to be in them.
+        #[arg(long, value_name = "RANGES|any")]
+        networks: Option<String>,
         /// Save it without asking.
         #[arg(long)]
         yes: bool,
@@ -121,11 +128,15 @@ pub async fn run(api: &Api, cmd: Option<SignInCmd>, json: bool) -> Result<()> {
             cli_max,
             token_max,
             member_tokens,
+            networks,
             yes,
         } => {
             let overview = api.sign_in_overview().await?;
-            let was = overview.sessions.clone();
-            let mut next = was.clone();
+            let was = Policies {
+                sessions: overview.sessions.clone(),
+                networks: overview.networks.clone(),
+            };
+            let mut next = was.sessions.clone();
             if let Some(d) = browser_max {
                 next.browser_max_hours = whole(&d, 60, "hours", "12h or 1d")?;
             }
@@ -147,6 +158,14 @@ pub async fn run(api: &Api, cmd: Option<SignInCmd>, json: bool) -> Result<()> {
             if let Some(on) = member_tokens {
                 next.member_access_tokens = on;
             }
+            let next = Policies {
+                sessions: next,
+                networks: match networks.as_deref().map(str::trim) {
+                    Some("any" | "anywhere" | "none" | "") => Vec::new(),
+                    Some(list) => network_list(list)?,
+                    None => was.networks.clone(),
+                },
+            };
             if next == was {
                 if json {
                     return style::print_json(&was);
@@ -154,7 +173,7 @@ pub async fn run(api: &Api, cmd: Option<SignInCmd>, json: bool) -> Result<()> {
                 print_policy(&was);
                 return Ok(());
             }
-            change_policy(api, next, yes, json).await?;
+            change_policy(api, &overview, &was, next, yes, json).await?;
         }
     }
     Ok(())
@@ -170,12 +189,47 @@ fn whole(input: &str, per: u32, unit: &str, example: &str) -> Result<u32> {
     }
 }
 
+/// How long sign-ins last, who makes access tokens and where people sign
+/// in from: what `fctl admin sign-in policies` shows and changes.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Policies {
+    #[serde(flatten)]
+    sessions: SessionPolicy,
+    networks: Vec<String>,
+}
+
+/// Ranges as typed: by commas or spaces, each checked as the instance
+/// checks them.
+fn network_list(list: &str) -> Result<Vec<String>> {
+    let typed: Vec<String> = list
+        .split([',', ' '])
+        .filter(|n| !n.trim().is_empty())
+        .map(str::to_owned)
+        .collect();
+    fctl_domain::networks::check(&typed).map_err(|e| anyhow::anyhow!(e.message))
+}
+
 /// Shows what saving `next` ends at once, asks unless `yes`, saves it and
-/// shows the policy now.
-async fn change_policy(api: &Api, next: SessionPolicy, yes: bool, json: bool) -> Result<()> {
-    let preview = api.session_policy_preview(&next).await?;
-    for line in policy_consequences(&preview) {
-        eprintln!("{line}");
+/// shows the policies now.
+async fn change_policy(
+    api: &Api,
+    overview: &SignInOverview,
+    was: &Policies,
+    next: Policies,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    if next.sessions != was.sessions {
+        let preview = api.session_policy_preview(&next.sessions).await?;
+        for line in policy_consequences(&preview) {
+            eprintln!("{line}");
+        }
+    }
+    if next.networks != was.networks {
+        eprintln!(
+            "{}",
+            networks_consequence(&next.networks, overview.address.as_deref())
+        );
     }
     if !yes {
         if !std::io::stdin().is_terminal() {
@@ -189,23 +243,48 @@ async fn change_policy(api: &Api, next: SessionPolicy, yes: bool, json: bool) ->
             bail!("Not saved");
         }
     }
+    let p = &next.sessions;
     let saved = api
         .update_instance_settings(&UpdateInstanceSettingsRequest {
-            browser_max_hours: Some(next.browser_max_hours),
-            browser_idle_minutes: Some(next.browser_idle_minutes),
-            cli_max_days: Some(next.cli_max_days),
-            access_token_max_days: Some(next.access_token_max_days),
-            member_access_tokens: Some(next.member_access_tokens),
+            browser_max_hours: Some(p.browser_max_hours),
+            browser_idle_minutes: Some(p.browser_idle_minutes),
+            cli_max_days: Some(p.cli_max_days),
+            access_token_max_days: Some(p.access_token_max_days),
+            member_access_tokens: Some(p.member_access_tokens),
+            networks: (next.networks != was.networks).then(|| next.networks.clone()),
             ..UpdateInstanceSettingsRequest::default()
         })
         .await?;
-    let now = saved.session_policy();
+    let now = Policies {
+        sessions: saved.session_policy(),
+        networks: saved.networks,
+    };
     if json {
         return style::print_json(&now);
     }
     println!("{} Saved", style::accent("✓"));
     print_policy(&now);
     Ok(())
+}
+
+/// What saving `networks` does, for a request from `address`.
+fn networks_consequence(networks: &[String], address: Option<&str>) -> String {
+    if networks.is_empty() {
+        return "People sign in and send requests from anywhere again.".to_owned();
+    }
+    let you = match address {
+        Some(a) if fctl_domain::networks::admits(networks, Some(a)) => {
+            format!("your address, {a}, is in them")
+        }
+        Some(a) => format!(
+            "your address, {a}, isn't in them: only the primary instance owner saves them from outside"
+        ),
+        None => "fctl can't tell your address".to_owned(),
+    };
+    format!(
+        "People sign in and send requests only from {}, the primary instance owner's browser and CLI aside; {you}. Runners and webhooks connect from anywhere.",
+        domains_words(networks)
+    )
 }
 
 /// What saving a session policy ends, in the sentences the web app shows
@@ -253,9 +332,22 @@ pub fn policy_consequences(p: &SessionPolicyPreview) -> Vec<String> {
     lines
 }
 
-fn print_policy(p: &SessionPolicy) {
-    for line in describe_policy(p) {
+fn print_policy(p: &Policies) {
+    for line in describe_policy(&p.sessions) {
         println!("{line}");
+    }
+    println!("{}", networks_line(&p.networks));
+}
+
+/// Where people sign in from, in a sentence.
+fn networks_line(networks: &[String]) -> String {
+    if networks.is_empty() {
+        "People sign in from anywhere.".to_owned()
+    } else {
+        format!(
+            "People sign in only from {}, the primary instance owner aside.",
+            domains_words(networks)
+        )
     }
 }
 
@@ -509,6 +601,7 @@ fn print_overview(o: &SignInOverview) {
     for line in describe_policy(&o.sessions) {
         println!("  {}", style::dim(&line));
     }
+    println!("  {}", style::dim(&networks_line(&o.networks)));
     if let Some(owner) = &o.owner
         && !o.rules.is_empty()
     {
@@ -611,6 +704,22 @@ mod tests {
         assert_eq!(
             policy_consequences(&SessionPolicyPreview::default()),
             ["Nobody is signed out now: sign-ins end as it says from here on."]
+        );
+    }
+
+    #[test]
+    fn networks_say_whether_you_stay_in() {
+        let nets = network_list("203.0.113.0/24, 10.0.0.0/8").unwrap_or_default();
+        assert_eq!(nets, ["203.0.113.0/24", "10.0.0.0/8"]);
+        assert!(network_list("acme.com").is_err());
+        assert!(
+            networks_consequence(&nets, Some("203.0.113.9"))
+                .contains("your address, 203.0.113.9, is in them")
+        );
+        assert!(networks_consequence(&nets, Some("198.51.100.1")).contains("isn't in them"));
+        assert_eq!(
+            networks_consequence(&[], None),
+            "People sign in and send requests from anywhere again."
         );
     }
 

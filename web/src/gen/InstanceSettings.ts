@@ -176,4 +176,14 @@ access_token_max_days: number,
  * primary instance owner make them, and members' stop working: they
  * use the CLI, signed in as themselves. On by default.
  */
-member_access_tokens: boolean, };
+member_access_tokens: boolean, 
+/**
+ * The networks people sign in and send requests from, as CIDR ranges
+ * (`203.0.113.0/24`, `2001:db8::/32`): an office's, a VPN's. Browsers,
+ * CLIs, access tokens, admin tokens and service accounts outside them
+ * are refused; runners, webhooks and published links aren't held to
+ * them, and the primary instance owner signs in from anywhere, in a
+ * browser or the CLI. None (the default): anywhere. At most
+ * `fctl_domain::networks::MAX_NETWORKS`.
+ */
+networks: Array<string>, };

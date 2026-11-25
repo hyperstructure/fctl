@@ -125,8 +125,9 @@ pub enum Sensitive {
     /// domain requires the provider, whoever next signs in with its address
     /// there links to their account.
     UnlinkSignIn,
-    /// Letting sign-ins and access tokens last longer, or members make
-    /// access tokens again (`fctl_domain::session_policy::relaxes`).
+    /// Letting sign-ins and access tokens last longer, members make access
+    /// tokens again (`fctl_domain::session_policy::relaxes`), or people sign
+    /// in from more networks (`fctl_domain::networks::widens`).
     RelaxSessions,
 }
 
@@ -171,7 +172,9 @@ impl Sensitive {
             }
             RelaxSignIn => "let people sign in another way than their domain's provider",
             UnlinkSignIn => "unlink someone's sign-in account",
-            RelaxSessions => "let sign-ins or access tokens last longer",
+            RelaxSessions => {
+                "let sign-ins or access tokens last longer, or come from more networks"
+            }
         }
     }
 }
@@ -262,7 +265,11 @@ pub fn instance_settings_change(
     } else if crate::session_policy::relaxes(
         &current.session_policy(),
         &session_policy(current, update),
-    ) {
+    ) || update
+        .networks
+        .as_ref()
+        .is_some_and(|next| crate::networks::widens(&current.networks, next))
+    {
         Some(Sensitive::RelaxSessions)
     } else {
         None
@@ -637,6 +644,33 @@ mod tests {
             None
         );
         assert_eq!(change(UpdateInstanceSettingsRequest::default()), None);
+        // Networks: anywhere again, or one more; not fewer.
+        let inside = InstanceSettings {
+            networks: vec!["10.0.0.0/8".to_owned()],
+            ..Default::default()
+        };
+        let networks = |next: &[&str]| {
+            instance_settings_change(
+                &inside,
+                &UpdateInstanceSettingsRequest {
+                    networks: Some(next.iter().map(|n| (*n).to_owned()).collect()),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(networks(&[]), relaxes);
+        assert_eq!(networks(&["10.0.0.0/8", "192.0.2.0/24"]), relaxes);
+        assert_eq!(networks(&["10.0.0.0/8"]), None);
+        assert_eq!(
+            instance_settings_change(
+                &InstanceSettings::default(),
+                &UpdateInstanceSettingsRequest {
+                    networks: Some(vec!["10.0.0.0/8".to_owned()]),
+                    ..Default::default()
+                }
+            ),
+            None
+        );
     }
 
     #[test]

@@ -41,6 +41,7 @@ pub mod merge_checks;
 pub mod metadata;
 pub mod models;
 pub mod naming;
+pub mod networks;
 pub mod notify;
 pub mod order;
 pub mod perm;

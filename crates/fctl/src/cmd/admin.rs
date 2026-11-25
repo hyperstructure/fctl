@@ -145,7 +145,7 @@ pub enum AdminCmd {
     /// change those domains.
     #[command(
         name = "sign-in",
-        after_help = "Examples:\n  fctl admin sign-in\n  fctl admin sign-in require acme.com acme.dev   # people at acme.com and acme.dev sign in with Google only\n  fctl admin sign-in require acme.com --passkeys # passkeys alone sign them in too\n  fctl admin sign-in unrequire acme.dev\n  fctl admin sign-in policies --browser-max 12h --browser-idle 1h   # browsers sign in again twice a day\n  fctl admin sign-in policies --token-max 90d --member-tokens off\n  fctl admin set --self-sign-up off              # accounts only from invitations and admin tokens"
+        after_help = "Examples:\n  fctl admin sign-in\n  fctl admin sign-in require acme.com acme.dev   # people at acme.com and acme.dev sign in with Google only\n  fctl admin sign-in require acme.com --passkeys # passkeys alone sign them in too\n  fctl admin sign-in unrequire acme.dev\n  fctl admin sign-in policies --browser-max 12h --browser-idle 1h   # browsers sign in again twice a day\n  fctl admin sign-in policies --token-max 90d --member-tokens off\n  fctl admin sign-in policies --networks 203.0.113.0/24,2001:db8::/32   # sign-ins only from your office and VPN\n  fctl admin set --self-sign-up off              # accounts only from invitations and admin tokens"
     )]
     SignIn {
         #[command(subcommand)]
@@ -763,6 +763,15 @@ fn print_settings(s: &InstanceSettings) {
     );
     for line in fctl_domain::session_policy::describe(&s.session_policy()) {
         println!("  {}", style::dim(&line));
+    }
+    if !s.networks.is_empty() {
+        println!(
+            "  {}",
+            style::dim(&format!(
+                "People sign in only from {}, the primary instance owner aside.",
+                fctl_domain::sign_in::domains_words(&s.networks)
+            ))
+        );
     }
     println!(
         "Published screenshots  {}",

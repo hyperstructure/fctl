@@ -70,8 +70,9 @@ pub fn statuses(cfg: &Config, people: &[Person]) -> Vec<SignInProviderStatus> {
         .collect()
 }
 
-/// What the sign-in page needs ([`fctl_proto::api::InstanceInfo::sign_in`]).
-pub fn info(cfg: &Config, settings: &InstanceSettings) -> SignInInfo {
+/// What the sign-in page needs ([`fctl_proto::api::InstanceInfo::sign_in`]),
+/// for a request from `ip`.
+pub fn info(cfg: &Config, settings: &InstanceSettings, ip: Option<&str>) -> SignInInfo {
     SignInInfo {
         providers: PROVIDERS
             .iter()
@@ -84,7 +85,26 @@ pub fn info(cfg: &Config, settings: &InstanceSettings) -> SignInInfo {
             .collect(),
         rules: settings.sign_in.clone(),
         self_sign_up: settings.self_sign_up,
+        outside: !fctl_domain::networks::admits(&settings.networks, ip),
     }
+}
+
+/// Whether the instance's networks refuse `user`'s request from `ip`
+/// (`fctl_domain::networks`). `signing_in`: it's a browser's or a CLI's
+/// sign-in, or a request with one, which the primary instance owner makes
+/// from anywhere; their access tokens and admin tokens are held to them.
+pub fn outside(
+    settings: &InstanceSettings,
+    ip: Option<&str>,
+    user: &UserRow,
+    signing_in: bool,
+) -> bool {
+    !fctl_domain::networks::admits(&settings.networks, ip) && !(signing_in && user.is_owner())
+}
+
+/// The refusal of a request from outside the instance's networks.
+pub fn outside_refused(ip: Option<&str>) -> ApiError {
+    ApiError::forbidden(fctl_domain::networks::refusal(ip))
 }
 
 /// What a rule requires, as refusals begin: "acme.com signs in with

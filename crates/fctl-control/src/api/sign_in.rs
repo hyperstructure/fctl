@@ -194,6 +194,9 @@ async fn login(
         if let Err(required) = user.admits(&settings, &how) {
             return wrong_account(p, &required);
         }
+        if crate::sign_in::outside(&settings, ctx.ip.as_deref(), &user, true) {
+            return fail("/login", "network", "");
+        }
         return sign_in(ctx, user, return_to, how, &settings).await;
     }
     if p.email.is_none() || !p.verified {
@@ -224,6 +227,9 @@ async fn login(
     // for the address itself does.
     if !settings.self_sign_up && !AllowPattern::parse(&pattern).is_ok_and(|a| a.is_exact()) {
         return fail("/login", "sign_up_closed", "");
+    }
+    if !fctl_domain::networks::admits(&settings.networks, ctx.ip.as_deref()) {
+        return fail("/login", "network", "");
     }
     sign_up(ctx, p, &email, role, return_to).await
 }
@@ -446,6 +452,11 @@ async fn first_sign_in(
         && let Err(required) = user.admits(settings, &how)
     {
         return wrong_account(p, &required);
+    }
+    // Linking nothing from outside the instance's networks, where it would
+    // sign nobody in.
+    if crate::sign_in::outside(settings, ctx.ip.as_deref(), &user, true) {
+        return fail("/login", "network", "");
     }
     // A rule makes the provider the way in for the address's domain: its
     // domains, where it does. Not for the primary instance owner, whom the
@@ -783,6 +794,8 @@ pub async fn overview(ctx: &Ctx) -> AppResult<Response> {
         method_domain: how.domain,
         email: ctx.cfg.email.is_some(),
         sessions,
+        networks: settings.networks.clone(),
+        address: ctx.ip.clone(),
     })
 }
 

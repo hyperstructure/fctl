@@ -1162,6 +1162,21 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.self_sign_up {
         settings.self_sign_up = on;
     }
+    // Where people sign in from: never so that the admin who saves it is
+    // outside, unless they're the primary instance owner, who signs in
+    // from anywhere.
+    if let Some(networks) = &body.networks {
+        let networks = fctl_domain::networks::check(networks).map_err(crate::error::AppError)?;
+        if !fctl_domain::networks::admits(&networks, ctx.ip.as_deref())
+            && actor.role() != InstanceRole::Owner
+        {
+            return Err(conflict(&format!(
+                "Your own address, {}, isn't in these networks: saving them would shut you out. Add it, or save them from inside one.",
+                ctx.ip.as_deref().unwrap_or("unknown")
+            )));
+        }
+        settings.networks = networks;
+    }
     // How long sign-ins last: what it doesn't let last ends once it's
     // saved.
     let policy = verify::session_policy(&settings, &body);

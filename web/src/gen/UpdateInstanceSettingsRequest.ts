@@ -48,4 +48,10 @@ cli_max_days?: number,
 /**
  * 0 to [`MAX_ACCESS_TOKEN_DAYS`].
  */
-access_token_max_days?: number, member_access_tokens?: boolean, };
+access_token_max_days?: number, member_access_tokens?: boolean, 
+/**
+ * Replaces the networks: `[]` for anywhere. Refused (`409`) where the
+ * caller's own address would be outside them, unless they're the
+ * primary instance owner.
+ */
+networks?: Array<string>, };

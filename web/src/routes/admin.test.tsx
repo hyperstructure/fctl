@@ -308,6 +308,7 @@ const instanceSettings = (s: Partial<G.InstanceSettings> = {}): G.InstanceSettin
   sign_in: [],
   self_sign_up: true,
   ...DEFAULT_POLICY,
+  networks: [],
   ...s,
 });
 

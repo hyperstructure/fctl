@@ -48,7 +48,7 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
             admin_tokens: ctx.cfg.admin_tokens,
             service_account_consent: settings.service_account_consent,
         },
-        sign_in: Some(crate::sign_in::info(&ctx.cfg, &settings)),
+        sign_in: Some(crate::sign_in::info(&ctx.cfg, &settings, ctx.ip.as_deref())),
     })
 }
 
@@ -325,6 +325,11 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     // account has isn't.
     if let Err(required) = user.admits(&instance, &SignedIn::password()) {
         return Err(AppError(crate::sign_in::password_refused(&required)));
+    }
+    // Before a code is asked for: from outside the instance's networks it
+    // would sign nobody in.
+    if crate::sign_in::outside(&instance, ctx.ip.as_deref(), &user, true) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
     }
     let settings = user.two_factor_settings(&instance);
     if two_factor::asks(
@@ -749,6 +754,11 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     if let Some(required) = user.sign_in_required(&instance) {
         return Err(AppError(crate::sign_in::password_refused(&required)));
     }
+    // Nor one that would, from outside the instance's networks, sign out
+    // everywhere someone who can't sign in here.
+    if crate::sign_in::outside(&instance, ctx.ip.as_deref(), &user, true) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     validate::password(&body.new_password, Some(&user.email))?;
     let phc = auth::hash_password(&body.new_password)?;
     // With two-factor, the link alone changes nothing: the new password
@@ -980,6 +990,10 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
     if !user.is_active() {
         return http::ok(&DevicePollResponse::Denied);
     }
+    let settings = crate::instance::settings(&ctx.db).await?;
+    if crate::sign_in::outside(&settings, ctx.ip.as_deref(), &user, true) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     let (_, token) = auth::issue_token(
         ctx,
         &user.id,
@@ -987,6 +1001,7 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
         auth::NewToken {
             name: Some(&row.client_name),
             how: SignedIn::read(row.auth_method.as_deref(), row.auth_domain.as_deref()),
+            settings: Some(&settings),
             ..auth::NewToken::default()
         },
     )

@@ -38,6 +38,7 @@ import { PageTabs, TabCount } from "@/components/page-tabs";
 import { DriverLine } from "@/components/runner-driver";
 import { SnapshotStoreLine } from "@/components/runner-snapshots";
 import { SignInAdmin } from "@/components/sign-in/admin";
+import { Networks } from "@/components/sign-in/networks";
 import { SessionPolicies } from "@/components/sign-in/sessions";
 import {
   Avatar,
@@ -1855,6 +1856,7 @@ function SignInTab() {
       <SignInAdmin save={(b) => save.mutate(b)} saving={save.isPending} />
       <SignInSettings settings={settings.data} save={(b) => save.mutate(b)} saving={save.isPending} />
       <SessionPolicies policy={overview.data?.sessions ?? (overview.data && DEFAULT_POLICY)} />
+      <Networks overview={overview.data} />
     </>
   );
 }
@@ -2478,6 +2480,7 @@ function SignInSettings({
     claude_instance_view: false,
     claude_refusals: 2,
     ...DEFAULT_POLICY,
+    networks: [],
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

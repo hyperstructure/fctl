@@ -156,6 +156,11 @@ pub async fn start_web_session(
 ) -> AppResult<()> {
     let verified_at = confirmed.then_some(ctx.now);
     let settings = crate::instance::settings(&ctx.db).await?;
+    // Every way into a browser comes here: none from outside the
+    // instance's networks, but the primary instance owner's.
+    if crate::sign_in::outside(&settings, ctx.ip.as_deref(), user, true) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     let (token_id, _) = issue_token(
         ctx,
         &user.id,
@@ -416,6 +421,19 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
             "Your account is disabled. Ask an admin for access.",
         )));
     }
+    // From outside the instance's networks: a browser is as signed out,
+    // and keeps its sign-in for when it's back inside one.
+    if crate::sign_in::outside(
+        &settings,
+        ctx.ip.as_deref(),
+        &found.user,
+        kind != TokenKind::Pat,
+    ) {
+        if via_cookie {
+            return Ok(());
+        }
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     // A domain of theirs signs in with a provider only: a sign-in made
     // another way, or before fctl kept how, no longer lets them in. A
     // browser's is signed out, and the sign-in page shows the way in.
@@ -518,6 +536,9 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
         )));
     }
     let settings = crate::instance::parse(found.instance_settings.as_deref());
+    if crate::sign_in::outside(&settings, ctx.ip.as_deref(), &found.user, false) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     // Held to the rules as its admin's own sign-ins are: one their domain's
     // rule doesn't meet stops.
     let how = SignedIn::read(found.auth_method.as_deref(), found.auth_domain.as_deref());

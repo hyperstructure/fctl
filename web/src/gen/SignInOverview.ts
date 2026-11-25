@@ -64,4 +64,13 @@ email: boolean,
  * How long sign-ins last and who makes access tokens. Its defaults
  * from control planes before it.
  */
-sessions: SessionPolicy, };
+sessions?: SessionPolicy, 
+/**
+ * [`InstanceSettings::networks`]. None from control planes before it.
+ */
+networks?: Array<string>, 
+/**
+ * The address this request comes from, as the instance sees it: what a
+ * network has to hold for the admin to stay in.
+ */
+address?: string, };
