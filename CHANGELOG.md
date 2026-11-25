@@ -2,6 +2,12 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.38.1 (2026-11-25)
+
+### Features
+
+- **control:** Tell agents of earlier review findings still open ([#649](https://github.com/hyperstructure/fctl/pull/649))
+
 ## 0.38.0 (2026-11-24)
 
 ### Features
