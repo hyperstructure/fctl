@@ -5,10 +5,12 @@ use crate::style;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use fctl_client::Api;
+use fctl_domain::enrollment::parse_minutes;
+use fctl_domain::session_policy::describe as describe_policy;
 use fctl_domain::sign_in::{GOOGLE, domains_words, with_required, without};
 use fctl_proto::api::{
-    SignInOverview, SignInPerson, SignInPreview, SignInRule, SignInYou,
-    UpdateInstanceSettingsRequest,
+    SessionPolicy, SessionPolicyPreview, SignInOverview, SignInPerson, SignInPreview, SignInRule,
+    SignInYou, UpdateInstanceSettingsRequest,
 };
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -49,6 +51,38 @@ pub enum SignInCmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Show or change how long sign-ins last and who makes access tokens.
+    /// A change shows what it ends at once (browsers and CLIs signed in
+    /// longer than it lets them, access tokens older) and asks first,
+    /// unless --yes. Letting them last longer takes confirming it's you,
+    /// where the instance asks for that.
+    Policies {
+        /// How long a browser stays signed in after its sign-in, however
+        /// much it's used, in whole hours (12h, 1d, 7d), or `none`: as
+        /// long as it's used.
+        #[arg(long, value_name = "DURATION|none")]
+        browser_max: Option<String>,
+        /// How long a browser may go unused before it's signed out: 5m to
+        /// 30d (the default).
+        #[arg(long, value_name = "DURATION")]
+        browser_idle: Option<String>,
+        /// How long a CLI stays signed in after `fctl login`, in whole days
+        /// (30d), or `none`: as long as it's used, until 180 days unused.
+        #[arg(long, value_name = "DURATION|none")]
+        cli_max: Option<String>,
+        /// The longest an access token may last, in whole days (90d), or
+        /// `none`: as long as its maker chooses. Older ones end.
+        #[arg(long, value_name = "DURATION|none")]
+        token_max: Option<String>,
+        /// Whether members make access tokens. Off, only admins do, and
+        /// members' stop working: they use the CLI signed in as
+        /// themselves.
+        #[arg(long, value_name = "ON|OFF", value_parser = clap::builder::BoolishValueParser::new(), hide_possible_values = true)]
+        member_tokens: Option<bool>,
+        /// Save it without asking.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 pub async fn run(api: &Api, cmd: Option<SignInCmd>, json: bool) -> Result<()> {
@@ -81,8 +115,148 @@ pub async fn run(api: &Api, cmd: Option<SignInCmd>, json: bool) -> Result<()> {
             }
             change(api, &overview, next, yes, json).await?;
         }
+        SignInCmd::Policies {
+            browser_max,
+            browser_idle,
+            cli_max,
+            token_max,
+            member_tokens,
+            yes,
+        } => {
+            let overview = api.sign_in_overview().await?;
+            let was = overview.sessions.clone();
+            let mut next = was.clone();
+            if let Some(d) = browser_max {
+                next.browser_max_hours = whole(&d, 60, "hours", "12h or 1d")?;
+            }
+            if let Some(d) = browser_idle {
+                next.browser_idle_minutes = parse_minutes(&d)
+                    .map_err(anyhow::Error::msg)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Browsers are signed out after 30 days unused at most: give 5m to 30d"
+                        )
+                    })?;
+            }
+            if let Some(d) = cli_max {
+                next.cli_max_days = whole(&d, 1440, "days", "30d")?;
+            }
+            if let Some(d) = token_max {
+                next.access_token_max_days = whole(&d, 1440, "days", "90d")?;
+            }
+            if let Some(on) = member_tokens {
+                next.member_access_tokens = on;
+            }
+            if next == was {
+                if json {
+                    return style::print_json(&was);
+                }
+                print_policy(&was);
+                return Ok(());
+            }
+            change_policy(api, next, yes, json).await?;
+        }
     }
     Ok(())
+}
+
+/// A duration as people type it (`12h`, `7d`), in whole `unit`s of `per`
+/// minutes; `none` is 0, no limit.
+fn whole(input: &str, per: u32, unit: &str, example: &str) -> Result<u32> {
+    match parse_minutes(input).map_err(anyhow::Error::msg)? {
+        None => Ok(0),
+        Some(m) if m % per == 0 => Ok(m / per),
+        Some(_) => bail!("{input:?} isn't whole {unit}: give one like {example}, or none"),
+    }
+}
+
+/// Shows what saving `next` ends at once, asks unless `yes`, saves it and
+/// shows the policy now.
+async fn change_policy(api: &Api, next: SessionPolicy, yes: bool, json: bool) -> Result<()> {
+    let preview = api.session_policy_preview(&next).await?;
+    for line in policy_consequences(&preview) {
+        eprintln!("{line}");
+    }
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            bail!("Not saved: pass --yes to save it without being asked");
+        }
+        eprint!("Save it? [y/N] ");
+        std::io::stderr().flush()?;
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        if !matches!(line.trim(), "y" | "Y" | "yes" | "Yes") {
+            bail!("Not saved");
+        }
+    }
+    let saved = api
+        .update_instance_settings(&UpdateInstanceSettingsRequest {
+            browser_max_hours: Some(next.browser_max_hours),
+            browser_idle_minutes: Some(next.browser_idle_minutes),
+            cli_max_days: Some(next.cli_max_days),
+            access_token_max_days: Some(next.access_token_max_days),
+            member_access_tokens: Some(next.member_access_tokens),
+            ..UpdateInstanceSettingsRequest::default()
+        })
+        .await?;
+    let now = saved.session_policy();
+    if json {
+        return style::print_json(&now);
+    }
+    println!("{} Saved", style::accent("✓"));
+    print_policy(&now);
+    Ok(())
+}
+
+/// What saving a session policy ends, in the sentences the web app shows
+/// too.
+pub fn policy_consequences(p: &SessionPolicyPreview) -> Vec<String> {
+    let count = |n: u32, one: &str, many: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {many}")
+        }
+    };
+    let mut signed_out = Vec::new();
+    if p.browsers > 0 {
+        signed_out.push(count(p.browsers, "browser", "browsers"));
+    }
+    if p.clis > 0 {
+        signed_out.push(count(p.clis, "CLI", "CLIs"));
+    }
+    let mut lines = Vec::new();
+    if !signed_out.is_empty() {
+        lines.push(format!(
+            "Saving signs out {} at once{}: their people sign in again.",
+            domains_words(&signed_out),
+            if p.you { ", yours among them" } else { "" }
+        ));
+    } else if p.you {
+        lines.push("Saving signs you out at once: you sign in again.".to_owned());
+    }
+    if p.access_tokens > 0 {
+        let members = match p.member_tokens {
+            0 => String::new(),
+            n if n == p.access_tokens => ", all of them members'".to_owned(),
+            n => format!(", {n} of them members'"),
+        };
+        lines.push(format!(
+            "It ends {}{members}: scripts and CI that use {} need new ones.",
+            count(p.access_tokens, "access token", "access tokens"),
+            if p.access_tokens == 1 { "it" } else { "them" }
+        ));
+    }
+    if lines.is_empty() {
+        lines.push("Nobody is signed out now: sign-ins end as it says from here on.".to_owned());
+    }
+    lines
+}
+
+fn print_policy(p: &SessionPolicy) {
+    for line in describe_policy(p) {
+        println!("{line}");
+    }
 }
 
 /// Shows what saving `next` would do, asks unless `yes`, saves it and
@@ -331,6 +505,10 @@ fn print_overview(o: &SignInOverview) {
             o.no_way_in
         ))
     );
+    println!("{}", style::bold("Staying signed in"));
+    for line in describe_policy(&o.sessions) {
+        println!("  {}", style::dim(&line));
+    }
     if let Some(owner) = &o.owner
         && !o.rules.is_empty()
     {
@@ -412,5 +590,37 @@ mod tests {
             ..preview()
         };
         assert_eq!(consequences(&quiet, "Google"), ["Nobody's way in changes."]);
+    }
+
+    #[test]
+    fn a_session_policy_says_what_it_ends() {
+        let p = SessionPolicyPreview {
+            browsers: 14,
+            clis: 1,
+            access_tokens: 5,
+            member_tokens: 3,
+            you: true,
+        };
+        assert_eq!(
+            policy_consequences(&p),
+            [
+                "Saving signs out 14 browsers and 1 CLI at once, yours among them: their people sign in again.",
+                "It ends 5 access tokens, 3 of them members': scripts and CI that use them need new ones.",
+            ]
+        );
+        assert_eq!(
+            policy_consequences(&SessionPolicyPreview::default()),
+            ["Nobody is signed out now: sign-ins end as it says from here on."]
+        );
+    }
+
+    #[test]
+    fn policy_durations_read_in_whole_units() {
+        assert_eq!(whole("12h", 60, "hours", "12h").ok(), Some(12));
+        assert_eq!(whole("1d", 60, "hours", "12h").ok(), Some(24));
+        assert_eq!(whole("none", 60, "hours", "12h").ok(), Some(0));
+        assert_eq!(whole("90d", 1440, "days", "90d").ok(), Some(90));
+        assert!(whole("36h", 1440, "days", "30d").is_err());
+        assert!(whole("90m", 60, "hours", "12h").is_err());
     }
 }

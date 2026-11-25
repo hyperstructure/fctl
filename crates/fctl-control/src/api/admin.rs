@@ -1162,6 +1162,18 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.self_sign_up {
         settings.self_sign_up = on;
     }
+    // How long sign-ins last: what it doesn't let last ends once it's
+    // saved.
+    let policy = verify::session_policy(&settings, &body);
+    let policy_changed = policy != settings.session_policy();
+    if policy_changed {
+        fctl_domain::session_policy::check(&policy).map_err(crate::error::AppError)?;
+        settings.browser_max_hours = policy.browser_max_hours;
+        settings.browser_idle_minutes = policy.browser_idle_minutes;
+        settings.cli_max_days = policy.cli_max_days;
+        settings.access_token_max_days = policy.access_token_max_days;
+        settings.member_access_tokens = policy.member_access_tokens;
+    }
     // No admin signs themselves out who might not sign in again: they
     // sign in with the provider first, which shows it works.
     let mut change = None;
@@ -1181,6 +1193,11 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         )
         .await?;
         crate::api::sign_in::tell(ctx, change, &settings.sign_in);
+    }
+    if policy_changed {
+        crate::sign_in::revoke_ended(&ctx.db, &policy, ctx.now)?
+            .run()
+            .await?;
     }
     if gravatar_off {
         // The copies go, and turned on again, it looks for everyone anew.

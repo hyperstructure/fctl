@@ -338,6 +338,9 @@ async fn dispatch(
         (Get, ["admin", "settings"]) => api::admin::settings(ctx).await,
         (Get, ["admin", "sign-in"]) => api::sign_in::overview(ctx).await,
         (Post, ["admin", "sign-in", "preview"]) => api::sign_in::preview(ctx, req).await,
+        (Post, ["admin", "sign-in", "sessions", "preview"]) => {
+            api::sign_in::sessions_preview(ctx, req).await
+        }
         (Patch, ["admin", "settings"]) => api::admin::update_settings(ctx, req).await,
         (Post, ["admin", "transfer"]) => api::admin::transfer(ctx, req).await,
         (Get, ["admin", "workspaces"]) => api::admin::workspaces(ctx).await,

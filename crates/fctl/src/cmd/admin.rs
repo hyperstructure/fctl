@@ -145,7 +145,7 @@ pub enum AdminCmd {
     /// change those domains.
     #[command(
         name = "sign-in",
-        after_help = "Examples:\n  fctl admin sign-in\n  fctl admin sign-in require acme.com acme.dev   # people at acme.com and acme.dev sign in with Google only\n  fctl admin sign-in require acme.com --passkeys # passkeys alone sign them in too\n  fctl admin sign-in unrequire acme.dev\n  fctl admin set --self-sign-up off              # accounts only from invitations and admin tokens"
+        after_help = "Examples:\n  fctl admin sign-in\n  fctl admin sign-in require acme.com acme.dev   # people at acme.com and acme.dev sign in with Google only\n  fctl admin sign-in require acme.com --passkeys # passkeys alone sign them in too\n  fctl admin sign-in unrequire acme.dev\n  fctl admin sign-in policies --browser-max 12h --browser-idle 1h   # browsers sign in again twice a day\n  fctl admin sign-in policies --token-max 90d --member-tokens off\n  fctl admin set --self-sign-up off              # accounts only from invitations and admin tokens"
     )]
     SignIn {
         #[command(subcommand)]
@@ -761,6 +761,9 @@ fn print_settings(s: &InstanceSettings) {
             "Only invitations, addresses allowed one by one and admin tokens make accounts. `fctl admin sign-in` says more."
         })
     );
+    for line in fctl_domain::session_policy::describe(&s.session_policy()) {
+        println!("  {}", style::dim(&line));
+    }
     println!(
         "Published screenshots  {}",
         if s.publish_screenshots {
@@ -1483,6 +1486,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     claude_limit_pauses,
                     claude_instance_view,
                     claude_refusals,
+                    ..UpdateInstanceSettingsRequest::default()
                 })
                 .await?;
             if json {

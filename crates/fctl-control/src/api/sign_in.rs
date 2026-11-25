@@ -764,6 +764,7 @@ pub async fn overview(ctx: &Ctx) -> AppResult<Response> {
     let people = crate::sign_in::people(&ctx.db).await?;
     let how = signed_in_with(ctx);
     let count = |f: fn(&rules::Person) -> bool| people.iter().filter(|p| f(p)).count() as u32;
+    let sessions = settings.session_policy();
     http::ok(&SignInOverview {
         providers: crate::sign_in::statuses(&ctx.cfg, &people),
         coverage: settings
@@ -781,7 +782,47 @@ pub async fn overview(ctx: &Ctx) -> AppResult<Response> {
         method: how.method_str().map(str::to_owned),
         method_domain: how.domain,
         email: ctx.cfg.email.is_some(),
+        sessions,
     })
+}
+
+/// `POST /api/v1/admin/sign-in/sessions/preview`: what saving the
+/// request's session policy would end at once, before anything changes.
+pub async fn sessions_preview(ctx: &Ctx, req: &mut Request) -> AppResult<Response> {
+    let actor = ctx.admin()?.clone();
+    let policy: SessionPolicy = http::body(req).await?;
+    fctl_domain::session_policy::check(&policy).map_err(AppError)?;
+    let mut p = SessionPolicyPreview::default();
+    for (kind, member, n) in crate::sign_in::ended_by_policy(&ctx.db, &policy, ctx.now).await? {
+        match kind {
+            TokenKind::Web => p.browsers += n,
+            TokenKind::Cli => p.clis += n,
+            TokenKind::Pat => {
+                p.access_tokens += n;
+                if member {
+                    p.member_tokens += n;
+                }
+            }
+        }
+    }
+    // The sign-in this request comes with, used just now: one of those, if
+    // it's too old. An admin token isn't one.
+    p.you = ctx.auth.as_ref().is_some_and(|a| {
+        !a.admin_token
+            && fctl_domain::session_policy::ended(
+                &policy,
+                &fctl_domain::session_policy::Token {
+                    kind: a.kind,
+                    created_at: a.signed_in_at,
+                    last_used_at: Some(ctx.now),
+                    expires_at: None,
+                    member: actor.role() == fctl_proto::session::InstanceRole::Member,
+                },
+                ctx.now,
+            )
+            .is_some()
+    });
+    http::ok(&p)
 }
 
 /// How the caller's sign-in was made.

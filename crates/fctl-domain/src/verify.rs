@@ -125,6 +125,9 @@ pub enum Sensitive {
     /// domain requires the provider, whoever next signs in with its address
     /// there links to their account.
     UnlinkSignIn,
+    /// Letting sign-ins and access tokens last longer, or members make
+    /// access tokens again (`fctl_domain::session_policy::relaxes`).
+    RelaxSessions,
 }
 
 impl Sensitive {
@@ -168,6 +171,7 @@ impl Sensitive {
             }
             RelaxSignIn => "let people sign in another way than their domain's provider",
             UnlinkSignIn => "unlink someone's sign-in account",
+            RelaxSessions => "let sign-ins or access tokens last longer",
         }
     }
 }
@@ -255,8 +259,34 @@ pub fn instance_settings_change(
         .is_some_and(|next| relaxes(&current.sign_in, next))
     {
         Some(Sensitive::RelaxSignIn)
+    } else if crate::session_policy::relaxes(
+        &current.session_policy(),
+        &session_policy(current, update),
+    ) {
+        Some(Sensitive::RelaxSessions)
     } else {
         None
+    }
+}
+
+/// The session policy `update` leaves the instance with, from `current`.
+pub fn session_policy(
+    current: &InstanceSettings,
+    update: &UpdateInstanceSettingsRequest,
+) -> fctl_proto::api::SessionPolicy {
+    let was = current.session_policy();
+    fctl_proto::api::SessionPolicy {
+        browser_max_hours: update.browser_max_hours.unwrap_or(was.browser_max_hours),
+        browser_idle_minutes: update
+            .browser_idle_minutes
+            .unwrap_or(was.browser_idle_minutes),
+        cli_max_days: update.cli_max_days.unwrap_or(was.cli_max_days),
+        access_token_max_days: update
+            .access_token_max_days
+            .unwrap_or(was.access_token_max_days),
+        member_access_tokens: update
+            .member_access_tokens
+            .unwrap_or(was.member_access_tokens),
     }
 }
 
@@ -570,6 +600,43 @@ mod tests {
             instance_settings_change(&current, &UpdateInstanceSettingsRequest::default()),
             None
         );
+    }
+
+    #[test]
+    fn letting_sign_ins_last_longer_is_sensitive() {
+        let current = InstanceSettings {
+            browser_max_hours: 12,
+            member_access_tokens: false,
+            ..Default::default()
+        };
+        let change =
+            |update: UpdateInstanceSettingsRequest| instance_settings_change(&current, &update);
+        let relaxes = Some(Sensitive::RelaxSessions);
+        assert_eq!(
+            change(UpdateInstanceSettingsRequest {
+                browser_max_hours: Some(0),
+                ..Default::default()
+            }),
+            relaxes
+        );
+        assert_eq!(
+            change(UpdateInstanceSettingsRequest {
+                member_access_tokens: Some(true),
+                ..Default::default()
+            }),
+            relaxes
+        );
+        // Shorter, or the same, isn't; nor is a first limit.
+        assert_eq!(
+            change(UpdateInstanceSettingsRequest {
+                browser_max_hours: Some(8),
+                member_access_tokens: Some(false),
+                cli_max_days: Some(30),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(change(UpdateInstanceSettingsRequest::default()), None);
     }
 
     #[test]
