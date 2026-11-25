@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
+import { DEFAULT_POLICY } from "@/lib/session-policy";
 import { Admin } from "./admin";
 
 // No request is answered unless a test answers it: the page shows what the cache holds.
@@ -306,6 +307,7 @@ const instanceSettings = (s: Partial<G.InstanceSettings> = {}): G.InstanceSettin
   claude_refusals: 2,
   sign_in: [],
   self_sign_up: true,
+  ...DEFAULT_POLICY,
   ...s,
 });
 

@@ -38,6 +38,7 @@ import { PageTabs, TabCount } from "@/components/page-tabs";
 import { DriverLine } from "@/components/runner-driver";
 import { SnapshotStoreLine } from "@/components/runner-snapshots";
 import { SignInAdmin } from "@/components/sign-in/admin";
+import { SessionPolicies } from "@/components/sign-in/sessions";
 import {
   Avatar,
   AvatarStack,
@@ -84,6 +85,7 @@ import {
 import { buildsImages, runsImages } from "@/lib/images";
 import { installCommand } from "@/lib/install";
 import { keys, queryClient, useInstance, useMe, useRunners, useWorkspaces } from "@/lib/queries";
+import { DEFAULT_POLICY } from "@/lib/session-policy";
 import { maxWorkspacesWords } from "@/lib/workspaces";
 
 type Tab =
@@ -1847,10 +1849,12 @@ function useInstanceSettings() {
 /** Admin → Sign-in: how people sign in, the providers and the domains that require one, then two-factor sign-in. */
 function SignInTab() {
   const { settings, save } = useInstanceSettings();
+  const overview = useQuery({ queryKey: keys.signIn, queryFn: api.signIn });
   return (
     <>
       <SignInAdmin save={(b) => save.mutate(b)} saving={save.isPending} />
       <SignInSettings settings={settings.data} save={(b) => save.mutate(b)} saving={save.isPending} />
+      <SessionPolicies policy={overview.data?.sessions ?? (overview.data && DEFAULT_POLICY)} />
     </>
   );
 }
@@ -2473,6 +2477,7 @@ function SignInSettings({
     claude_limit_pauses: true,
     claude_instance_view: false,
     claude_refusals: 2,
+    ...DEFAULT_POLICY,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

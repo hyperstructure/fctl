@@ -52,9 +52,32 @@ export interface TokenForm {
 
 export const NEW_TOKEN: TokenForm = { name: "", access: "run", github: "push", expires: "90" };
 
+/** The days a form's expiry stands for; undefined for never. */
+export const expiryDays = (expires: string): number | undefined =>
+  expires === "never" ? undefined : Number(expires) || undefined;
+
+/**
+ * How long a new token may work, where the instance lets one last `max` days at most (0: as long as its maker
+ * chooses): the expiries within it, and the longest itself.
+ */
+export function expiries(max: number): { value: string; label: string; days?: number }[] {
+  if (max <= 0) return [...EXPIRIES];
+  const within = EXPIRIES.filter((e) => e.days !== undefined && e.days <= max);
+  if (!within.some((e) => e.days === max))
+    within.push({ value: String(max), label: max === 1 ? "1 day" : `${max} days`, days: max });
+  return within;
+}
+
+/** `expires` within what the instance lets a token last (`max` days; 0: any): the longest it lets, past it. */
+export function fitExpiry(expires: string, max: number): string {
+  if (max <= 0) return expires;
+  const days = expiryDays(expires);
+  return days === undefined || days > max ? String(max) : expires;
+}
+
 /** The request that makes the token `f` describes. */
 export function tokenRequest(f: TokenForm): G.CreateTokenRequest {
-  const days = EXPIRIES.find((e) => e.value === f.expires)?.days;
+  const days = expiryDays(f.expires);
   const req: G.CreateTokenRequest = { name: f.name.trim(), access: f.access };
   if (days) req.expires_in_days = days;
   if (f.places?.workspaces.length) req.workspaces = f.places.workspaces;
