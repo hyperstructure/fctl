@@ -2302,17 +2302,22 @@ struct Posting {
     review_id: Option<u64>,
     /// Each finding's place ([`rv::spots`]), when it goes to that agent.
     spots: Vec<rv::Spot>,
+    /// The earlier reviews' findings still open after it, most severe
+    /// first ([`rv::still_open`]).
+    still_open: Vec<rv::StillOpen>,
 }
 
 /// Sends what a review found to the session whose agent opened the pull
 /// request, where one of fctl's own agents did (the GitHub App is its
-/// author): a message from fctl with the findings and their threads,
-/// which resumes the session if it stopped, as a person's would, on the
-/// subscription it ran on. Its agent decides what to do about each
-/// finding, and answers in its thread. Not for pull requests that merged
-/// or closed meanwhile, nor sessions whose agent writes nothing to pull
-/// requests now (it only reads on GitHub, or triages). The review keeps
-/// the message until a session takes it
+/// author): a message from fctl with the findings and their threads, and
+/// the earlier reviews' findings still open, which the agent may have
+/// missed; where the review found nothing new, those alone, and nothing
+/// where none are open either. It resumes the session if it stopped, as a
+/// person's would, on the subscription it ran on. Its agent decides what
+/// to do about each finding, and answers in its thread. Not for pull
+/// requests that merged or closed meanwhile, nor sessions whose agent
+/// writes nothing to pull requests now (it only reads on GitHub, or
+/// triages). The review keeps the message until a session takes it
 /// (`reviews.unsent_findings`): one that lists the pull request later gets
 /// it then ([`listed`]). Returns the session, once it has the message.
 async fn pass_on(
@@ -2322,8 +2327,8 @@ async fn pass_on(
     sub: &rv::Submission,
     posting: &Posting,
 ) -> AppResult<Option<SessionId>> {
-    if sub.findings.is_empty() || !rv::by_app(row.author.as_deref(), app_login(&ctx.cfg).as_deref())
-    {
+    let nothing = sub.findings.is_empty() && posting.still_open.is_empty();
+    if nothing || !rv::by_app(row.author.as_deref(), app_login(&ctx.cfg).as_deref()) {
         return Ok(None);
     }
     // A review under way as its pull request merged or closed keeps
@@ -2342,6 +2347,7 @@ async fn pass_on(
         review_id: posting.review_id,
         findings: &sub.findings,
         spots: &posting.spots,
+        still_open: &posting.still_open,
     };
     // As many reviews in a row as the project's review agents pass on now.
     let rounds = rounds(settings(&ctx.db, &row.project_id).await?.as_ref());
@@ -2464,6 +2470,7 @@ async fn send(env: &Env, db: &D1Database, row: &ReviewRow, repo: &RepoRef) -> Ap
             "pull_request": pr,
             "commit": row.head_sha,
             "findings": unsent.shown.as_ref().map(|s| s.findings.len()),
+            "still_open": unsent.shown.as_ref().map(|s| s.still_open.len()),
         }),
     )
     .await;
@@ -3082,23 +3089,11 @@ async fn post(
     }
     let resolved_ids = edited?;
     let fixed: BTreeSet<&str> = resolved_ids.iter().map(String::as_str).collect();
-    // Those in the text of earlier summaries still shown count too: they
-    // have no threads to resolve.
-    let still_open_in_text: usize = restating
-        .iter()
-        .flat_map(|s| {
-            s.in_text()
-                .into_iter()
-                .filter(|f| !f.fixed)
-                .map(|f| rv::in_text_id(&s.id, f.n))
-        })
-        .filter(|id| !fixed.contains(id.as_str()))
-        .count();
-    let still_open = ours
-        .iter()
-        .filter(|t| !t.resolved && !fixed.contains(t.id.as_str()))
-        .count()
-        + still_open_in_text;
+    // fctl's threads still open, and those in the text of earlier summaries
+    // still shown, which have no threads to resolve: for the agent that
+    // opened the pull request too (`pass_on`).
+    let open = rv::still_open(&threads, &restating, &fixed);
+    let still_open = open.len();
     let state = rv::outcome(sub.findings.len(), still_open);
     q(
         &ctx.db,
@@ -3153,6 +3148,7 @@ async fn post(
         },
         review_id,
         spots,
+        still_open: open,
     })
 }
 

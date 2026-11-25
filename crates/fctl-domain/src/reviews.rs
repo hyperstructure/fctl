@@ -16,7 +16,7 @@ use fctl_proto::api::{
     FindingThread, PullRequestSummary, ResolvedFinding, ReviewBot, ReviewFinding, ReviewState,
     Risk, Severity, SummaryHighlight, ThreadReply,
 };
-use fctl_proto::event::{PassedOnFinding, PassedOnReview};
+use fctl_proto::event::{OpenFinding, PassedOnFinding, PassedOnReview};
 use fctl_proto::session::{PullRequestRef, RepoRef, ReviewCheck};
 use fctl_proto::{ApiError, ProjectId, SessionId};
 use pulldown_cmark::{BrokenLink, BrokenLinkCallback, CowStr, Event, Options, Parser, Tag};
@@ -2208,7 +2208,7 @@ pub fn said(r: &ReviewCheck) -> String {
 
 /// A pull request's review threads, with the first comments of each and
 /// who wrote them.
-const THREADS: &str = "reviewThreads(first: 100) { nodes { id isResolved isOutdated path line originalLine comments(first: 20) { nodes { id url body author { __typename login } } } } }";
+const THREADS: &str = "reviewThreads(first: 100) { nodes { id isResolved isOutdated path line originalLine comments(first: 20) { nodes { id databaseId url body author { __typename login } } } } }";
 
 /// The newest comments on a pull request, among them fctl's summaries.
 const COMMENTS: &str =
@@ -2285,6 +2285,8 @@ pub struct Thread {
     pub line: Option<u32>,
     /// Its first comment: GitHub's node id, its body and its link.
     pub comment_id: String,
+    /// Its first comment's id in GitHub's REST API, which replies go to.
+    pub comment_number: Option<u64>,
     pub body: String,
     pub url: Option<String>,
     /// The instance's app that wrote its first comment, by its slug as
@@ -2329,6 +2331,7 @@ pub fn threads(answer: &Value, apps: &[&str]) -> Vec<Thread> {
                 path: t.get("path").and_then(Value::as_str).map(str::to_owned),
                 line: line("line").or_else(|| line("originalLine")),
                 comment_id: first.get("id")?.as_str()?.to_owned(),
+                comment_number: first.get("databaseId").and_then(Value::as_u64),
                 url: first.get("url").and_then(Value::as_str).map(str::to_owned),
                 ours: by.is_some() && body.contains(MARKER),
                 by: by.map(str::to_owned),
@@ -2890,6 +2893,105 @@ pub fn spots(listed: &Value, findings: &[ReviewFinding], placed: &[Placed]) -> V
         .collect()
 }
 
+/// A finding of an earlier review that is still open after a review posts:
+/// fctl's thread, unresolved and not fixed by this review, or one that an
+/// earlier review's summary still shown holds in its text, on lines the
+/// diff didn't show, and that no review found fixed. The agent that opened
+/// the pull request hears of these with the review ([`passed_on`]), since
+/// it may have missed one, or fixed it otherwise than the review expected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StillOpen {
+    pub title: String,
+    pub severity: Option<Severity>,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    /// Its comment, which starts its thread, or the summary that holds it.
+    pub url: Option<String>,
+    /// Its comment's id, which replies go to; none in a summary's text.
+    pub comment: Option<u64>,
+    /// The replies in its thread.
+    pub replies: u32,
+    /// In an earlier review's summary: it has no thread.
+    pub in_text: bool,
+}
+
+/// The longest a finding's title is in the list of those still open.
+const STILL_OPEN_TITLE: usize = 200;
+
+/// The earlier findings still open on a pull request once a review posts,
+/// most severe first: fctl's threads (of `threads`) that are unresolved,
+/// and those in the text of the earlier reviews' summaries `restating`,
+/// each but those in `fixed`, the ids of the threads and findings in text
+/// that the review found fixed. As many as the review's `still_open`.
+pub fn still_open(
+    threads: &[Thread],
+    restating: &[&Summary],
+    fixed: &BTreeSet<&str>,
+) -> Vec<StillOpen> {
+    let on_lines = threads
+        .iter()
+        .filter(|t| t.ours && !t.resolved && !fixed.contains(t.id.as_str()))
+        .map(|t| {
+            // `### Title`, then `**High severity.** …`, as [`comment`]
+            // writes it, after what fixed it in one marked fixed that
+            // someone opened again, its title struck through ([`fixed`]).
+            let body = unmarked(&t.body);
+            let title = body
+                .lines()
+                .find_map(|l| l.strip_prefix("### "))
+                .map(|t| t.trim().trim_start_matches("~~").trim_end_matches("~~"))
+                .or_else(|| body.lines().map(str::trim).find(|l| !l.is_empty()))
+                .unwrap_or("A finding");
+            StillOpen {
+                title: truncate(title.trim(), STILL_OPEN_TITLE),
+                severity: severity_in(&body, |label| format!("**{label}.**")),
+                path: t.path.clone(),
+                line: t.line,
+                url: t.url.clone(),
+                comment: t.comment_number,
+                replies: u32::try_from(t.replies.len()).unwrap_or(u32::MAX),
+                in_text: false,
+            }
+        });
+    let in_text = restating.iter().flat_map(|s| {
+        s.in_text()
+            .into_iter()
+            .filter(|f| !f.fixed && !fixed.contains(in_text_id(&s.id, f.n).as_str()))
+            .map(|f| {
+                // `**Title** · High severity · `path` line 3: …`, as
+                // [`summary_text`] lists it.
+                let title = f
+                    .text
+                    .strip_prefix("**")
+                    .and_then(|t| t.split_once("**"))
+                    .map_or(f.text.as_str(), |(t, _)| t);
+                StillOpen {
+                    title: truncate(title.trim(), STILL_OPEN_TITLE),
+                    severity: severity_in(&f.text, |label| format!(" · {label} · ")),
+                    path: f.path,
+                    line: f.line,
+                    url: s.url.clone(),
+                    comment: None,
+                    replies: 0,
+                    in_text: true,
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut open: Vec<StillOpen> = on_lines.chain(in_text).collect();
+    open.sort_by_key(|o| (o.severity.is_none(), o.severity));
+    open
+}
+
+/// The severity `text` names first, as `written` writes its label.
+fn severity_in(text: &str, written: impl Fn(&str) -> String) -> Option<Severity> {
+    [Severity::High, Severity::Medium, Severity::Low]
+        .into_iter()
+        .filter_map(|s| text.find(&written(severity_label(s))).map(|at| (at, s)))
+        .min_by_key(|(at, _)| *at)
+        .map(|(_, s)| s)
+}
+
 /// A review's findings, as the session whose agent opened the pull request
 /// hears of them.
 #[derive(Clone, Debug)]
@@ -2910,6 +3012,8 @@ pub struct Found<'a> {
     pub findings: &'a [ReviewFinding],
     /// Where each finding is on GitHub ([`spots`]).
     pub spots: &'a [Spot],
+    /// The earlier reviews' findings still open after it ([`still_open`]).
+    pub still_open: &'a [StillOpen],
 }
 
 impl Found<'_> {
@@ -2942,12 +3046,21 @@ impl Found<'_> {
 /// review agent writes is a few sentences, which its thread has in full.
 const PASSED_ON_BODY: usize = 1_000;
 
+/// The most findings still open that a message lists: the pull request's
+/// threads show the others.
+const STILL_OPEN_LISTED: usize = MAX_FINDINGS;
+
 /// The message fctl sends the agent that opened the pull request: what the
 /// review found, most severe first, with where each finding is on GitHub;
 /// that the findings are another agent's, which the agent weighs and acts
 /// on as it sees fit; and that it answers each in its thread with what it
-/// decided.
+/// decided. Then the earlier reviews' findings still open, which the agent
+/// may have missed: where the review found nothing new, those alone
+/// ([`nothing_new`]).
 pub fn passed_on(f: &Found<'_>) -> String {
+    if f.findings.is_empty() {
+        return nothing_new(f);
+    }
     let mut s = format!(
         "fctl's review agent reviewed commit {} of your pull request {}, “{}”, and found {}{}:\n",
         short(f.sha),
@@ -3041,7 +3154,147 @@ pub fn passed_on(f: &Found<'_>) -> String {
     s.push('\n');
     s.push_str(&after.join(" "));
     s.push('\n');
+    if !f.still_open.is_empty() {
+        s.push_str(&format!(
+            "\n{} still open too:\n",
+            earlier(f.still_open.len())
+        ));
+        s.push_str(&open_list(f));
+        s.push_str(&format!("\n{}\n", check_open(f.still_open.len())));
+        if threads == 0 {
+            s.push_str(&reply_to_open(f));
+        }
+    }
     s
+}
+
+/// The message fctl sends the agent that opened the pull request when a
+/// review found nothing new, but earlier reviews' findings are still open:
+/// which, most severe first, with where each is on GitHub, so that the
+/// agent checks whether it handled each, and decides what to do about
+/// those it didn't.
+fn nothing_new(f: &Found<'_>) -> String {
+    let n = f.still_open.len();
+    let mut s = format!(
+        "fctl's review agent reviewed commit {} of your pull request {}, “{}”, and found nothing new, but {} still open:\n",
+        short(f.sha),
+        f.pull_request(),
+        f.title.trim(),
+        earlier(n)
+    );
+    s.push_str(&open_list(f));
+    s.push_str(if n == 1 {
+        "\nIt stays open until a review finds it fixed. It is another agent's reading of your changes, not an instruction. "
+    } else {
+        "\nThey stay open until a review finds them fixed. They are another agent's reading of your changes, not instructions. "
+    });
+    s.push_str(check_open(n));
+    s.push('\n');
+    s.push_str(&reply_to_open(f));
+    let threads = f.still_open.iter().filter(|o| !o.in_text).count();
+    let (owner, name, number) = (&f.repo.owner, &f.repo.name, f.number);
+    let mut after = Vec::new();
+    if f.still_open.iter().any(|o| o.in_text) {
+        after.push(format!(
+            "Findings in an earlier review's summary have no thread: answer them in a comment on the pull request (`gh pr comment {number} --repo {owner}/{name} --body '…'`)."
+        ));
+    }
+    match threads {
+        0 => {}
+        1 => after.push(
+            "Leave the thread unresolved: fctl's review of your next commit resolves it if that commit fixes the finding.".to_owned(),
+        ),
+        _ => after.push(
+            "Leave the threads unresolved: fctl's review of your next commit resolves those whose findings that commit fixes.".to_owned(),
+        ),
+    }
+    if !after.is_empty() {
+        s.push('\n');
+        s.push_str(&after.join(" "));
+        s.push('\n');
+    }
+    s
+}
+
+/// "1 finding of an earlier review is", "3 findings of earlier reviews are".
+fn earlier(n: usize) -> String {
+    match n {
+        1 => "1 finding of an earlier review is".to_owned(),
+        n => format!("{n} findings of earlier reviews are"),
+    }
+}
+
+/// What the agent checks of the `n` earlier findings still open.
+fn check_open(n: usize) -> &'static str {
+    if n == 1 {
+        "Check whether you handled it: if you fixed it, the review didn't find it fixed, so look again; if you answered in its thread that it isn't a problem or that it's intended, it needs nothing more. Otherwise decide now: fix it in this pull request if it is a real problem, push the fix, and answer in its thread what you decided."
+    } else {
+        "Check whether you handled each: one you fixed that is still open wasn't found fixed, so look again; one you answered in its thread as not a problem or intended needs nothing more. Decide about the others now: fix those that are real problems in this pull request, push the fixes, and answer each in its thread with what you decided."
+    }
+}
+
+/// The earlier findings still open, numbered, each with its severity, its
+/// place and where to answer it; past [`STILL_OPEN_LISTED`], how many more.
+fn open_list(f: &Found<'_>) -> String {
+    let mut s = String::new();
+    for (n, o) in f.still_open.iter().take(STILL_OPEN_LISTED).enumerate() {
+        let mut about = Vec::new();
+        if let Some(severity) = o.severity {
+            about.push(severity_label(severity).to_owned());
+        }
+        match (&o.path, o.line) {
+            (Some(path), Some(line)) => about.push(format!("{path} line {line}")),
+            (Some(path), None) => about.push(path.clone()),
+            _ => {}
+        }
+        if o.in_text {
+            about.push(match &o.url {
+                Some(url) => format!("in an earlier review's summary ({url})"),
+                None => "in an earlier review's summary".to_owned(),
+            });
+        } else {
+            match (o.comment, &o.url) {
+                (Some(id), _) => about.push(format!("comment {id}")),
+                (None, Some(url)) => about.push(url.clone()),
+                (None, None) => {}
+            }
+            about.push(match o.replies {
+                0 => "no reply yet".to_owned(),
+                1 => "1 reply".to_owned(),
+                r => format!("{r} replies"),
+            });
+        }
+        s.push_str(&format!(
+            "\n{}. {}\n   {}\n",
+            n + 1,
+            o.title,
+            about.join(" · ")
+        ));
+    }
+    let more = f.still_open.len().saturating_sub(STILL_OPEN_LISTED);
+    if more > 0 {
+        s.push_str(&format!(
+            "\n…and {more} more, which the pull request's unresolved threads show.\n"
+        ));
+    }
+    s
+}
+
+/// How to answer in an earlier finding's thread, where one of those still
+/// open has one; nothing otherwise.
+fn reply_to_open(f: &Found<'_>) -> String {
+    let (owner, name, number) = (&f.repo.owner, &f.repo.name, f.number);
+    if !f.still_open.iter().any(|o| !o.in_text) {
+        return String::new();
+    }
+    let id = f
+        .still_open
+        .iter()
+        .find_map(|o| o.comment)
+        .map_or_else(|| "ID".to_owned(), |id| id.to_string());
+    format!(
+        "\n    gh api repos/{owner}/{name}/pulls/{number}/comments/{id}/replies -f body='Fixed in abc1234: …'\n"
+    )
 }
 
 /// What the transcript of the session that opened the pull request shows
@@ -3078,6 +3331,18 @@ pub fn passed_on_review(f: &Found<'_>) -> PassedOnReview {
                 }
             })
             .collect(),
+        still_open: f
+            .still_open
+            .iter()
+            .map(|o| OpenFinding {
+                title: o.title.clone(),
+                severity: o.severity,
+                path: o.path.clone(),
+                line: o.line,
+                url: o.url.clone(),
+                replies: o.replies,
+            })
+            .collect(),
     }
 }
 
@@ -3086,7 +3351,12 @@ pub fn passed_on_review(f: &Found<'_>) -> PassedOnReview {
 /// on those of `rounds` reviews in a row, as many as the project's review
 /// agents pass on ([`ROUNDS`]), and nobody messaged the agent since.
 pub fn held_back(f: &Found<'_>, rounds: u32) -> String {
-    let (them, these) = if f.findings.len() == 1 {
+    let n = if f.findings.is_empty() {
+        f.still_open.len()
+    } else {
+        f.findings.len()
+    };
+    let (them, these) = if n == 1 {
         ("it", "this one")
     } else {
         ("them", "these")
@@ -3099,12 +3369,24 @@ pub fn held_back(f: &Found<'_>, rounds: u32) -> String {
             reviews_in_a_row(rounds)
         )
     };
+    let found = if f.findings.is_empty() {
+        format!(
+            "found nothing new in commit {} of {}, but {} still open",
+            short(f.sha),
+            f.pull_request(),
+            earlier(n)
+        )
+    } else {
+        format!(
+            "found {} in commit {} of {}{}",
+            issues(n),
+            short(f.sha),
+            f.pull_request(),
+            f.link()
+        )
+    };
     format!(
-        "fctl's review agent found {} in commit {} of {}{}. fctl didn't pass {them} on: the agent got {got}. Message the agent, or pass {them} on from the pull request on the session's page, to have it look at {these}.",
-        issues(f.findings.len()),
-        short(f.sha),
-        f.pull_request(),
-        f.link()
+        "fctl's review agent {found}. fctl didn't pass {them} on: the agent got {got}. Message the agent, or pass {them} on from the pull request on the session's page, to have it look at {these}."
     )
 }
 
@@ -4464,7 +4746,7 @@ mod tests {
         let answer = json!({ "data": { "repository": { "pullRequest": { "reviewThreads": { "nodes": [
             { "id": "PRRT_1", "isResolved": false, "isOutdated": true, "path": "a.rs", "line": null, "originalLine": 7,
               "comments": { "nodes": [
-                { "id": "PRRC_1", "url": "https://github.com/acme/web/pull/12#discussion_r1", "body": mine, "author": bot("fctl") },
+                { "id": "PRRC_1", "databaseId": 1, "url": "https://github.com/acme/web/pull/12#discussion_r1", "body": mine, "author": bot("fctl") },
                 { "id": "PRRC_2", "body": "That's intended.", "author": person("ada") }
               ] } },
             { "id": "PRRT_2", "isResolved": false, "isOutdated": false, "path": "b.rs", "line": 3,
@@ -4500,6 +4782,10 @@ mod tests {
         assert_eq!(all[4].by, None);
         assert_eq!(all[0].line, Some(7));
         assert_eq!(all[0].comment_id, "PRRC_1");
+        assert_eq!(
+            (all[0].comment_number, all[1].comment_number),
+            (Some(1), None)
+        );
         assert_eq!(all[0].session.as_deref(), Some("ses_1"));
         assert_eq!(all[1].session, None);
         // Without the review app, its threads are another app's.
@@ -4531,6 +4817,7 @@ mod tests {
             path: Some("a.rs".into()),
             line: Some(1),
             comment_id: format!("C_{id}"),
+            comment_number: None,
             body,
             url: None,
             by: Some("fctl".into()),
@@ -5157,6 +5444,7 @@ mod tests {
             review_id: None,
             findings: &findings,
             spots: &spots,
+            still_open: &[],
         };
         let unsent = Unsent::of(&found, 3);
         assert_eq!(unsent.text, passed_on(&found));
@@ -5256,6 +5544,7 @@ mod tests {
             review_id: Some(80),
             findings: &findings,
             spots: &spots,
+            still_open: &[],
         };
         let m = passed_on(&found);
         assert!(m.starts_with(
@@ -5329,6 +5618,216 @@ mod tests {
     }
 
     #[test]
+    fn the_opener_hears_of_earlier_findings_still_open() {
+        // An earlier review's findings: one on its lines, one in its
+        // summary's text, on lines the diff didn't show.
+        let mut high = finding("README.md", 3);
+        high.severity = Severity::High;
+        high.title = "The README names an old flag".into();
+        let earlier = [finding("a.rs", 1), high];
+        let lines = Placed::Lines {
+            start: None,
+            line: 1,
+            side: Side::Right,
+        };
+        let body = summary_text(None, &earlier, &[lines.clone(), Placed::Text], 0, &links());
+        let summary = Summary {
+            id: "IC_1".into(),
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            by: "fctl".into(),
+            minimized: false,
+            url: Some("https://github.com/acme/web/pull/12#issuecomment-1".into()),
+        };
+        let answered = Thread {
+            body: comment(&earlier[0], &lines, &links()),
+            comment_number: Some(77),
+            url: Some("https://github.com/acme/web/pull/12#discussion_r77".into()),
+            replies: vec![ThreadReply {
+                author: Some("fctl-sh".into()),
+                body: "That's intended.".into(),
+            }],
+            ..thread("T1", "ses_1", false, false)
+        };
+        let threads = [
+            answered,
+            // Resolved by someone, and one this review fixes.
+            thread("T2", "ses_1", true, false),
+            thread("T3", "ses_1", false, false),
+            // Marked fixed, then opened again by someone.
+            thread("T4", "ses_1", false, true),
+            // Someone else's.
+            Thread {
+                ours: false,
+                ..thread("T5", "ses_1", false, false)
+            },
+        ];
+        let open = still_open(&threads, &[&summary], &BTreeSet::from(["T3"]));
+        // Most severe first, those of unknown severity last.
+        assert_eq!(
+            open,
+            [
+                StillOpen {
+                    title: "The README names an old flag".into(),
+                    severity: Some(Severity::High),
+                    path: Some("README.md".into()),
+                    line: Some(3),
+                    url: summary.url.clone(),
+                    comment: None,
+                    replies: 0,
+                    in_text: true,
+                },
+                StillOpen {
+                    title: "Retries never stop".into(),
+                    severity: Some(Severity::Medium),
+                    path: Some("a.rs".into()),
+                    line: Some(1),
+                    url: Some("https://github.com/acme/web/pull/12#discussion_r77".into()),
+                    comment: Some(77),
+                    replies: 1,
+                    in_text: false,
+                },
+                StillOpen {
+                    title: "A finding".into(),
+                    severity: None,
+                    path: Some("a.rs".into()),
+                    line: Some(1),
+                    url: None,
+                    comment: None,
+                    replies: 0,
+                    in_text: false,
+                },
+            ]
+        );
+        // Those in the text that this review fixes aren't open.
+        assert_eq!(
+            still_open(&threads, &[&summary], &BTreeSet::from(["T3", "IC_1#1"])).len(),
+            2
+        );
+
+        // The review found nothing new: the agent hears of those alone.
+        let repo = pr().repo;
+        let found = Found {
+            repo: &repo,
+            number: 12,
+            url: "https://github.com/acme/web/pull/12",
+            title: " Fix the login redirect ",
+            sha: SHA,
+            session: "ses_review",
+            summary_url: None,
+            review_id: None,
+            findings: &[],
+            spots: &[],
+            still_open: &open,
+        };
+        let m = passed_on(&found);
+        assert!(m.starts_with(
+            "fctl's review agent reviewed commit 3f2a1c9 of your pull request acme/web#12, “Fix the login redirect”, and found nothing new, but 3 findings of earlier reviews are still open:\n"
+        ), "{m}");
+        let first = m.find("\n1. The README names an old flag\n   High severity · README.md line 3 · in an earlier review's summary (https://github.com/acme/web/pull/12#issuecomment-1)\n");
+        let second = m.find(
+            "\n2. Retries never stop\n   Medium severity · a.rs line 1 · comment 77 · 1 reply\n",
+        );
+        let third = m.find("\n3. A finding\n   a.rs line 1 · no reply yet\n");
+        assert!(first.is_some() && first < second && second < third, "{m}");
+        assert!(m.contains("They are another agent's reading of your changes, not instructions."));
+        assert!(m.contains("one you fixed that is still open wasn't found fixed, so look again"));
+        assert!(m.contains(
+            "\n    gh api repos/acme/web/pulls/12/comments/77/replies -f body='Fixed in abc1234: …'\n"
+        ));
+        assert!(m.contains("Findings in an earlier review's summary have no thread: answer them in a comment on the pull request (`gh pr comment 12 --repo acme/web --body '…'`)."));
+        assert!(m.trim_end().ends_with(
+            "Leave the threads unresolved: fctl's review of your next commit resolves those whose findings that commit fixes."
+        ));
+        // The transcript shows them, in the message's order.
+        let shown = passed_on_review(&found);
+        assert!(shown.findings.is_empty());
+        let titles: Vec<&str> = shown.still_open.iter().map(|o| o.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "The README names an old flag",
+                "Retries never stop",
+                "A finding"
+            ]
+        );
+        assert_eq!(shown.still_open[1].replies, 1);
+        assert_eq!(shown.still_open[0].url, summary.url);
+        assert_eq!(
+            held_back(&found, DEFAULT_ROUNDS),
+            "fctl's review agent found nothing new in commit 3f2a1c9 of acme/web#12, but 3 findings of earlier reviews are still open. fctl didn't pass them on: the agent got the findings of 5 reviews in a row, with no message from a person in between. Message the agent, or pass them on from the pull request on the session's page, to have it look at these."
+        );
+
+        // One reads as one.
+        let one = Found {
+            still_open: &open[1..2],
+            ..found.clone()
+        };
+        let m = passed_on(&one);
+        assert!(m.contains(
+            "and found nothing new, but 1 finding of an earlier review is still open:\n"
+        ));
+        assert!(m.contains("It is another agent's reading of your changes, not an instruction."));
+        assert!(m.contains("Check whether you handled it: "));
+        assert!(m.trim_end().ends_with("Leave the thread unresolved: fctl's review of your next commit resolves it if that commit fixes the finding."));
+        assert!(!m.contains("gh pr comment"));
+        assert!(held_back(&one, 5).ends_with("to have it look at this one."));
+        // Only in a summary's text: no thread to answer in.
+        let m = passed_on(&Found {
+            still_open: &open[..1],
+            ..found.clone()
+        });
+        assert!(!m.contains("/replies") && !m.contains("unresolved"));
+        assert!(m.contains("gh pr comment 12"));
+
+        // With new findings, those still open come after them.
+        let new = [finding("src/main.rs", 13)];
+        let in_summary = [Spot::Text];
+        let with = Found {
+            findings: &new,
+            spots: &in_summary,
+            ..found.clone()
+        };
+        let m = passed_on(&with);
+        assert!(m.contains("and found 1 issue:\n"), "{m}");
+        let new_at = m.find("\n1. Retries never stop\n   Medium severity · src/main.rs line 13 · in the review's summary\n");
+        let too = m.find("\n3 findings of earlier reviews are still open too:\n");
+        let listed = m.find(
+            "\n2. Retries never stop\n   Medium severity · a.rs line 1 · comment 77 · 1 reply\n",
+        );
+        assert!(new_at.is_some() && new_at < too && too < listed, "{m}");
+        // The new ones have no thread: how to answer comes with the earlier.
+        assert!(m.contains("/comments/77/replies"));
+        let threaded = [Spot::Comment {
+            id: 101,
+            url: "https://github.com/acme/web/pull/12#discussion_r101".into(),
+        }];
+        let m = passed_on(&Found {
+            spots: &threaded,
+            ..with.clone()
+        });
+        assert!(m.contains("/comments/101/replies") && !m.contains("/comments/77/replies"));
+        // None still open: as before.
+        let m = passed_on(&Found {
+            still_open: &[],
+            ..with.clone()
+        });
+        assert!(!m.contains("still open"));
+        assert!(
+            held_back(&with, 5).starts_with("fctl's review agent found 1 issue in commit 3f2a1c9")
+        );
+
+        // Many: the threads show those past the list.
+        let many = vec![open[1].clone(); STILL_OPEN_LISTED + 2];
+        let m = passed_on(&Found {
+            still_open: &many,
+            ..found.clone()
+        });
+        assert!(m.contains("\n25. Retries never stop\n") && !m.contains("\n26. "));
+        assert!(m.contains("\n…and 2 more, which the pull request's unresolved threads show.\n"));
+    }
+
+    #[test]
     fn held_reviews_show_on_their_pull_requests_until_passed_on() {
         let web = "https://github.com/acme/web/pull/12";
         let api = "https://github.com/acme/api/pull/3";
@@ -5345,6 +5844,7 @@ mod tests {
                 summary_url: None,
                 session: SessionId(id.into()),
                 findings: Vec::new(),
+                still_open: Vec::new(),
             }),
         };
         let ids = |held: &[Held]| -> Vec<String> {
@@ -5491,6 +5991,7 @@ mod tests {
             review_id: Some(80),
             findings: &findings,
             spots: &spots,
+            still_open: &[],
         };
         let shown = passed_on_review(&found);
         assert_eq!(shown.repo, repo);

@@ -151,8 +151,41 @@ pub struct PassedOnReview {
     pub summary_url: Option<String>,
     /// The review agent's session.
     pub session: SessionId,
-    /// What it found, most severe first, as the message lists it.
+    /// What it found, most severe first, as the message lists it: none
+    /// where the review found nothing new, but earlier reviews' findings
+    /// are still open.
     pub findings: Vec<PassedOnFinding>,
+    /// The findings of earlier reviews still open after it, most severe
+    /// first, as the message lists them. Absent from control planes before
+    /// it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<OpenFinding>>", optional))]
+    pub still_open: Vec<OpenFinding>,
+}
+
+/// A finding of an earlier review that is still open as a
+/// [`PassedOnReview`]'s review posted: its thread unresolved, or, on lines
+/// the diff didn't show, not yet found fixed. What fctl could read of it on
+/// GitHub, where it is in full.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct OpenFinding {
+    pub title: String,
+    pub severity: Option<Severity>,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    /// Its comment on GitHub, which starts its thread, or the earlier
+    /// review's summary that holds it.
+    pub url: Option<String>,
+    /// The replies in its thread.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub replies: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// One of a [`PassedOnReview`]'s findings: what is wrong, and where.
@@ -928,6 +961,14 @@ mod tests {
                     url: None,
                 },
             ],
+            still_open: vec![OpenFinding {
+                title: "The token never expires".into(),
+                severity: Some(Severity::Medium),
+                path: Some("src/auth.rs".into()),
+                line: Some(9),
+                url: Some("https://github.com/acme/web/pull/12#discussion_r77".into()),
+                replies: 0,
+            }],
         };
         let m = UserMessage {
             ticket: None,
@@ -949,8 +990,18 @@ mod tests {
         assert!(json["review"]["findings"][0].get("deleted").is_none());
         assert_eq!(json["review"]["findings"][1]["deleted"], true);
         assert!(json["review"]["findings"][1].get("url").is_none());
+        assert_eq!(json["review"]["still_open"][0]["severity"], "medium");
+        assert!(json["review"]["still_open"][0].get("replies").is_none());
         let back: UserMessage = serde_json::from_value(json)?;
         assert_eq!(back, m);
+        // Without findings still open, and from control planes before them.
+        let json = serde_json::to_value(PassedOnReview {
+            still_open: Vec::new(),
+            ..review.clone()
+        })?;
+        assert!(json.get("still_open").is_none());
+        let back: PassedOnReview = serde_json::from_value(json)?;
+        assert!(back.still_open.is_empty());
         // Messages without one, as before.
         let m: UserMessage = serde_json::from_value(serde_json::json!({
             "id": "dlv_1", "text": "hi", "source": "system"

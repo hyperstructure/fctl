@@ -25,6 +25,10 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 /** "1 issue", "3 issues". */
 export const issues = (n: number) => plural(n, "issue", "issues");
 
+/** "1 earlier finding still open", "3 earlier findings still open". */
+export const stillOpen = (n: number) =>
+  plural(n, "earlier finding still open", "earlier findings still open");
+
 /** A finding's severity, as fctl says it on GitHub: "High", "Medium", "Low". */
 export const severityLabel = (s: G.Severity) => `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
 

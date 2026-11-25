@@ -31,6 +31,16 @@ what it decided in each finding's thread.
   problem, or intended. It leaves the threads open: the review of its next
   commit checks the fixes and resolves them, and reads the answers to the
   others, which it doesn't raise again.
+- **Findings still open, too.** Since 2026-11-25 the message also lists
+  the earlier reviews' findings still open after the review (threads it
+  didn't resolve, and those in earlier summaries' text that it didn't find
+  fixed), with their comments' ids and how many replies each has, so that
+  an agent that missed one, or whose fix the review didn't find, hears of
+  it. A review that finds nothing new while some are open sends those
+  alone: otherwise the agent wouldn't hear that the review finished. It
+  checks each, and leaves alone those it already answered as not a
+  problem or intended. Such a message counts as one of the reviews in a
+  row below.
 - **Only fctl's own pull requests.** A pull request a person opened is
   theirs to act on, even when an agent pushed to it since, and so is a
   pull request of another app. Pull requests that merged or closed,
