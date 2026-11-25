@@ -1709,6 +1709,9 @@ fctl admin sign-in                         # the providers, the domains that req
 fctl admin sign-in require acme.com acme.dev   # their people sign in with Google alone: says whom it concerns, then asks
 fctl admin sign-in require acme.com --passkeys --yes   # passkeys alone sign them in too; without asking
 fctl admin sign-in unrequire acme.dev      # its people sign in as they like again
+fctl admin sign-in policies                # how long sign-ins last, and who makes access tokens
+fctl admin sign-in policies --browser-max 12h --browser-idle 1h   # browsers sign in again after 12 hours, and out after an hour unused
+fctl admin sign-in policies --cli-max 30d --token-max 90d --member-tokens off --yes   # says what it ends at once; without asking
 fctl admin unlink grace@example.com        # her Google account was recreated: signs her out, and her next Google sign-in links the new one
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
@@ -1726,6 +1729,16 @@ in with the provider first (`fctl login`, then continue with Google as
 your address there). A CLI whose sign-in a domain's rule doesn't meet
 says so, and signs in again with `fctl login`
 ([Requiring Google for your domains](self-hosting.md#requiring-google-for-your-domains)).
+
+`fctl admin sign-in policies` takes durations as `12h`, `30d` or `none`
+(no limit): whole hours for browsers' `--browser-max`, whole days for
+`--cli-max` and `--token-max`, and 5 minutes to 30 days for
+`--browser-idle`. Like `require`, it prints what saving ends at once
+before it asks ("Saving signs out 14 browsers and 3 CLIs at once…"), and
+`--json` prints the policy once it's saved
+([How long people stay signed in](self-hosting.md#how-long-people-stay-signed-in)).
+A CLI signed in longer than the policy lets one says so, and signs in
+again with `fctl login`.
 
 ### Provisioning people with an admin token
 

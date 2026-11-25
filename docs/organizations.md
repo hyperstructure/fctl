@@ -119,6 +119,16 @@ two-factor requirement. [Requiring Google for your
 domains](self-hosting.md#requiring-google-for-your-domains) has the
 details.
 
+How long sign-ins last is yours to say too, so that someone whose Google
+account you closed is out of fctl soon after, as their sign-ins end: a
+browser's after 12 hours, say, a CLI's after 30 days, and access tokens'
+after 90, which only admins make
+([How long people stay signed in](self-hosting.md#how-long-people-stay-signed-in)):
+
+```sh
+fctl admin sign-in policies --browser-max 12h --cli-max 30d --token-max 90d --member-tokens off
+```
+
 ## People from your directory
 
 On an instance of yours, your identity provider, your HR system or a

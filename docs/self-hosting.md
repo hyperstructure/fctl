@@ -1170,9 +1170,10 @@ Where your people's addresses are your Google Workspace's, they can sign
 in with it alone: under its two-step verification and device checks,
 unable to sign in again once you close their Google account, and with no
 password of fctl's to forget or leave behind. Closing a Google account
-doesn't end the sessions its person has already: disable their account
+doesn't end the sign-ins its person has already: disable their account
 here too as they leave (or with your [admin
-token](#provision-people-with-admin-tokens)'s sync). Under **Admin → Sign-in → Domains that sign in
+token](#provision-people-with-admin-tokens)'s sync), or keep sign-ins
+short ([How long people stay signed in](#how-long-people-stay-signed-in)). Under **Admin → Sign-in → Domains that sign in
 with a provider**, choose **Require a provider** and give your domains
 (`acme.com, acme.dev`), or:
 
@@ -1242,6 +1243,43 @@ and the sign-in page tells people without one to ask an admin.
 
 fctl signs people in through Google alone today. SAML, Okta, Microsoft
 Entra ID and other OpenID Connect providers aren't supported yet.
+
+### How long people stay signed in
+
+By default a browser stays signed in while it's used, until 30 days
+unused; a CLI until 180 days unused; and an access token as long as its
+maker chose, for ever included. Under **Admin → Sign-in → Staying signed
+in**, or with `fctl admin sign-in policies`, an instance admin sets:
+
+- **Browsers sign in again after** a set time, however much they're used
+  (`--browser-max 12h`), and **sign out unused for** less than 30 days
+  (`--browser-idle 1h`, at least 5 minutes). A tab left open on a page
+  that updates itself counts as use.
+- **CLIs sign in again after** a set number of days (`--cli-max 30d`), with
+  `fctl login`.
+- **Access tokens last at most** a set number of days (`--token-max 90d`):
+  new ones can't be made to last longer, and older ones end once they're
+  that old.
+- **Members make access tokens**, or only admins (`--member-tokens off`):
+  members' tokens stop working, and they use the CLI, signed in as
+  themselves.
+
+```sh
+fctl admin sign-in policies --browser-max 12h --browser-idle 1h --cli-max 30d --token-max 90d
+```
+
+Before it saves, it shows what it ends at once ("Saving signs out 14
+browsers and 3 CLIs at once: their people sign in again. It ends 5 access
+tokens: scripts and CI that use them need new ones."), and the CLI asks
+unless `--yes`. Every request checks its sign-in against the policy,
+those made before it too, and **Settings** tells people how long theirs
+last. Where your domains require Google, signing in again goes through
+Google, which checks they still may: someone whose Google account you
+closed is out of fctl once their browser's and CLI's sign-ins end. Their
+access tokens don't go through Google, so limit those, or keep members
+from making them, too. Letting sign-ins or tokens last longer again asks
+you to confirm it's you, where the instance asks for that. Admin tokens
+and service accounts' secrets last as long as their makers chose.
 
 ## Email (optional)
 
