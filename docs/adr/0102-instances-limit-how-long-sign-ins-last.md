@@ -47,6 +47,14 @@ days, and no tokens made by people outside a few admins (#618).
 - **The primary instance owner is held to it like everyone else.** A
   policy ends sign-ins and nothing more: whoever it signs out signs in
   again, the owner with their password while the provider is down.
+- **Networks keep sign-ins and requests to some IP ranges**, with the
+  same exemptions as the rest: runners, webhooks and published links
+  connect from anywhere. The primary instance owner signs in from
+  anywhere with a browser or the CLI, the instance's way in when its
+  network's addresses change, while their access tokens and admin tokens
+  are held to them; an admin can't save ranges they're outside of. A
+  browser outside them is as signed out and keeps its sign-in, so that
+  stepping off the VPN signs nobody out for good.
 
 ## Consequences
 

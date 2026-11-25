@@ -1281,6 +1281,32 @@ from making them, too. Letting sign-ins or tokens last longer again asks
 you to confirm it's you, where the instance asks for that. Admin tokens
 and service accounts' secrets last as long as their makers chose.
 
+### Signing in only from your networks
+
+Under **Admin → Sign-in → Networks**, or with `fctl admin sign-in policies
+--networks`, an instance admin names the IP ranges people sign in and send
+requests from (your office's, your VPN's), as CIDR:
+
+```sh
+fctl admin sign-in policies --networks 203.0.113.0/24,2001:db8::/32
+fctl admin sign-in policies --networks any   # from anywhere again
+```
+
+Browsers, CLIs, access tokens, admin tokens and service accounts elsewhere
+are refused: a browser outside them shows the sign-in page, which says
+why, and keeps its sign-in for when it's back inside. Runners' connections,
+GitHub's and Linear's webhooks and published screenshots' links come from
+anywhere, so runners in your cloud need no range of their own, but a
+script that calls the API from CI does. The primary instance owner signs
+in from anywhere with a browser or the CLI, the way in when your network's
+addresses change; their access tokens and admin tokens are held to the
+ranges. An admin can't save ranges their own address is outside of
+(**Admin → Sign-in** shows it, with **Add it**), and letting people in from
+more places asks you to confirm it's you, where the instance asks for
+that. The control plane sees each request's address as `CF-Connecting-IP`
+says, which your own server sets from the proxies in front of it
+([`FCTL_TRUST_PROXY`](#https-and-reverse-proxies)).
+
 ## Email (optional)
 
 Without email, admins copy invite and password-reset links from the app. To

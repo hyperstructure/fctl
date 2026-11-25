@@ -670,6 +670,18 @@ a member's where only admins make them (`403`, `forbidden`). `GET /api/v1/auth/m
 them as `sessions`, and each token's `expires_at` in `GET
 /api/v1/auth/tokens` says when it ends under them.
 
+`networks` in the same settings, a list of CIDR ranges (`[]` for
+anywhere), keeps sign-ins and requests to them ([Signing in only from your
+networks](self-hosting.md#signing-in-only-from-your-networks)): a request
+from elsewhere with a CLI's sign-in, an access token, an admin token or a
+service account's secret answers `403` (`forbidden`), and a sign-in from
+elsewhere is refused the same way, but the primary instance owner's in a
+browser or the CLI. Saving ranges the caller's own address is outside of
+answers `409` (`conflict`), unless they're the primary instance owner. `GET
+/api/v1/admin/sign-in` has them as `networks`, with the caller's
+`address`, and `GET /api/v1/instance` says whether the request comes from
+outside them (`sign_in.outside`).
+
 ## Runner pools
 
 What a pool (an enrollment token's runners) needs now, for whatever scales

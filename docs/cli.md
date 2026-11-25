@@ -1712,6 +1712,7 @@ fctl admin sign-in unrequire acme.dev      # its people sign in as they like aga
 fctl admin sign-in policies                # how long sign-ins last, and who makes access tokens
 fctl admin sign-in policies --browser-max 12h --browser-idle 1h   # browsers sign in again after 12 hours, and out after an hour unused
 fctl admin sign-in policies --cli-max 30d --token-max 90d --member-tokens off --yes   # says what it ends at once; without asking
+fctl admin sign-in policies --networks 203.0.113.0/24,2001:db8::/32   # sign-ins and requests only from these ranges (`any` for anywhere)
 fctl admin unlink grace@example.com        # her Google account was recreated: signs her out, and her next Google sign-in links the new one
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
@@ -1738,7 +1739,10 @@ before it asks ("Saving signs out 14 browsers and 3 CLIs at once…"), and
 `--json` prints the policy once it's saved
 ([How long people stay signed in](self-hosting.md#how-long-people-stay-signed-in)).
 A CLI signed in longer than the policy lets one says so, and signs in
-again with `fctl login`.
+again with `fctl login`. `--networks` takes CIDR ranges separated by
+commas, or `any`; it says whether your own address is in them before it
+asks ([Signing in only from your
+networks](self-hosting.md#signing-in-only-from-your-networks)).
 
 ### Provisioning people with an admin token
 

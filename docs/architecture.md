@@ -453,6 +453,16 @@ by its id, `google` ([ADR 0099](adr/0099-domains-require-signing-in-with-their-p
   what it ends at once, in one statement (`sign_in::revoke_ended`, whose
   count `POST /admin/sign-in/sessions/preview` shows first). Admin tokens
   and service accounts' secrets aren't held to them.
+- **Networks** (`InstanceSettings::networks`, `fctl_domain::networks`):
+  the CIDR ranges sign-ins and requests come from, by `CF-Connecting-IP`.
+  `auth::authenticate` refuses a CLI's, access token's or admin token's
+  request from elsewhere and treats a browser as signed out without
+  clearing its cookie; `service_accounts::authenticate` refuses theirs;
+  `auth::start_web_session`, the password and reset handlers, the Google
+  sign-in (`?error=network`) and the CLI's device code refuse a sign-in.
+  The primary instance owner's browser and CLI are exempt
+  (`sign_in::outside`); runners, webhooks and published links never reach
+  these checks.
 - **Accounts only from the directory.** With `InstanceSettings::self_sign_up`
   off, a provider's sign-in makes an account only for an address with an
   allowlist entry of its own (an invitation's, or one an admin allowed):

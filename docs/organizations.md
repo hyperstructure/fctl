@@ -129,6 +129,11 @@ after 90, which only admins make
 fctl admin sign-in policies --browser-max 12h --cli-max 30d --token-max 90d --member-tokens off
 ```
 
+And where your people work from known networks, sign-ins and requests can
+come only from those: `fctl admin sign-in policies --networks
+203.0.113.0/24,2001:db8::/32` ([Signing in only from your
+networks](self-hosting.md#signing-in-only-from-your-networks)).
+
 ## People from your directory
 
 On an instance of yours, your identity provider, your HR system or a

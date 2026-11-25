@@ -151,6 +151,14 @@ owner and purpose), so a value copied between rows does not decrypt.
   so many days, and made by admins alone. Every request checks its token
   against them, those made before too, and saving one ends the sign-ins
   it doesn't let last. Letting them last longer is a sensitive action.
+- **Networks.** Instance admins can take sign-ins and requests only from
+  some IP ranges (Admin → Sign-in → Networks): browsers, CLIs, access
+  tokens, admin tokens and service accounts elsewhere are refused, while
+  runners, webhooks and published links aren't held to them. The primary
+  instance owner signs in from anywhere with a browser or the CLI; an admin
+  can't save ranges their own address is outside of; and letting people in
+  from more places is a sensitive action. The address is the one
+  Cloudflare, or a self-hosted server's trusted proxies, saw.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
