@@ -21,7 +21,7 @@ fctl is open source under the MIT license: https://github.com/hyperstructure/fct
 
 ## How it fits together
 
-```
+```text
 web app · fctl CLI · HTTP API · Claude apps · Linear · GitHub webhooks
                          │
               control plane (an instance)      users, workspaces, projects, sessions' event logs,
@@ -78,7 +78,7 @@ web app · fctl CLI · HTTP API · Claude apps · Linear · GitHub webhooks
 
 ## Session lifecycle
 
-```
+```text
 queued → provisioning → preparing → running ⇄ idle → stopping → stopped
                                        │                         failed (any time)
                                        └→ paused (usage limit; resumes on its own)

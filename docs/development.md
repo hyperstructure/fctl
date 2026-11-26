@@ -574,11 +574,15 @@ of another change, run the same session through it yourself
 `docs/llms.txt` leads to a file, a heading or a page fctl.sh serves
 (`xtask/src/docs.rs`); [Runners in your cloud](runners-in-your-cloud.md)
 shows `deploy/cloud`'s scripts as they are; and every `fctl` command in
-the docs' shell code blocks (marked `sh`, or not marked) parses with the
-CLI as it is now, its commands, flags and values
+the shell code blocks of `docs/*.md` and `docs/llms.txt` (marked `sh`, or
+not marked), and in the `run:` steps of their workflows (`yaml`), parses
+with the CLI as it is now, its commands, flags and values
 (`crates/fctl/src/doc_commands.rs`), so that a change that renames one
-changes the docs and guides that show it too. Mark diagrams and what a
-command prints as `text`, which it leaves alone. What CI can't check, the
+changes the docs and guides that show it too. It follows fctl behind
+`sudo`, `runuser`, `env`, `timeout` and a variable the script sets to run
+it (`$fctl`); commands in the text itself, as inline code, it doesn't
+check. Mark diagrams and what a command prints as `text`, which it leaves
+alone. What CI can't check, the
 guides for organizations on real cloud accounts and services, people try
 again by hand each quarter, and before a release that changes what they
 use: enrolling, draining and removing runners, `deploy/cloud`, webhooks'
