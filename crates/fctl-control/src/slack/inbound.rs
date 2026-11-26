@@ -690,6 +690,29 @@ pub(crate) async fn candidate_views(
         .collect())
 }
 
+/// Why fctl starts nothing from a channel shared with another
+/// organization.
+const SHARED: &str =
+    "fctl doesn't work in channels shared with other organizations (Slack Connect) yet.";
+
+/// Why fctl starts nothing from a conversation it can't see.
+const UNSEEN: &str = "fctl can't see this conversation, so it can't tell whether it's shared with another organization: invite fctl to it (/invite @fctl), or ask it in your messages with it.";
+
+/// Why fctl may take nothing from `channel` (a channel, or a conversation
+/// other than someone's direct messages with fctl): it's shared with
+/// another organization, or fctl can't see it, so can't tell. `None`
+/// where it may.
+async fn closed(slack: &Slack, channel: &str) -> Option<&'static str> {
+    match slack.conversation(channel).await {
+        Ok(c) if c.shared => Some(SHARED),
+        Ok(_) => None,
+        Err(e) => {
+            worker::console_error!("Slack's conversations.info: {e:?}");
+            Some(UNSEEN)
+        }
+    }
+}
+
 /// Takes a request to a session: as its person, in the project the
 /// channel maps to, the only one they may use, or the one they chose.
 async fn take_up(
@@ -703,13 +726,19 @@ async fn take_up(
 ) -> AppResult<()> {
     let id = ask.thread_id();
     // Slack keeps its guests from agent apps; so does fctl, before it asks
-    // them to link an account that would change nothing.
-    if let Ok(who) = slack.user(&ask.user).await
-        && (who.guest || who.bot)
-    {
+    // them to link an account that would change nothing. Where Slack doesn't
+    // say who they are, fctl doesn't guess.
+    let why = match slack.user(&ask.user).await {
+        Ok(who) if who.guest || who.bot => Some(
+            "Slack's guests can't use fctl's agents here: ask a member of this Slack workspace.",
+        ),
+        Ok(_) => None,
+        Err(_) => Some(
+            "fctl couldn't check who you are in Slack just now, so it started nothing: ask again in a minute.",
+        ),
+    };
+    if let Some(why) = why {
         set_state(db, &id, "refused", None, now).await?;
-        let why =
-            "Slack's guests can't use fctl's agents here: ask a member of this Slack workspace.";
         tell(slack, ask, why, &blocks::only_you(":no_entry_sign:", why)).await;
         return Ok(());
     }
@@ -742,7 +771,13 @@ async fn take_up(
     if ask.place != SlackPlace::Dm {
         match slack.conversation(&ask.channel).await {
             Ok(c) if c.shared => {
-                return refuse("fctl doesn't work in channels shared with other organizations (Slack Connect) yet.".into()).await;
+                return refuse(SHARED.into()).await;
+            }
+            // A conversation fctl can't see may be shared with another
+            // organization: fctl takes nothing from it.
+            Err(e) => {
+                worker::console_error!("Slack's conversations.info: {e:?}");
+                return refuse(UNSEEN.into()).await;
             }
             Ok(c) => {
                 ask.place = if c.place == SlackPlace::Dm {
@@ -754,7 +789,6 @@ async fn take_up(
                 };
                 ask.channel_name = c.name.or(ask.channel_name.take());
             }
-            Err(e) => worker::console_error!("Slack's conversations.info: {e:?}"),
         }
     }
     let candidates = candidates(db, slack, &user, &ask).await?;
@@ -2077,6 +2111,20 @@ async fn send_form(
         }
         return Ok(());
     };
+    // Nothing goes to an agent from a channel shared with another
+    // organization, or from a conversation fctl can't see: it says so at
+    // once, before the form.
+    if let Some(why) = closed(slack, channel).await {
+        if let Some(r) = response_url {
+            super::respond(
+                r,
+                json!({ "response_type": "ephemeral", "text": why,
+                    "blocks": blocks::only_you(":no_entry_sign:", why) }),
+            )
+            .await;
+        }
+        return Ok(());
+    }
     let place = if channel.starts_with('D') {
         SlackPlace::Dm
     } else {
@@ -2214,6 +2262,24 @@ async fn submitted(
         },
         _ => return Ok(()),
     };
+    // A message from a channel shared with another organization, or from a
+    // conversation fctl can't see (someone else's direct messages among
+    // them), goes to no agent: fctl says so where only they read it, in
+    // their direct messages with fctl.
+    if let Some(qd) = &ask.quoted
+        && let Some(why) = closed(slack, &qd.channel).await
+    {
+        let dm = slack.open_dm(user).await?;
+        let _ = slack
+            .post(
+                &dm,
+                None,
+                why,
+                Some(&blocks::note(":no_entry_sign:", &text::escape(why))),
+            )
+            .await;
+        return Ok(());
+    }
     // The message sent, as Slack has it now: fctl reads it where its app
     // can, and keeps only what the session needs.
     if let Some(qd) = ask.quoted.as_mut()
@@ -2245,7 +2311,10 @@ async fn submitted(
         } else {
             format!("Starting a session: {}", text::clip(&ask.text, 200))
         };
-        let in_channel = if ask.how == AskHow::Command && !ask.channel.is_empty() {
+        let in_channel = if ask.how == AskHow::Command
+            && !ask.channel.is_empty()
+            && closed(slack, &ask.channel).await.is_none()
+        {
             let who = super::who(db, slack, user, now).await?;
             let said = format!(
                 "*{}* asked fctl: {}",
@@ -2355,6 +2424,28 @@ pub async fn command(
             } else {
                 SlackPlace::Channel
             };
+            // Nothing of it goes to a channel shared with another
+            // organization; one fctl can't see gets nothing either, and the
+            // session's thread goes to their direct messages with fctl.
+            let channel_open = if dm {
+                true
+            } else {
+                match closed(&slack, &c.channel).await {
+                    Some(SHARED) => {
+                        if let Some(r) = &c.response_url {
+                            super::respond(
+                                r,
+                                json!({ "response_type": "ephemeral", "text": SHARED,
+                                    "blocks": blocks::only_you(":no_entry_sign:", SHARED) }),
+                            )
+                            .await;
+                        }
+                        return Ok(());
+                    }
+                    Some(_) => false,
+                    None => true,
+                }
+            };
             let choices = choices(db, &slack, &person, place, &c.channel).await?;
             let mapped = mapped_projects(db, &slack.team, &c.channel).await?;
             let project = match choices.as_slice() {
@@ -2383,28 +2474,33 @@ pub async fn command(
             };
             // Its card starts a thread in the channel, where fctl's app is;
             // else in their direct messages with it.
-            let posted = slack
-                .post(
-                    &c.channel,
-                    None,
-                    &format!(
-                        "{} asked fctl: {}",
-                        person.name,
-                        text::clip(&task_text, 200)
-                    ),
-                    Some(&blocks::note(
-                        ":speech_balloon:",
+            let posted = if channel_open {
+                slack
+                    .post(
+                        &c.channel,
+                        None,
                         &format!(
-                            "*{}* asked fctl: {}",
-                            text::escape(&person.name),
-                            text::escape(&text::clip(&task_text, 1500))
+                            "{} asked fctl: {}",
+                            person.name,
+                            text::clip(&task_text, 200)
                         ),
-                    )),
-                )
-                .await;
+                        Some(&blocks::note(
+                            ":speech_balloon:",
+                            &format!(
+                                "*{}* asked fctl: {}",
+                                text::escape(&person.name),
+                                text::escape(&text::clip(&task_text, 1500))
+                            ),
+                        )),
+                    )
+                    .await
+                    .ok()
+            } else {
+                None
+            };
             let (channel, ts, place) = match posted {
-                Ok(ts) => (c.channel.clone(), ts, place),
-                Err(_) => {
+                Some(ts) => (c.channel.clone(), ts, place),
+                None => {
                     let d = slack.open_dm(&c.actor.user).await?;
                     let ts = slack
                         .post(

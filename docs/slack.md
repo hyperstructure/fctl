@@ -117,7 +117,7 @@ it the next time they ask, and asks them to link their account.
 | A channel fctl is in, public or private | Mention fctl with what to do, in a new message or in a thread: `@fctl the checkout page 500s since this morning: find out why` | To that thread |
 | fctl's messages (the app, in Slack's sidebar) | Write to it what to do | To that thread, a session of its own that only you see, with the agent's words as it writes them |
 | A channel | `/fctl <what to do>`; where you could start sessions in several projects, a form asks which | To a new thread there, which fctl starts with what you asked; to your messages with fctl where it isn't in the channel |
-| Any message, in any channel | **Send to fctl…** in the message's menu: a form with the message, a project and what to do | To the message's thread, where fctl is in the channel and **Post its card and replies in this thread** stays ticked; else to your messages with fctl |
+| Any message in a conversation fctl can see | **Send to fctl…** in the message's menu: a form with the message, a project and what to do | To the message's thread, where fctl is in the channel and **Post its card and replies in this thread** stays ticked; else to your messages with fctl |
 | fctl's **Home** tab, or the **Start an fctl session** shortcut | **Start a session**: a project and what to do | To your messages with fctl |
 
 `/fctl status` lists, only for you, what needs you and what runs, and the
@@ -363,6 +363,8 @@ wrote, its replies in Slack included, stays.
 | "The fctl session failed, so your reply didn't reach its agent" | It failed | Resume it in fctl |
 | "Slack's guests can't use fctl's agents here" | You're a guest of the Slack workspace | A member asks instead |
 | "fctl doesn't work in channels shared with other organizations (Slack Connect) yet" | A Slack Connect channel | Ask in one of your own channels, or in your messages with fctl |
+| "fctl can't see this conversation" | A private channel fctl isn't in, or someone else's direct messages: fctl can't tell whether it's shared with another organization, so it takes nothing from it | Invite fctl to the channel (`/invite @fctl`), or write to fctl in your messages with it |
+| "fctl couldn't post the agent's reply in the thread…", in your messages with fctl | fctl was removed from the channel, or the channel was archived, after the session started there | Invite fctl again to carry on in the thread; meanwhile the session's replies and questions come to you |
 | **Integrations → Slack** says its access was revoked | Slack uninstalled fctl's app or revoked its token: someone removed it, or the person who installed it left the Slack workspace or became a guest there | An admin connects it again, which installs the app again |
 | Connecting comes back with "That sign-in took longer than ten minutes", or "fctl doesn't take Enterprise Grid installs for a whole organization yet" | The sign-in waited too long, or Slack installed the app for a whole Enterprise Grid organization | **Add to Slack** again, and choose one Slack workspace |
 | `fctl slack` says Slack limits how often fctl reads | app.fctl.sh's limits, [above](#limits) | The agent tries again a minute later |
