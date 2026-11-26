@@ -4027,7 +4027,8 @@ token (step 9).
     month. Sessions that started in Slack name their thread
     (`Session::slack`), and webhooks say they started there (`started_by`
     `slack`, `WebhookOrigin::Slack`, which receivers from before it read
-    as `other`).
+    as `other`), with the thread (`HookSession::slack`), as identity tokens
+    do (`started_by` `slack`).
 
 ### Commits
 

@@ -101,9 +101,10 @@ workspace's admins turn it on for a Slack workspace (**Know people by
 their verified address**, `fctl workspaces slack set --match-email on`).
 Someone who hasn't linked an account is then the fctl account whose
 verified address is their Slack address, where that account is a member
-of a workspace that turned it on, unless they are a guest there. fctl
-keeps the match, which their **Settings → Slack** shows, until they
-unlink it: turning matching off later keeps the people matched before.
+of a workspace that turned it on, unless they are a guest there. Their
+**Settings → Slack** shows the match. It lasts only while it is allowed:
+once the instance or every such workspace turns matching off, fctl forgets
+it the next time they ask, and asks them to link their account.
 
 ## Start a session
 

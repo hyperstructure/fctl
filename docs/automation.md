@@ -311,8 +311,8 @@ schedule's session finishes, a dashboard follows sessions and reviews.
    for sessions' events whose sessions: those people and tools start,
    schedules', an autopilot's, those a Linear ticket started, service
    accounts', or those people started in Slack
-   ([Start agents from Slack](slack.md)) (`--started-by schedules`; the
-   last in the webhook's form, and as `slack` in the API's `started_by`).
+   ([Start agents from Slack](slack.md)) (`--started-by schedules`,
+   `--started-by slack`).
 3. **Answer within 10 seconds** with a 2xx status, and do slow work after
    answering; check that each request is fctl's before acting on it
    (below).
@@ -404,7 +404,8 @@ a person's review:
 ```
 
 Sessions' events carry the session as `data.session` (its schedule,
-autopilot, ticket or service account where it started from one, and
+autopilot, ticket, Slack thread or service account where it started from
+one, and
 `started_by`, how it started: `person`, `schedule`, `autopilot`,
 `ticket`, `service_account` or `slack`); agents' pull requests'
 `data.session` and `data.pull_request`; reviews' `data.review` (its
