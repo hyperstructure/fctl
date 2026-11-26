@@ -29,12 +29,14 @@ export function SlackNotifications({
   n: G.Notifications;
   onChange: (b: G.UpdateNotificationsRequest) => void;
 }) {
-  const app = useInstance().data?.name ?? "fctl";
+  const instance = useInstance().data;
+  const app = instance?.name ?? "fctl";
   const heading = useId();
-  const places = n.slack;
-  // Absent where the instance has no Slack app.
-  if (!places) return null;
   const on = n.settings.slack;
+  // Where the instance has a Slack app, or where it's on, so that it can be turned off. The list of
+  // places comes absent when empty, as it does where there's no Slack app: the instance says which.
+  if (!instance?.features.slack && !on) return null;
+  const places = n.slack ?? [];
   const reaches = slackReaches(places);
   return (
     // Its own width lays it out: the preview beside the switch where both fit.

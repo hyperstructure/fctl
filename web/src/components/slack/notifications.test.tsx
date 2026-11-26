@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
-import { queryClient } from "@/lib/queries";
+import { keys, queryClient } from "@/lib/queries";
 import { SlackNotifications, slackReaches } from "./notifications";
 
 vi.mock("@/lib/api", async () => {
@@ -28,7 +28,8 @@ const place = (p: Partial<G.SlackNotifyPlace>): G.SlackNotifyPlace => ({
   ...p,
 });
 
-function part(slack: G.SlackNotifyPlace[] | undefined, on = true, onChange = vi.fn()) {
+function part(slack: G.SlackNotifyPlace[] | undefined, on = true, onChange = vi.fn(), app = true) {
+  queryClient.setQueryData(keys.instance, { name: "fctl", features: { slack: app } });
   const n: G.Notifications = {
     settings: { waiting: true, paused: true, failed: true, follow_started: true, slack: on },
     devices: [],
@@ -49,7 +50,22 @@ function part(slack: G.SlackNotifyPlace[] | undefined, on = true, onChange = vi.
 
 describe("Tell me in Slack", () => {
   it("isn't there where the instance has no Slack app", () => {
-    expect(part(undefined).innerHTML).toBe("");
+    expect(part(undefined, false, vi.fn(), false).innerHTML).toBe("");
+  });
+
+  it("stays where it's on, so that it can be turned off, though the instance has no Slack app", () => {
+    const c = part(undefined, true, vi.fn(), false);
+    expect(c.textContent).toContain("Tell me in Slack");
+    expect(c.textContent).toContain("None of your workspaces works in Slack yet");
+  });
+
+  it("says no workspace works in Slack yet where none of yours does", () => {
+    // The list comes absent when it's empty.
+    const c = part(undefined, false);
+    expect(c.textContent).toContain("Tell me in Slack");
+    expect(c.textContent).toContain(
+      "None of your workspaces works in Slack yet: its admins connect one under its Integrations.",
+    );
   });
 
   it("says where they go, as whom, and why not where they can't", () => {
