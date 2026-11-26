@@ -1102,11 +1102,12 @@ async fn context(
 ) -> (Vec<Earlier>, bool, bool) {
     // The thread the request (or the message it sent) is in.
     let (channel, thread_ts, before) = match &ask.quoted {
-        Some(q) => (
-            q.channel.as_str(),
-            q.thread_ts.as_deref().unwrap_or(&q.ts),
-            None,
-        ),
+        // A message in a thread, or one that has replies (Slack names its
+        // own thread then); a message alone has nothing more to read.
+        Some(q) => match q.thread_ts.as_deref() {
+            Some(t) => (q.channel.as_str(), t, None),
+            None => return (Vec::new(), false, true),
+        },
         None if ask.thread_ts != ask.message_ts => (
             ask.channel.as_str(),
             ask.thread_ts.as_str(),
@@ -2008,9 +2009,11 @@ async fn send_form(
     };
     let names: BTreeMap<String, String> = BTreeMap::new();
     let quoted_text = text::plain(&message.text, &|id: &str| names.get(id).cloned());
+    // What the message said, as Slack gave it, so that starting the session
+    // needn't read it again (unlisted apps read threads once a minute).
     let metadata = json!({
         "c": channel, "n": channel_name, "ts": message.ts, "tt": message.thread_ts,
-        "u": message.user, "m": member,
+        "u": message.user, "m": member, "t": text::clip(&message.text, 1800),
     })
     .to_string();
     slack
@@ -2078,7 +2081,7 @@ async fn submitted(
                     ts: ts.clone(),
                     thread_ts: m("tt"),
                     user: m("u"),
-                    text: String::new(),
+                    text: m("t").unwrap_or_default(),
                 }),
                 action_token: None,
                 updates,
@@ -2109,6 +2112,7 @@ async fn submitted(
     // The message sent, as Slack has it now: fctl reads it where its app
     // can, and keeps only what the session needs.
     if let Some(qd) = ask.quoted.as_mut()
+        && (qd.text.is_empty() || qd.text.ends_with('…'))
         && let Ok((msgs, _)) = slack
             .replies(
                 &qd.channel,

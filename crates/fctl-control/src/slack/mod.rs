@@ -413,7 +413,7 @@ impl Slack {
         blocks: Option<&Value>,
     ) -> Result<String, Failure> {
         let mut args = json!({
-            "channel": channel, "text": text,
+            "channel": channel, "text": fallback(text),
             "unfurl_links": false, "unfurl_media": false,
         });
         if let Some(t) = thread_ts {
@@ -439,7 +439,7 @@ impl Slack {
     ) -> Result<(), Failure> {
         self.call(
             "chat.update",
-            json!({ "channel": channel, "ts": ts, "text": text, "blocks": blocks }),
+            json!({ "channel": channel, "ts": ts, "text": fallback(text), "blocks": blocks }),
         )
         .await
         .map(|_| ())
@@ -454,7 +454,8 @@ impl Slack {
         text: &str,
         blocks: &Value,
     ) -> Result<(), Failure> {
-        let mut args = json!({ "channel": channel, "user": user, "text": text, "blocks": blocks });
+        let mut args =
+            json!({ "channel": channel, "user": user, "text": fallback(text), "blocks": blocks });
         if let Some(t) = thread_ts {
             put(&mut args, "thread_ts", json!(t));
         }
@@ -687,6 +688,13 @@ impl Slack {
         }
         self.call("chat.stopStream", args).await.map(|_| ())
     }
+}
+
+/// A message's text, which Slack shows where it can't show its blocks (in
+/// notifications): what anyone wrote in it can't make a link or a mention
+/// there.
+fn fallback(text: &str) -> String {
+    sl::text::defuse(&sl::text::escape(text))
 }
 
 /// Sets `key` of a JSON object.

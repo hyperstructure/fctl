@@ -129,6 +129,21 @@ pub enum AdminCmd {
     /// workspaces that use them. Workspaces' admins connect them.
     #[command(subcommand)]
     Github(GithubCmd),
+    /// The instance's Slack app: how it stands, the Slack workspaces it is
+    /// installed in, and the manifest that creates it with this instance's
+    /// addresses (`--manifest`), for Slack's "Create an app" form.
+    #[command(
+        after_help = "Examples:\n  fctl admin slack\n  fctl admin slack --manifest yaml > slack-manifest.yaml\n  fctl admin slack --match-email off"
+    )]
+    Slack {
+        /// Print the manifest alone, as yaml or json.
+        #[arg(long, value_name = "FORMAT", value_parser = ["yaml", "json"])]
+        manifest: Option<String>,
+        /// Let workspaces know people by their verified address in Slack,
+        /// where they haven't linked their account (on or off).
+        #[arg(long = "match-email", value_name = "ON|OFF", value_parser = clap::builder::BoolishValueParser::new(), hide_possible_values = true)]
+        match_email: Option<bool>,
+    },
     /// The people who asked for early access on the sign-in page and have
     /// no account yet, where the instance takes requests (as app.fctl.sh
     /// does): those waiting first, longest waiting first. Invite one with
@@ -1144,6 +1159,112 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&out);
             }
             println!("{} Deleted {name}", style::accent("✓"));
+        }
+        AdminCmd::Slack {
+            manifest,
+            match_email,
+        } => {
+            if let Some(on) = match_email {
+                api.update_instance_settings(&fctl_proto::api::UpdateInstanceSettingsRequest {
+                    slack_match_email: Some(on),
+                    ..Default::default()
+                })
+                .await?;
+            }
+            let a = api.admin_slack().await?;
+            match manifest.as_deref() {
+                Some("json") => {
+                    println!("{}", serde_json::to_string_pretty(&a.manifest)?);
+                    return Ok(());
+                }
+                Some(_) => {
+                    print!("{}", a.manifest_yaml);
+                    return Ok(());
+                }
+                None => {}
+            }
+            if json {
+                return style::print_json(&a);
+            }
+            let mark = |on: bool| {
+                if on {
+                    style::accent("✓")
+                } else {
+                    style::dim("✗")
+                }
+            };
+            println!(
+                "{} The Slack app (SLACK_CLIENT_ID, SLACK_CLIENT_SECRET)",
+                mark(a.configured)
+            );
+            println!(
+                "{} Events over HTTP (SLACK_SIGNING_SECRET)",
+                mark(a.signing_secret)
+            );
+            println!(
+                "{} Events over Socket Mode (SLACK_APP_TOKEN){}",
+                mark(a.socket_mode),
+                match (a.socket_mode, a.socket_connected) {
+                    (true, Some(true)) => style::dim(" · connected"),
+                    (true, _) => style::amber(&format!(
+                        " · not connected{}",
+                        a.socket_error
+                            .as_deref()
+                            .map(|e| format!(": {e}"))
+                            .unwrap_or_default()
+                    )),
+                    _ => String::new(),
+                }
+            );
+            if !a.reachable {
+                println!(
+                    "{}",
+                    style::dim(
+                        "Slack can't reach this instance's address, so its events come over Socket Mode alone."
+                    )
+                );
+            }
+            println!(
+                "{} Workspaces may know people by their verified address in Slack",
+                mark(a.match_email)
+            );
+            if !a.configured {
+                println!();
+                println!(
+                    "Create the app from its manifest, with this instance's addresses filled in:"
+                );
+                println!("  {}", style::terminal_safe(&a.create_url));
+                println!(
+                    "{}",
+                    style::dim(
+                        "Or `fctl admin slack --manifest yaml` prints it, for Slack's form. Then set the variables above."
+                    )
+                );
+            }
+            for t in &a.teams {
+                println!(
+                    "{:<24} {:<24} {}",
+                    style::bold(&style::terminal_safe(&t.name)),
+                    style::dim(&style::terminal_safe(
+                        &t.domain
+                            .as_deref()
+                            .map(|d| format!("{d}.slack.com"))
+                            .unwrap_or_else(|| t.team.clone())
+                    )),
+                    match t.status {
+                        fctl_proto::slack::SlackStatus::Active => format!(
+                            "{} {}",
+                            t.workspaces,
+                            if t.workspaces == 1 {
+                                "workspace"
+                            } else {
+                                "workspaces"
+                            }
+                        ),
+                        fctl_proto::slack::SlackStatus::Revoked => style::amber("access revoked"),
+                    }
+                );
+            }
         }
         AdminCmd::Github(c) => {
             let list = match c {
