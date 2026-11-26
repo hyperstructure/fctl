@@ -237,6 +237,12 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "An account with this email already exists. Sign in instead.",
         ));
     }
+    // From outside the instance's networks, before the account and the
+    // invitation's use are written: nobody new signs in from there.
+    let networks = crate::instance::settings(&ctx.db).await?.networks;
+    if !fctl_domain::networks::admits(&networks, ctx.ip.as_deref()) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     // Where its domain signs in with a provider, the invitation is taken
     // with that provider's sign-in, which makes the account (`api::sign_in`).
     let settings = crate::instance::settings(&ctx.db).await?;
@@ -952,6 +958,20 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
             &DevicePollResponse::Pending
         });
     }
+    // From outside the instance's networks, the approval waits for a poll
+    // from inside one (a VPN turned back on) rather than being used up.
+    if let Some(user_id) = row.user_id.as_deref()
+        && row.token_id.is_none()
+        && let Some(user) = auth::user_by_id(ctx, user_id).await?
+        && crate::sign_in::outside(
+            &crate::instance::settings(&ctx.db).await?,
+            ctx.ip.as_deref(),
+            &user,
+            true,
+        )
+    {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     // Approved: issue the CLI token exactly once.
     let claimed = q(
         &ctx.db,
@@ -991,9 +1011,6 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
         return http::ok(&DevicePollResponse::Denied);
     }
     let settings = crate::instance::settings(&ctx.db).await?;
-    if crate::sign_in::outside(&settings, ctx.ip.as_deref(), &user, true) {
-        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
-    }
     let (_, token) = auth::issue_token(
         ctx,
         &user.id,

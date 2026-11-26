@@ -54,11 +54,16 @@ function open(policy: G.SessionPolicy) {
   const choose = async (label: string, text: string) => {
     const list = container.querySelector<HTMLElement>(`[aria-label="${label}"]`);
     await act(async () => list?.click());
-    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+    // The list just opened: one opened before may linger as it closes.
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].findLast((o) =>
       o.textContent?.startsWith(text),
     );
     expect(option, text).toBeTruthy();
     await act(async () => option?.click());
+    // The list flashes the pick, then closes, before it opens again.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
     await settle();
   };
   return { container, button, choose };
@@ -94,6 +99,29 @@ describe("Admin → Sign-in: staying signed in", () => {
     );
     await act(async () => page.button("Save")?.click());
     expect(updateInstanceSettings).toHaveBeenCalledWith({ ...DEFAULT_POLICY, browser_max_hours: 12 });
+  });
+
+  it("waits for what the draft as it is ends before it saves", async () => {
+    let answer: (p: G.SessionPolicyPreview) => void = () => {};
+    sessionPolicyPreview.mockResolvedValueOnce({
+      browsers: 1,
+      clis: 0,
+      access_tokens: 0,
+      member_tokens: 0,
+      you: false,
+    } satisfies G.SessionPolicyPreview);
+    const page = open(DEFAULT_POLICY);
+    await page.choose("Browsers sign in again after", "A week");
+    expect(page.button("Save")?.disabled).toBe(false);
+    // Another change: the first draft's counts show, faded, and Save waits.
+    sessionPolicyPreview.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    await page.choose("Browsers sign in again after", "12 hours");
+    expect(page.container.textContent).toContain("Saving signs out 1 browser at once");
+    expect(page.button("Save")?.disabled).toBe(true);
+    await act(async () => answer({ browsers: 9, clis: 0, access_tokens: 0, member_tokens: 0, you: false }));
+    await settle();
+    expect(page.container.textContent).toContain("Saving signs out 9 browsers at once");
+    expect(page.button("Save")?.disabled).toBe(false);
   });
 
   it("puts the saved policy back on cancel", async () => {

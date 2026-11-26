@@ -90,13 +90,20 @@ pub async fn issue_token(
     };
     let secret = new_secret(secret_kind);
     let id = fctl_domain::ids::token_id(ctx.now);
-    // A browser's or a CLI's lasts as the instance's session policy says;
-    // an access token until its maker chose, which the policy checked.
+    // A browser's or a CLI's lasts as the instance's session policy says.
+    // An access token keeps the end its maker chose, which the policy
+    // checked: every request applies the policy's longest from when it was
+    // made, so that relaxing the policy gives the maker's choice back.
     let policy = match settings {
         Some(s) => s.session_policy(),
         None => crate::instance::settings(&ctx.db).await?.session_policy(),
     };
-    let expires_at = session_policy::expires_at(&policy, kind, ctx.now, ctx.now, expires_at);
+    let expires_at = match kind {
+        TokenKind::Pat => expires_at,
+        TokenKind::Web | TokenKind::Cli => {
+            session_policy::expires_at(&policy, kind, ctx.now, ctx.now, expires_at)
+        }
+    };
     let scope = limits
         .filter(|_| kind == TokenKind::Pat)
         .map(Limits::to_json);
@@ -246,18 +253,21 @@ struct TokenLookup {
 impl TokenLookup {
     /// Whether, and why, the token no longer signs its person in at `now`
     /// under `settings`' session policy (`fctl_domain::session_policy`).
+    /// `in_use`: a socket opened with it is open, which counts as use,
+    /// though nothing records it in `last_used_at`.
     fn ended(
         &self,
         kind: TokenKind,
         settings: &InstanceSettings,
         now: i64,
+        in_use: bool,
     ) -> Option<session_policy::Ended> {
         session_policy::ended(
             &settings.session_policy(),
             &session_policy::Token {
                 kind,
                 created_at: self.token_created_at,
-                last_used_at: self.last_used_at,
+                last_used_at: if in_use { Some(now) } else { self.last_used_at },
                 expires_at: self.expires_at,
                 member: self.user.role() == fctl_proto::session::InstanceRole::Member,
             },
@@ -332,7 +342,9 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
     Ok(found.and_then(|f| {
         let settings = crate::instance::parse(f.instance_settings.as_deref());
         let kind = TokenKind::parse(&f.kind).unwrap_or(TokenKind::Pat);
-        if f.ended(kind, &settings, now).is_some() || !f.user.is_active() {
+        // An open socket is in use: only its sign-in's age, its end and
+        // who makes access tokens close it.
+        if f.ended(kind, &settings, now, true).is_some() || !f.user.is_active() {
             return None;
         }
         let how = SignedIn::read(f.auth_method.as_deref(), f.auth_domain.as_deref());
@@ -405,7 +417,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     let settings = crate::instance::parse(found.instance_settings.as_deref());
     // Expired, or past what the instance's session policy lets it last: a
     // browser's is signed out, and signs in again.
-    if let Some(why) = found.ended(kind, &settings, ctx.now) {
+    if let Some(why) = found.ended(kind, &settings, ctx.now, false) {
         if via_cookie {
             clear_session_cookie(ctx);
             return Ok(());
@@ -455,11 +467,13 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     };
     let stale = found.last_used_at.is_none_or(|t| ctx.now - t > touch_after);
     if stale {
-        let chosen = (kind == TokenKind::Pat)
-            .then_some(found.expires_at)
-            .flatten();
-        let new_expiry =
-            session_policy::expires_at(&policy, kind, found.token_created_at, ctx.now, chosen);
+        // An access token's end stays its maker's ([`issue_token`]).
+        let new_expiry = match kind {
+            TokenKind::Pat => found.expires_at,
+            TokenKind::Web | TokenKind::Cli => {
+                session_policy::expires_at(&policy, kind, found.token_created_at, ctx.now, None)
+            }
+        };
         let db = crate::db::handle(&ctx.db);
         let id = found.token_id.clone();
         let now = ctx.now;

@@ -157,7 +157,8 @@ export function SessionPolicies({ policy }: { policy?: G.SessionPolicy }) {
           {changed ? (
             <Change
               preview={preview.data}
-              loading={preview.isFetching}
+              // The counts shown are an earlier draft's until this one's come.
+              loading={preview.isFetching || preview.isPlaceholderData}
               error={preview.error?.message ?? save.error?.message}
               saving={save.isPending}
               onCancel={() => {
@@ -213,7 +214,7 @@ function Change({
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" variant="primary" loading={saving} disabled={!preview}>
+        <Button type="submit" variant="primary" loading={saving} disabled={!preview || loading}>
           Save
         </Button>
       </div>

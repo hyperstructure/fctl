@@ -231,11 +231,11 @@ pub fn check(p: &SessionPolicy) -> Result<(), ApiError> {
 pub fn check_token_days(p: &SessionPolicy, days_asked: Option<u32>) -> Result<(), ApiError> {
     let max = p.access_token_max_days;
     if max > 0 && days_asked.is_none_or(|d| d > max) {
-        let words = days(max);
-        let longest = if words == format!("{max} days") {
-            words
+        // In days, as people choose a token's: "1 day", "90 days".
+        let longest = if max == 1 {
+            "1 day".to_owned()
         } else {
-            format!("{words} ({max} days)")
+            format!("{max} days")
         };
         return Err(ApiError::validation(
             "expires_in_days",
@@ -507,7 +507,16 @@ mod tests {
         assert!(
             check_token_days(&year, None)
                 .err()
-                .is_some_and(|e| e.message.contains("a year (365 days) at most"))
+                .is_some_and(|e| e.message.contains("last 365 days at most"))
+        );
+        let day = SessionPolicy {
+            access_token_max_days: 1,
+            ..policy()
+        };
+        assert!(
+            check_token_days(&day, Some(7))
+                .err()
+                .is_some_and(|e| e.message.contains("last 1 day at most"))
         );
         // For ever is longer than any.
         assert!(check_token_days(&p, None).is_err());
