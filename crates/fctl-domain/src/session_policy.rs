@@ -231,12 +231,15 @@ pub fn check(p: &SessionPolicy) -> Result<(), ApiError> {
 pub fn check_token_days(p: &SessionPolicy, days_asked: Option<u32>) -> Result<(), ApiError> {
     let max = p.access_token_max_days;
     if max > 0 && days_asked.is_none_or(|d| d > max) {
+        let words = days(max);
+        let longest = if words == format!("{max} days") {
+            words
+        } else {
+            format!("{words} ({max} days)")
+        };
         return Err(ApiError::validation(
             "expires_in_days",
-            format!(
-                "This instance's access tokens last {} at most ({max} days): choose that or less",
-                days(max)
-            ),
+            format!("This instance's access tokens last {longest} at most: choose that or less"),
         ));
     }
     Ok(())
@@ -490,7 +493,22 @@ mod tests {
         assert!(check_token_days(&p, Some(90)).is_ok());
         assert!(check_token_days(&p, Some(7)).is_ok());
         let refused = check_token_days(&p, Some(365)).err();
-        assert!(refused.is_some_and(|e| e.message.contains("90 days")));
+        assert_eq!(
+            refused.map(|e| e.message),
+            Some(
+                "This instance's access tokens last 90 days at most: choose that or less"
+                    .to_owned()
+            )
+        );
+        let year = SessionPolicy {
+            access_token_max_days: 365,
+            ..policy()
+        };
+        assert!(
+            check_token_days(&year, None)
+                .err()
+                .is_some_and(|e| e.message.contains("a year (365 days) at most"))
+        );
         // For ever is longer than any.
         assert!(check_token_days(&p, None).is_err());
         assert!(check_token_days(&policy(), None).is_ok());
