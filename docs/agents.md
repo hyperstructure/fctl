@@ -494,6 +494,28 @@ sandbox, the agent reads and writes the teams' issues with `fctl ticket`
 (`fctl ticket create --in DES` files one in another of the project's
 teams).
 
+### Slack
+
+1. A workspace admin connects a Slack workspace: `fctl workspaces slack
+   connect` (opens Slack, where someone who may add apps there installs
+   fctl's app; a self-hosted instance creates its app first, from `fctl
+   admin slack --manifest yaml`).
+2. Optionally, they map channels to projects and make public channels
+   readable for agents: `fctl workspaces slack map web-team web`, `fctl
+   workspaces slack readable incidents deploys`.
+3. Each person links their Slack account once: `fctl account slack link`,
+   or the link fctl sends them the first time they ask.
+
+Then mentioning fctl in a channel, writing to it in its messages, `/fctl
+<task>` or **Send to fctl…** on a message starts a session as that
+person, on their subscription, in the channel's project, their only one,
+or the one they choose. Its card in the thread changes in place as the
+session moves, each turn's last message comes back as a reply, `fctl ask`
+questions come with a button for each answer, and replies there reach the
+agent as their writers' messages where they may message the session. In
+the sandbox, the agent reads its thread and the readable channels with
+`fctl slack` ([Start agents from Slack](slack.md)).
+
 ### Review agents and follow-ups
 
 ```sh
@@ -616,6 +638,8 @@ fctl retro --outcome completed --worked-on "…" --approach "…" --challenges "
 fctl retro update rtr_… --outcome completed --challenges "…"
 fctl ticket list --search login              # where the project's tracker is Linear or one repository's issues
 fctl ticket comment ENG-123 "…"
+fctl slack thread                            # a session from Slack: what's new in its thread
+fctl slack history incidents --since 2d      # a channel the workspace made readable
 fctl publish after.png                       # where the project publishes screenshots
 fctl resolve PRRT_…                          # agents that comment: resolve a review thread
 fctl review threads && fctl review submit review.json   # review agents

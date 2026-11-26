@@ -107,3 +107,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0099](0099-domains-require-signing-in-with-their-provider.md) | Domains require signing in with their provider |
 | [0100](0100-autopilots-keep-trying-after-their-sessions-fail.md) | Autopilots keep trying after their sessions fail (experimental) |
 | [0101](0101-runners-keep-snapshots-in-a-bucket-of-their-own.md) | Runners keep snapshots in a bucket of their own |
+| [0102](0102-workspaces-start-and-steer-agents-from-slack-through-fctls-app.md) | Workspaces start and steer agents from Slack through fctl's app |

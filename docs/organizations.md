@@ -12,7 +12,8 @@ for the details.
 | Run fctl on your own machines, cluster or Cloudflare account, and keep it off the internet | A self-hosted instance | [Your own instance](#your-own-instance), [A private instance](self-hosting.md#a-private-instance) |
 | Have your people sign in with your Google Workspace alone, with no fctl passwords | Domains that require a provider, on an instance of yours | [Signing in with your Google Workspace](#signing-in-with-your-google-workspace) |
 | Create, change and close people's accounts from your identity provider or HR system, and let in no one else | Admin tokens, on an instance of yours | [People from your directory](#people-from-your-directory), [Accounts only from your directory](#accounts-only-from-your-directory) |
-| Let a portal, a chat bot or a form start agents for your people, each on their own Claude subscription | Service accounts | [Agents from your own portal or bot](#agents-from-your-own-portal-or-bot), and a guide for Slack: [A Slack bot of your own](chat-bot.md) |
+| Let your people start and steer agents from Slack, and hear from fctl there | fctl's Slack app | [Start agents from Slack](slack.md) |
+| Let a portal, a chat bot or a form start agents for your people, each on their own Claude subscription | Service accounts | [Agents from your own portal or bot](#agents-from-your-own-portal-or-bot), and a guide to a bot of your own: [A Slack bot of your own](chat-bot.md) |
 | Let CI, a pipeline or another tool start agents as one person | Access tokens and schedules | [Agents from CI and other tools](#agents-from-ci-and-other-tools) |
 | Tell your chat, deploy pipeline or dashboards what agents do | Webhooks | [Your tools hear what agents do](#your-tools-hear-what-agents-do), and a guide for your warehouse: [Agents' work in your data warehouse](data-warehouse.md) |
 | Let agents call your own services, and AWS, Google Cloud or Azure, without keys of yours | Identity tokens (OIDC) | [Agents in your own systems, with OIDC](#agents-in-your-own-systems-with-oidc) |
@@ -379,10 +380,21 @@ the secret as `FCTL_TOKEN` and the person as `--on-behalf-of`: `fctl run
   its page, in `fctl show`, in the workspace's audit log and in what
   webhooks post (`data.session.service_account`).
 
-[A Slack bot of your own](chat-bot.md) puts this together for Slack:
-`@fctl` in a project's channel starts a session for whoever wrote it,
-and the agent's questions, replies and pull requests come back to the
-thread, where people answer with a click.
+For Slack, fctl has an app of its own ([Start agents from Slack](slack.md)):
+a workspace's admins connect their Slack workspace, and a mention of fctl,
+a message to it or `/fctl` starts a session as whoever asked, whose card,
+replies and questions come back to the thread; its agents read the thread
+they were asked from, and only the public channels your admins make
+readable. On an instance of yours, it's an app your organization creates
+from a manifest ([Self-hosting](self-hosting.md#connect-slack-optional)),
+and where your people sign in to Slack and to fctl through the same
+provider, its admins can let workspaces know them by their address there
+rather than have each link their Slack account.
+[A Slack bot of your own](chat-bot.md) puts a service account together
+for a bot of your own instead, for Microsoft Teams or a flow fctl's app
+doesn't have: `@fctl` in a project's channel starts a session for
+whoever wrote it, and the agent's questions, replies and pull requests
+come back to the thread, where people answer with a click.
 
 ## Agents from CI and other tools
 

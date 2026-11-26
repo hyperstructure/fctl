@@ -150,9 +150,10 @@ fctl schedules runs "Triage new issues" -p web    # each run, with the issue tha
 Teams that track their work in Linear hand tickets to fctl there, and
 fctl starts the sessions itself, without a schedule, a token or a relay:
 
-1. **Connect Linear** on the workspace's **Linear** tab, or with `fctl
-   workspaces linear connect`: an admin of the workspace who is an admin
-   in Linear installs fctl's app there and chooses the teams it sees.
+1. **Connect Linear** on the workspace's **Integrations** tab, under
+   **Linear**, or with `fctl workspaces linear connect`: an admin of the
+   workspace who is an admin in Linear installs fctl's app there and
+   chooses the teams it sees.
 2. **Choose the teams** in the project's **Tickets** tab, or with `fctl
    projects set -p web --tickets linear --linear-team ENG` (`ENG,DES`
    for several), and if you like one Linear project of each. Its agents
@@ -308,8 +309,10 @@ schedule's session finishes, a dashboard follows sessions and reviews.
 2. **Choose what it hears of**: every event or some ([Webhook
    events](#webhook-events)), for a workspace's webhook its projects, and
    for sessions' events whose sessions: those people and tools start,
-   schedules', an autopilot's, or those a Linear ticket started
-   (`--started-by schedules`).
+   schedules', an autopilot's, those a Linear ticket started, service
+   accounts', or those people started in Slack
+   ([Start agents from Slack](slack.md)) (`--started-by schedules`; the
+   last in the webhook's form, and as `slack` in the API's `started_by`).
 3. **Answer within 10 seconds** with a 2xx status, and do slow work after
    answering; check that each request is fctl's before acting on it
    (below).
@@ -402,7 +405,8 @@ a person's review:
 
 Sessions' events carry the session as `data.session` (its schedule,
 autopilot, ticket or service account where it started from one, and
-`started_by`, how it started); agents' pull requests'
+`started_by`, how it started: `person`, `schedule`, `autopilot`,
+`ticket`, `service_account` or `slack`); agents' pull requests'
 `data.session` and `data.pull_request`; reviews' `data.review` (its
 pull request, commit, state, and how many new findings it reported,
 earlier ones it found fixed and those still open); schedules'

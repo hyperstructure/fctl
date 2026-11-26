@@ -25,6 +25,8 @@ trusts.
 | GitHub webhook secret | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to check that deliveries come from GitHub |
 | Linear app's client secret and webhook secret | Worker secrets (outside Cloudflare, the server's environment) | the control plane, to install fctl's app in Linear, renew its tokens and check that deliveries come from Linear |
 | Linear tokens (fctl's app in each Linear workspace) | encrypted (AES-256-GCM) in D1 | the control plane, for the projects of the fctl workspaces connected to that Linear workspace; never sandboxes |
+| Slack app's client secret, signing secret and app-level token | Worker secrets (outside Cloudflare, the server's environment) | the control plane, to install fctl's app in Slack, sign people in with Slack, check that requests come from Slack, and open Socket Mode |
+| Slack bot tokens (fctl's app in each Slack workspace) | encrypted (AES-256-GCM) in D1 | the control plane, for the fctl workspaces connected to that Slack workspace and their sessions' agents' `fctl slack` calls; never sandboxes |
 | Web Push (VAPID) key | encrypted in D1 | the control plane, to sign notifications |
 | Identity token signing keys (RSA) | encrypted in D1, a new one every 30 days; their public halves at each workspace's issuer | the control plane, to sign the tokens agents mint for their own sessions |
 | Master key | a Worker secret (outside Cloudflare, the server's environment, or a file it made in its data directory) | the control plane |
@@ -151,11 +153,12 @@ owner and purpose), so a value copied between rows does not decrypt.
   and replacing a runner's token, new access tokens and CLI
   sign-ins, connecting a Claude subscription (whose account a full login's
   sessions show in), linking a Linear account (whose delegations start
-  sessions as you), exporting your data, deleting accounts, projects and
+  sessions as you) or a Slack account (whose requests start them as you),
+  exporting your data, deleting accounts, projects and
   workspaces, and, without email, making someone a password reset link.
   So a stolen browser session, CLI or access token can't do them alone.
-  Connecting a Claude subscription and linking a Linear account also
-  email the person, when email is set up. A passkey (which must verify the
+  Connecting a Claude subscription and linking a Linear or Slack account
+  also email the person, when email is set up. A passkey (which must verify the
   person), a code from the authenticator app or a recovery code confirms
   it, for 15 minutes, for the browser, CLI or token that confirmed; a
   sign-in with a passkey or a second factor counts. People with neither a
@@ -274,6 +277,28 @@ owner and purpose), so a value copied between rows does not decrypt.
   account with a Linear sign-in of their own, whose token the control
   plane uses once to read who they are and then revokes, so an address in
   Linear proves nothing on its own; a sign-in as fctl's app links nothing.
+- What Slack sends fctl's app over HTTP (`POST /api/v1/slack/events`,
+  `/interactivity`, `/commands`) counts only signed with the app's signing
+  secret (`X-Slack-Signature`, HMAC-SHA256, checked in constant time),
+  with an `X-Slack-Request-Timestamp` within five minutes of the control
+  plane's clock, up to 512 KB, and none without the secret; over Socket
+  Mode, it comes on a connection the control plane opened to Slack with
+  the app-level token. A mention, a message to the app, `/fctl` or a form
+  starts a session only as the fctl account that linked the Slack account
+  it came from (or, where the instance and the workspace allow it, whose
+  verified address it is), in a project of an fctl workspace connected to
+  that Slack workspace that lets such requests start sessions, and only
+  while that account may start sessions there, so nobody in Slack puts
+  work on someone else's subscription. A thread reaches one session:
+  before it starts, only the person who asked moves it on, and once it
+  has, replies and answers reach the agent only from people fctl knows
+  who may message the session; anyone else's stay in the thread as
+  information. People link a Slack account with a Sign in with Slack of
+  their own (OpenID Connect, with a nonce), whose token the control plane
+  uses once to read who they are and then revokes. fctl takes no Slack
+  guests, Enterprise Grid org-wide installs or channels shared with other
+  organizations (Slack Connect), whose external people's messages would
+  otherwise reach the app and click its buttons.
 - Screenshots agents publish for pull requests are public to anyone who
   has a link, which is how GitHub's image proxy fetches them. A link holds
   256 random bits, of which D1 keeps only the SHA-256. The control plane
@@ -466,6 +491,27 @@ its VM, and nothing outside it except through these channels:
   their comments say comes from whoever wrote them, inside the teams or
   not: agents are told to take it as what the work is about, not as
   instructions, and do what the person who delegated it asks.
+- **Slack.** `fctl slack` reaches Slack through fctl-agent and the
+  control plane, which holds fctl's bot token: the bot is in every
+  conversation fctl's app was added to, every person's direct messages
+  with it included, so the token never enters a sandbox. Before it reads
+  anything, the control plane asks Slack what the conversation is
+  (`conversations.info`), and lets a session read its own thread, in
+  whatever conversation it started in, and the public channels its
+  workspace's admins made readable, where its project reads them: never
+  more of a private channel or of someone's direct messages than its own
+  thread, never anyone else's direct messages with the app, and never a
+  channel shared with another organization. It posts only in its own
+  thread. What fctl posts there goes with link previews off, so that a
+  link an agent writes (one that carries data in its address, say)
+  doesn't unfurl, and with Slack's special mentions taken apart, so that
+  nothing an agent writes notifies `@channel`, `@here`, `@everyone`, a
+  group or a person. In an hour, a session's agent reads Slack at most
+  120 times, searches it at most 30 times and posts at most 20 times.
+  Review agents reach nothing in Slack. What Slack's messages say comes
+  from whoever wrote them: agents are told to take it as information,
+  not instructions, but for the messages fctl passed on as people's who
+  may message the session, and to post no secrets in a channel's thread.
 
   Which accounts a workspace may use is its own admins' decision, and only
   within what they may touch on GitHub. A workspace's admin connects an
@@ -989,6 +1035,22 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   connects only the fctl workspace it is installed from. A delegation waiting for someone to link their account keeps what
   Linear sent for an hour, and which Linear agent session reached which
   fctl session goes with the session.
+- A Slack account people link, or that a workspace matched by address,
+  stays until they unlink it (Settings, or `fctl account slack unlink`)
+  or delete their fctl account. fctl's bot token in a Slack workspace
+  stays while an fctl workspace is connected to it; once none is, fctl
+  uninstalls its app there and deletes it (the hourly job catches deleted
+  workspaces), and it forgets the token as soon as Slack says the app was
+  uninstalled or its token revoked, or refuses it. A request waiting for
+  someone to link their account or choose a project keeps its text for an
+  hour; which thread reached which session goes with the session, and
+  threads that never started one are forgotten a month on. What agents did
+  in Slack (`slack_calls`, without what) is deleted after an hour. What
+  came from Slack into a session's transcript stays with it, unless its
+  workspace drops what Slack's messages said once the session ends
+  (Integrations → Slack → Transcripts), which leaves who wrote them where;
+  Claude's own conversation in the session's snapshot keeps them until
+  the snapshot goes.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it
   once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
   them), or sooner when their disk has less free than `min_free_disk_gb`

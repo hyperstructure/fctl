@@ -276,6 +276,33 @@ and their CLIs and SDKs sign in on their own. `fctl projects identity`
 prints what each cloud needs to trust the project's agents. How services
 check tokens, and every claim: [Identity tokens](identity-tokens.md).
 
+### Slack
+
+A session that started in Slack, or whose workspace makes channels
+readable, reaches Slack through fctl-agent, as `fctl ticket` reaches a
+tracker: the agent holds no Slack token, and fctl keeps each call to what
+the session may read ([Start agents from Slack](slack.md#what-agents-read-and-never-read)).
+In a session's sandbox:
+
+```sh
+fctl slack                                  # what this session reaches in Slack: its thread, the readable channels
+fctl slack thread                           # what's new in the thread it started from since it last read it
+fctl slack thread --all                     # every message of it
+fctl slack read https://acme.slack.com/archives/C0123ABC/p1700000000000100   # a message and its thread (Copy link in Slack)
+fctl slack history deploys --since 2d       # a readable channel's messages, oldest first (--limit, 50 by default, at most 200)
+fctl slack search checkout 500 --channel incidents   # messages of the readable channels with all these words, newest first (--limit up to 50)
+fctl slack reply "The deploy log is at https://…"    # posts in the session's own thread now, as fctl (or --file, or stdin)
+```
+
+Each message says who wrote it and when, and whether fctl passed it on to
+the agent as its author's message; everything else there is information
+from the people who wrote it. `fctl slack reply` posts in the session's
+own thread alone, at most 3,000 characters, where the workspace lets
+agents post; the turn's last message goes there by itself. In an hour, a
+session's agent reads Slack at most 120 times, searches it at most 30
+times and posts at most 20 times. Name channels without their `#`, or
+quote them: the shell takes `#` at the start of a word for a comment.
+
 ## Workspaces
 
 Projects, the runners that run their sessions and the GitHub accounts they
@@ -331,7 +358,7 @@ fctl workspaces remove-runner studio-mac   # the ones running there stop and res
 
 fctl workspaces github                     # the GitHub accounts it works in
 fctl workspaces review-app                 # which app review agents post as on each, with links that install the review app (admins)
-fctl workspaces connect                    # opens a GitHub sign-in; you choose what it works in on its GitHub tab
+fctl workspaces connect                    # opens a GitHub sign-in; you choose what it works in under its Integrations → GitHub
 fctl workspaces connect acme               # the same, for acme only
 fctl workspaces connect acme --repo web --repo design   # only these repositories of it, without the choice
 fctl workspaces connect --no-browser       # print the link to open where you are signed in (linear connect takes it too)
@@ -341,6 +368,14 @@ fctl workspaces linear                     # the Linear workspaces it works in, 
 fctl workspaces linear connect             # opens Linear, where one of its admins installs fctl's app
 fctl workspaces linear teams               # the teams fctl's app reaches there, for projects to choose (its admins and projects' maintainers)
 fctl workspaces linear disconnect acme     # its projects take no more tickets from it
+
+fctl workspaces slack                      # the Slack workspaces it works in: what agents read there, its choices, its channels
+fctl workspaces slack connect              # opens Slack, where someone who may add apps there installs fctl's app (admins)
+fctl workspaces slack set --direct-messages off --transcripts drop   # what people and agents may do there (admins)
+fctl workspaces slack channels deploy      # its public channels whose names have these letters (admins)
+fctl workspaces slack map web-team web     # mentions in #web-team start sessions in web (none: no project of its own)
+fctl workspaces slack readable incidents deploys   # agents of projects that read Slack read these; fctl's app joins them (--off)
+fctl workspaces slack disconnect acme      # nothing there reaches its sessions any more
 
 fctl workspaces audit                      # what happened in it (admins)
 fctl workspaces delete side-project        # with its projects and sessions; asks you to type its name
@@ -383,6 +418,18 @@ when their token runs out and whether they wait for a usage limit to
 reset; with `off`, nothing. The instance's admins choose the most any
 workspace's admins see (`fctl admin set --claude-oversight`), and members
 read what theirs see in `fctl workspaces show`.
+
+`fctl workspaces slack` shows each Slack workspace the workspace works in:
+whether fctl's app may still act there, what agents read, what it lets
+people and agents do (`set`: `--channels`, `--direct-messages`,
+`--search`, `--agent-replies`, `--notifications`, `--project-events`,
+`--match-email`, each `on` or `off`, and `--transcripts keep` or `drop`),
+its mapped and readable channels, and how many members linked their
+Slack account; `--team` names one where it works in several. Only public
+channels are listed, mapped and made readable from here: a private
+channel's members invite fctl's app, and an admin who mentions it there
+can remember the project they choose for the channel
+([Start agents from Slack](slack.md#settings)).
 
 A runner its admins add runs everyone's sessions there; one a member adds,
 and one an admin adds with `--personal`, runs only its owner's. With
@@ -1046,6 +1093,7 @@ fctl goes on trying every hour.
 fctl notifications status                   # what notifies you, and the browsers that get it
 fctl notifications set --waiting off        # on or off: --waiting, --paused, --failed
 fctl notifications set --follow-started off # follow only the sessions you choose
+fctl notifications set --slack on           # and in your messages with fctl's app in Slack, where you linked your account
 fctl notifications test                     # a test notification to your browsers
 fctl notifications remove psh_01…           # stop notifying a browser
 ```
@@ -1053,6 +1101,14 @@ fctl notifications remove psh_01…           # stop notifying a browser
 Several that arrive close together come as one, and at most one a minute.
 People who are looking at a session (in the web app with its tab visible,
 or with `fctl attach`) aren't notified about it.
+
+With `--slack on` ("Tell me in Slack"), fctl's Slack app sends them too,
+in your messages with it in the Slack workspace each session's workspace
+works in, where you linked your account and its admins let notifications
+go there: a question comes with a button for each answer, and a reply in
+a notification's thread reaches the session as your message. `fctl
+notifications status` lists where they go
+([Notifications in Slack](slack.md#notifications-in-slack)).
 
 ## Claude
 
@@ -1672,6 +1728,9 @@ fctl admin set-primary side-project grace@example.com   # when its primary admin
 fctl admin delete-workspace side-project   # asks you to type its name (--confirm NAME without a terminal)
 fctl admin github                          # the app's installations, and the workspaces that use each
 fctl admin github remove acme side-project               # take acme from the workspace (its admins reconnect it)
+fctl admin slack                           # the instance's Slack app: its variables, Socket Mode, the Slack workspaces it's in
+fctl admin slack --manifest yaml > slack-manifest.yaml   # the manifest that creates it, with this instance's addresses (or json)
+fctl admin slack --match-email on          # workspaces may know people by their verified address in Slack (off by default)
 fctl admin early-access                    # who asked for early access, where the instance takes requests
 fctl admin early-access remove spam@example.com   # asking again adds them back
 fctl admin allowlist
@@ -1811,12 +1870,25 @@ fctl account delete                        # shows what goes, asks for your emai
 fctl account linear                        # who fctl knows you as in Linear workspaces
 fctl account linear connect                # opens Linear's sign-in; what you delegate there runs as you (--no-browser prints the link)
 fctl account linear disconnect acme
+fctl account slack                         # who fctl knows you as in Slack workspaces
+fctl account slack link                    # opens Sign in with Slack; what you ask fctl's app there runs as you (--no-browser prints the link)
+fctl account slack dm-project web          # your messages with fctl start sessions in web (--ask: choose each time)
+fctl account slack unlink acme             # what you ask fctl's app there starts nothing
 ```
 
 Linking a Linear account reads who you are there and revokes the sign-in
 at once: fctl keeps your Linear id, name, address and avatar, not a
 token. Each Linear account links to one fctl account, and an fctl account
 to one Linear account in each Linear workspace.
+
+Linking a Slack account is a Sign in with Slack: fctl reads who you are
+there, keeps your Slack id, name, address and avatar, and revokes the
+sign-in at once. Each Slack account links to one fctl account, and an fctl
+account to one Slack account in each Slack workspace; `fctl account slack
+link acme` signs in to that one. Both linking accounts take confirming
+it's you where the instance asks for that. Where an instance and a
+workspace let fctl know people by their address in Slack, `fctl account
+slack` says which of your accounts it matched that way.
 
 Two-factor sign-in takes a code from an authenticator app after your
 password, and after Google if you choose:
