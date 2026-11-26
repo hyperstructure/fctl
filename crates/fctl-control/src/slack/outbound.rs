@@ -287,31 +287,33 @@ pub async fn turn_ended(
     let streamed = finish_stream(&a, text).await;
     if !streamed && !text.trim().is_empty() {
         let (b, fallback) = blocks::reply(text, &url);
-        let posted = match a
-            .slack
-            .post(&t.channel_id, Some(&t.thread_ts), &fallback, Some(&b))
-            .await
-        {
+        let posted = match post_in_thread(&a, &fallback, &b, "the agent's reply").await {
             Err(super::Failure::Slack(c)) if c.starts_with("invalid_blocks") => {
-                a.slack
-                    .post(
-                        &t.channel_id,
-                        Some(&t.thread_ts),
-                        &fallback,
-                        Some(&blocks::reply_mrkdwn(text, &url)),
-                    )
-                    .await
+                post_in_thread(
+                    &a,
+                    &fallback,
+                    &blocks::reply_mrkdwn(text, &url),
+                    "the agent's reply",
+                )
+                .await
             }
             other => other,
         };
         match posted {
-            Ok(ts) => {
-                let link = a.slack.link(&t.channel_id, &ts, Some(&t.thread_ts)).await;
+            Ok(p) => {
+                let link = a.slack.link(&p.channel, &p.ts, p.thread_ts()).await;
                 notice(
                     env,
                     session_id,
                     "slack_replied",
-                    format!("Replied in {}", where_of(t, &a)),
+                    if p.dm {
+                        format!(
+                            "Replied in the direct messages of the person who asked: {} took nothing",
+                            where_of(t, &a)
+                        )
+                    } else {
+                        format!("Replied in {}", where_of(t, &a))
+                    },
                     SlackNotice {
                         place: t.place(),
                         channel_name: channel_name(&a.db, session_id).await,
@@ -368,16 +370,46 @@ async fn ask(
     let t = &a.thread;
     let block_id = question_block(session_id, question.asked_at);
     let (b, fallback) = blocks::question(&question.text, &question.options, &block_id);
-    let ts = a
+    let posted = match post_in_thread(a, &fallback, &b, "the agent's question").await {
+        Ok(p) => p,
+        Err(e) => {
+            worker::console_error!("asking in Slack for {session_id}: {e:?}");
+            notice(
+                env,
+                session_id,
+                "slack_failed",
+                format!(
+                    "fctl couldn't ask the agent's question in Slack: {}",
+                    crate::error::AppError::from(e).0.message
+                ),
+                SlackNotice {
+                    place: t.place(),
+                    channel_name: channel_name(&a.db, session_id).await,
+                    body: Some(question.text.clone()),
+                    url: None,
+                    messages: None,
+                },
+            )
+            .await;
+            return Ok(());
+        }
+    };
+    let link = a
         .slack
-        .post(&t.channel_id, Some(&t.thread_ts), &fallback, Some(&b))
-        .await?;
-    let link = a.slack.link(&t.channel_id, &ts, Some(&t.thread_ts)).await;
+        .link(&posted.channel, &posted.ts, posted.thread_ts())
+        .await;
     notice(
         env,
         session_id,
         "slack_asked",
-        format!("Asked in {}", where_of(t, a)),
+        if posted.dm {
+            format!(
+                "Asked in the direct messages of the person who asked: {} took nothing",
+                where_of(t, a)
+            )
+        } else {
+            format!("Asked in {}", where_of(t, a))
+        },
         SlackNotice {
             place: t.place(),
             channel_name: channel_name(&a.db, session_id).await,
@@ -387,17 +419,114 @@ async fn ask(
         },
     )
     .await;
-    q(
-        &a.db,
-        "UPDATE slack_threads SET question_ts = ?, updated_at = ? WHERE id = ?",
-        &[s(&ts), n(crate::ctx::now_ms()), s(&t.id)],
-    )?
-    .run()
-    .await?;
+    // The thread's own question, which a later one replaces there.
+    if !posted.dm {
+        q(
+            &a.db,
+            "UPDATE slack_threads SET question_ts = ?, updated_at = ? WHERE id = ?",
+            &[s(&posted.ts), n(crate::ctx::now_ms()), s(&t.id)],
+        )?
+        .run()
+        .await?;
+    }
     a.slack
         .set_status(&t.channel_id, &t.thread_ts, "suspended", None, None)
         .await;
     Ok(())
+}
+
+/// Where something fctl posted for a session went.
+struct Posted {
+    channel: String,
+    ts: String,
+    /// Its thread, where it went to the session's thread.
+    thread_ts: Option<String>,
+    /// It went to the direct messages of the person who asked, as the
+    /// session's thread took nothing.
+    dm: bool,
+}
+
+impl Posted {
+    fn thread_ts(&self) -> Option<&str> {
+        self.thread_ts.as_deref()
+    }
+}
+
+/// How many times fctl posts something before it gives up on the thread.
+const POST_TRIES: u32 = 3;
+
+/// Posts `what` (the agent's reply, its question) in the session's thread,
+/// trying again while Slack asks fctl to wait or doesn't answer, a few
+/// seconds apart. Where the thread takes nothing (fctl left the channel,
+/// it was archived), it goes to the direct messages of the person who
+/// asked, under a line that says why, so that it still reaches someone
+/// who can act on it. Slack's refusal of the blocks themselves comes back
+/// as it is, for the caller to post simpler ones.
+async fn post_in_thread(
+    a: &Answering,
+    fallback: &str,
+    b: &Value,
+    what: &str,
+) -> Result<Posted, super::Failure> {
+    let t = &a.thread;
+    let mut tries = 0;
+    let failed = loop {
+        tries += 1;
+        match a
+            .slack
+            .post(&t.channel_id, Some(&t.thread_ts), fallback, Some(b))
+            .await
+        {
+            Ok(ts) => {
+                return Ok(Posted {
+                    channel: t.channel_id.clone(),
+                    ts,
+                    thread_ts: Some(t.thread_ts.clone()),
+                    dm: false,
+                });
+            }
+            Err(super::Failure::Limited(after)) if tries < POST_TRIES => {
+                worker::Delay::from(std::time::Duration::from_secs(u64::from(
+                    after.clamp(1, 10),
+                )))
+                .await;
+            }
+            Err(super::Failure::Down(_)) if tries < POST_TRIES => {
+                worker::Delay::from(std::time::Duration::from_secs(u64::from(2 * tries))).await;
+            }
+            Err(e) => break e,
+        }
+    };
+    let gone = matches!(&failed, super::Failure::Slack(c) if !c.starts_with("invalid_blocks"));
+    let Some(person) = t
+        .slack_user_id
+        .as_deref()
+        .filter(|_| gone && t.place() != SlackPlace::Dm)
+    else {
+        return Err(failed);
+    };
+    let dm = a.slack.open_dm(person).await?;
+    let mut shown = blocks::note(
+        ":warning:",
+        &format!(
+            "fctl couldn't post {what} in {}, so it's here.",
+            text::escape(&where_of(t, a))
+        ),
+    )
+    .as_array()
+    .cloned()
+    .unwrap_or_default();
+    shown.extend(b.as_array().cloned().unwrap_or_default());
+    let ts = a
+        .slack
+        .post(&dm, None, fallback, Some(&Value::Array(shown)))
+        .await?;
+    Ok(Posted {
+        channel: dm,
+        ts,
+        thread_ts: None,
+        dm: true,
+    })
 }
 
 /// What names a question in the buttons that answer it: a click on an
