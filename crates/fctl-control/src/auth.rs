@@ -135,17 +135,17 @@ pub async fn issue_token(
         ctx.cookies.push(http::set_cookie(
             Cookie::Session,
             &secret,
-            cookie_max_age(expires_at, ctx.now),
+            cookie_max_age(&policy, ctx.now, ctx.now),
             ctx.cfg.secure_cookies(),
         ));
     }
     Ok((id.0, secret))
 }
 
-/// The seconds a browser keeps the session cookie of a sign-in that ends
-/// at `expires_at`.
-fn cookie_max_age(expires_at: Option<i64>, now: i64) -> u64 {
-    let ms = expires_at.map_or(30 * DAY_MS, |e| e - now).max(0);
+/// The seconds a browser keeps the session cookie of a sign-in made at
+/// `created_at`, as it's used at `now` (`session_policy::cookie_until`).
+fn cookie_max_age(policy: &fctl_proto::api::SessionPolicy, created_at: i64, now: i64) -> u64 {
+    let ms = (session_policy::cookie_until(policy, created_at, now) - now).max(0);
     (ms / 1000) as u64
 }
 
@@ -546,7 +546,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
             ctx.cookies.push(http::set_cookie(
                 Cookie::Session,
                 &secret,
-                cookie_max_age(new_expiry, ctx.now),
+                cookie_max_age(&policy, found.token_created_at, ctx.now),
                 ctx.cfg.secure_cookies(),
             ));
         }

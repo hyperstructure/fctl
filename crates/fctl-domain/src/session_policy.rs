@@ -82,6 +82,17 @@ pub fn expires_at(
     [chosen, idle, max].into_iter().flatten().min()
 }
 
+/// Until when a browser keeps the cookie of a sign-in made at
+/// `created_at`, as it's used at `now`: its policy's longest, and 30 days
+/// from now at most, as before policies. Not its time unused: only
+/// requests renew a cookie, and a tab that holds a socket open stays in
+/// use without them ([`Token::in_use`]); the server ends a sign-in unused
+/// too long whatever its cookie says.
+pub fn cookie_until(p: &SessionPolicy, created_at: i64, now: i64) -> i64 {
+    let longest = now.saturating_add(i64::from(DEFAULT_BROWSER_IDLE_MINUTES) * MINUTE_MS);
+    max_age_ms(p, TokenKind::Web).map_or(longest, |m| created_at.saturating_add(m).min(longest))
+}
+
 /// How often a browser's use is recorded: often enough, where browsers
 /// sign out after a short while unused, that one in use isn't taken for
 /// unused between two records.
@@ -444,6 +455,24 @@ mod tests {
             expires_at(&short, TokenKind::Web, 0, 0, None),
             Some(5 * MINUTE_MS)
         );
+    }
+
+    #[test]
+    fn a_cookie_lasts_as_long_as_its_sign_in_may() {
+        // Not just the time a browser may sit unused: a socket keeps it in
+        // use without requests that renew its cookie.
+        let idle = SessionPolicy {
+            browser_idle_minutes: 15,
+            ..policy()
+        };
+        assert_eq!(cookie_until(&idle, 0, HOUR_MS), HOUR_MS + 30 * DAY_MS);
+        // Its longest, from its sign-in.
+        let short = SessionPolicy {
+            browser_max_hours: 12,
+            ..idle
+        };
+        assert_eq!(cookie_until(&short, 0, HOUR_MS), 12 * HOUR_MS);
+        assert_eq!(cookie_until(&policy(), 0, 0), 30 * DAY_MS);
     }
 
     #[test]
