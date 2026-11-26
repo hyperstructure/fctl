@@ -6,7 +6,9 @@
 //! - a host with the process driver whose agents run fake-claude, a scripted
 //!   stand-in for Claude Code (no subscription, no network, deterministic);
 //! - a stand-in for Linear (http://127.0.0.1:8790, xtask/linear), which the
-//!   control plane's Linear app signs in to (`crate::linear`).
+//!   control plane's Linear app signs in to (`crate::linear`);
+//! - a stand-in for Slack (http://127.0.0.1:8791, xtask/slack), which the
+//!   control plane's Slack app signs in to and calls (`crate::slack`).
 //!
 //! It builds the CLI, the host and the agent, the Worker and the web app at
 //! once, bootstraps an owner, a Claude credential, a workspace, a runner and
@@ -21,6 +23,7 @@
 //! and has no Linear.
 
 use crate::linear;
+use crate::slack;
 use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
 use fctl_proto::api::{EventPage, MemoryList, RetrospectiveList};
@@ -118,7 +121,9 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     let mut children = Children(Vec::new());
     if local {
         linear::start(root, &state.join("linear"), &mut children)?;
-        wrangler_dev(root, &mut children, None, &linear::vars())?;
+        slack::start(root, &state.join("slack"), &mut children)?;
+        let vars: Vec<(&str, String)> = linear::vars().into_iter().chain(slack::vars()).collect();
+        wrangler_dev(root, &mut children, None, &vars)?;
     }
     wait_for(
         &format!("{}/api/v1/health", api()),
@@ -129,6 +134,7 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     let token = bootstrap(&state)?;
     if local {
         linear::connect(root, &token)?;
+        slack::connect(&token)?;
     }
     if !no_vite {
         // Vite itself, not `npm run dev`: npm doesn't pass SIGINT on, and
@@ -169,8 +175,9 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     };
     let linear = if local {
         format!(
-            "  linear    {} (Acme): cargo xtask linear delegate ENG-1\n",
-            linear::STANDIN
+            "  linear    {} (Acme): cargo xtask linear delegate ENG-1\n  slack     {} (Acme): cargo xtask slack mention \"write notes.md\"\n",
+            linear::STANDIN,
+            slack::STANDIN
         )
     } else {
         String::new()
@@ -339,6 +346,8 @@ fn smoke(root: &Path, token: &str, local: bool, children: &mut Children) -> Resu
     if local {
         passed.push_str("; ");
         passed.push_str(&linear::smoke(root, token, children)?);
+        passed.push_str("; ");
+        passed.push_str(&slack::smoke(token, children)?);
     }
     eprintln!("\n\x1b[1msmoke test passed\x1b[0m: {passed}\n");
     Ok(())
