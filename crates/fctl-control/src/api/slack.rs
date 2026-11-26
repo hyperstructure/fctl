@@ -462,34 +462,6 @@ async fn install(ctx: &mut Ctx, keys: &Keys, workspace: &str, code: &str) -> App
     )?
     .run()
     .await?;
-    // Whoever installed it is that Slack account, as far as fctl knows:
-    // their first request needn't wait for a link, unless they linked
-    // another account there.
-    if let Some(installer) = installed.installer.as_deref()
-        && slack::person(&ctx.db, &team.id, installer).await?.is_none()
-        && let Ok(who) = bot.user(installer).await
-    {
-        let linked: Option<Count> = q(
-            &ctx.db,
-            "SELECT COUNT(*) AS n FROM slack_accounts WHERE user_id = ? AND team_id = ?",
-            &[s(&user.id), s(&team.id)],
-        )?
-        .first()
-        .await?;
-        if linked.is_none_or(|c| c.n == 0) {
-            slack::keep_account(
-                &ctx.db,
-                &user.id,
-                &team.id,
-                &team.name,
-                team.domain.as_deref(),
-                &who,
-                SlackVia::Linked,
-                ctx.now,
-            )
-            .await?;
-        }
-    }
     ctx.audit_in(
         Some(a.id()),
         "workspace.slack_connected",
