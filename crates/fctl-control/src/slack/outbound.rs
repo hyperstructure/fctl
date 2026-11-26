@@ -89,11 +89,11 @@ pub fn card_of(s: &Session, url: &str, step: Option<String>, plan: Vec<Task>) ->
         title: s.title.clone(),
         url: url.to_owned(),
         reference: format!("{}#{}", s.project_slug, s.number),
-        project: s
+        workspace: s
             .workspace
             .as_ref()
             .map(|w| w.name.clone())
-            .unwrap_or_else(|| s.project_slug.clone()),
+            .unwrap_or_default(),
         by: s.created_by.name.clone(),
         status,
         plan,
@@ -260,8 +260,8 @@ pub async fn card(env: &Env, session_id: &str, card: &Card, status_changed: bool
         let status = match &card.status {
             Status::Queued | Status::Starting | Status::Working { .. } => "processing",
             Status::Asking => "suspended",
-            Status::Stopped | Status::Done => "closed",
-            _ => "active",
+            Status::Stopped | Status::Done | Status::Failed { .. } => "closed",
+            Status::Waiting | Status::Paused { .. } => "active",
         };
         a.slack
             .set_status(&t.channel_id, &t.thread_ts, status, None, None)
@@ -324,11 +324,28 @@ pub async fn turn_ended(
             }
             Err(e) => {
                 worker::console_error!("replying in Slack for {session_id}: {e:?}");
+                notice(
+                    env,
+                    session_id,
+                    "slack_failed",
+                    format!(
+                        "fctl couldn't post the turn's reply in Slack: {}",
+                        crate::error::AppError::from(e).0.message
+                    ),
+                    SlackNotice {
+                        place: t.place(),
+                        channel_name: channel_name(&a.db, session_id).await,
+                        body: None,
+                        url: None,
+                        messages: None,
+                    },
+                )
+                .await;
             }
         }
     }
     if let Some(q) = question {
-        ask(&a, session_id, q).await?;
+        ask(env, &a, session_id, q).await?;
     }
     Ok(())
 }
@@ -339,10 +356,15 @@ pub async fn asked(env: &Env, session_id: &str, question: &SessionQuestion) -> A
     let Some(a) = answering(env, session_id).await? else {
         return Ok(());
     };
-    ask(&a, session_id, question).await
+    ask(env, &a, session_id, question).await
 }
 
-async fn ask(a: &Answering, session_id: &str, question: &SessionQuestion) -> AppResult<()> {
+async fn ask(
+    env: &Env,
+    a: &Answering,
+    session_id: &str,
+    question: &SessionQuestion,
+) -> AppResult<()> {
     let t = &a.thread;
     let block_id = question_block(session_id, question.asked_at);
     let (b, fallback) = blocks::question(&question.text, &question.options, &block_id);
@@ -350,6 +372,21 @@ async fn ask(a: &Answering, session_id: &str, question: &SessionQuestion) -> App
         .slack
         .post(&t.channel_id, Some(&t.thread_ts), &fallback, Some(&b))
         .await?;
+    let link = a.slack.link(&t.channel_id, &ts, Some(&t.thread_ts)).await;
+    notice(
+        env,
+        session_id,
+        "slack_asked",
+        format!("Asked in {}", where_of(t, a)),
+        SlackNotice {
+            place: t.place(),
+            channel_name: channel_name(&a.db, session_id).await,
+            body: Some(question.text.clone()),
+            url: Some(link),
+            messages: None,
+        },
+    )
+    .await;
     q(
         &a.db,
         "UPDATE slack_threads SET question_ts = ?, updated_at = ? WHERE id = ?",

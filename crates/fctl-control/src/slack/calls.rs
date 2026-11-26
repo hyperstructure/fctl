@@ -226,7 +226,7 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
                 readable: &readable,
             };
             access::may_read(&reach, &c, Reading::Thread(l.thread())).map_err(AppError)?;
-            let (messages, more) = slack.replies(&l.channel, l.thread(), None, 100).await?;
+            let (messages, more) = slack.thread(&l.channel, l.thread(), None, 100, 3).await?;
             let names = names(&slack, &messages).await;
             let views = views(
                 &slack,
@@ -430,7 +430,10 @@ async fn read_thread(
     };
     access::may_read(&reach, &c, Reading::Thread(&own.thread_ts)).map_err(AppError)?;
     let since = if all { None } else { t.read_ts.clone() };
-    let found = slack.replies(&own.channel, &own.thread_ts, None, 200).await;
+    // What's new since it last read, first; all of it, page after page.
+    let found = slack
+        .thread(&own.channel, &own.thread_ts, since.as_deref(), 200, 5)
+        .await;
     let (messages, more) = match found {
         Ok(m) => m,
         Err(super::Failure::Limited(after)) => {
@@ -471,7 +474,6 @@ async fn read_thread(
         since.as_deref(),
         &delivered,
     );
-    let total = views.len();
     if !all {
         views.retain(|v| v.new);
     }
@@ -487,9 +489,8 @@ async fn read_thread(
         .await?;
     }
     let note = (!all && views.is_empty()).then(|| {
-        format!(
-            "Nothing new in the thread since you last read it ({total} messages in all: `fctl slack thread --all` shows them)."
-        )
+        "Nothing new in the thread since you last read it: `fctl slack thread --all` shows all of it."
+            .to_owned()
     });
     Ok(SlackAnswer::Messages {
         channel: own.channel_name.clone().map(|name| SlackChannelRef {

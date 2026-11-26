@@ -39,7 +39,7 @@ pub enum SlackCmd {
     },
     /// Read a readable channel's messages, oldest first.
     History {
-        /// The channel: #deploys, deploys, or its id.
+        /// The channel: deploys, or its id (a `#` needs quotes in a shell).
         channel: String,
         /// Since how long ago: 30m, 6h, 2d (the latest otherwise).
         #[arg(long, value_name = "DURATION")]

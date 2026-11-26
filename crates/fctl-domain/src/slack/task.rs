@@ -225,11 +225,12 @@ pub fn instructions(r: &Reach<'_>) -> String {
             s.push_str("- Everyone in the channel reads the thread: never post secrets, tokens or people's details there.\n");
         }
     }
-    if !r.readable.is_empty() {
+    if let Some(first) = r.readable.first() {
         let names: Vec<String> = r.readable.iter().map(|c| format!("#{}", c.name)).collect();
         s.push_str(&format!(
-            "- You may read {} in Slack: `fctl slack history <#channel> --since 2d` for its messages, `fctl slack read <link>` for a message and its thread{}. fctl refuses every other channel, private channels and people's direct messages.\n",
+            "- You may read {} in Slack: `fctl slack history {} --since 2d` for a channel's messages (its name without `#`, which a shell takes for a comment), `fctl slack read <link>` for a message and its thread{}. fctl refuses every other channel, private channels and people's direct messages.\n",
             join(&names),
+            first.name,
             if r.search {
                 ", `fctl slack search \"<words>\"` to find messages"
             } else {
@@ -451,6 +452,7 @@ mod tests {
         assert!(s.contains("in a thread of #web-team"));
         assert!(s.contains("`fctl slack reply"));
         assert!(s.contains("You may read #incidents and #deploys"));
+        assert!(s.contains("`fctl slack history incidents --since 2d`"));
         assert!(s.contains("fctl slack search"));
         let alone = instructions(&Reach {
             thread: Some(&thread),

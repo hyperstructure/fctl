@@ -1472,6 +1472,7 @@ pub fn session(s: &Session, base: &str) -> HookSession {
             key: t.key.clone(),
             url: t.url.clone(),
         }),
+        slack: s.slack.clone(),
         branch: s.branch.clone(),
         base_branch: s.base_branch.clone(),
         pull_requests: s.pull_requests.iter().map(pull_request).collect(),

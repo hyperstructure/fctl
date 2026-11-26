@@ -288,14 +288,17 @@ pub fn command(
     target: Option<String>,
     text: Option<String>,
     who: Option<String>,
+    channel: Option<String>,
 ) -> Result<()> {
+    let channel = channel
+        .map(|c| c.trim_start_matches('#').to_owned())
+        .unwrap_or_else(|| CHANNEL.to_owned());
     let mut body = match action {
-        // `mention "<text>"`, or `mention <#channel> "<text>"`.
+        // `mention "<text>" [--channel <name>]`.
         "mention" => match (target, text) {
-            (Some(c), Some(t)) if c.starts_with('#') => json!({ "channel": c, "text": t }),
-            (Some(t), None) => json!({ "channel": CHANNEL, "text": t }),
-            (Some(a), Some(b)) => json!({ "channel": CHANNEL, "text": format!("{a} {b}") }),
-            (None, _) => json!({ "channel": CHANNEL }),
+            (Some(a), Some(b)) => json!({ "channel": channel, "text": format!("{a} {b}") }),
+            (Some(t), None) => json!({ "channel": channel, "text": t }),
+            (None, _) => json!({ "channel": channel }),
         },
         "dm" => json!({
             "text": target.context("say what you write to fctl: cargo xtask slack dm \"…\"")?,
@@ -331,7 +334,7 @@ pub fn command(
         "show" => {
             let path = match &target {
                 Some(t) => format!("/standin/thread?ts={t}"),
-                None => format!("/standin/channels/{CHANNEL}"),
+                None => format!("/standin/channels/{channel}"),
             };
             show(&standin("GET", &path, None)?);
             return problems_note();

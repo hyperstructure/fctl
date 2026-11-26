@@ -502,6 +502,61 @@ impl Slack {
         Ok(messages(&v))
     }
 
+    /// A thread's messages, oldest first, from `oldest` (exclusive) on: page
+    /// after page, up to `pages` of `limit`, as far as Slack lets fctl read
+    /// at once. Slack gives an unlisted app 15 a page and a page a minute,
+    /// so a short page ends it there, with whether more were left; a page
+    /// Slack holds back ends it too, once one came.
+    pub async fn thread(
+        &self,
+        channel: &str,
+        ts: &str,
+        oldest: Option<&str>,
+        limit: u32,
+        pages: u32,
+    ) -> Result<(Vec<Value>, bool), Failure> {
+        let mut all = Vec::new();
+        let mut cursor = String::new();
+        for page in 0..pages.max(1) {
+            let mut fields = vec![
+                ("channel", channel.to_owned()),
+                ("ts", ts.to_owned()),
+                ("limit", limit.to_string()),
+            ];
+            if let Some(o) = oldest {
+                fields.push(("oldest", o.to_owned()));
+            }
+            if !cursor.is_empty() {
+                fields.push(("cursor", cursor.clone()));
+            }
+            let v = match self.read("conversations.replies", &fields).await {
+                Ok(v) => v,
+                Err(Failure::Limited(_)) if page > 0 => return Ok((all, true)),
+                Err(e) => return Err(e),
+            };
+            let (found, more) = messages(&v);
+            let n = found.len();
+            // Later pages start with the thread's first message again.
+            all.extend(
+                found
+                    .into_iter()
+                    .filter(|m| page == 0 || m.get("ts").and_then(Value::as_str) != Some(ts)),
+            );
+            cursor = v
+                .pointer("/response_metadata/next_cursor")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if !more || cursor.is_empty() {
+                return Ok((all, false));
+            }
+            if (n as u32) < limit {
+                return Ok((all, true));
+            }
+        }
+        Ok((all, !cursor.is_empty()))
+    }
+
     /// A channel's messages since `oldest`, newest first, at most `limit`:
     /// and whether more follow.
     pub async fn history(
@@ -1060,17 +1115,66 @@ pub async fn match_email(
 }
 
 /// Who `slack_user` is in fctl: their linked account, or the one their
-/// verified address matches where that's allowed.
+/// verified address matches where that's allowed. An account matched by
+/// its address counts only while that's allowed still: once nobody allows
+/// it, fctl forgets it.
 pub async fn who(
     db: &D1Database,
     slack: &Slack,
     slack_user: &str,
     now: i64,
 ) -> AppResult<Option<UserRow>> {
-    match person(db, &slack.team, slack_user).await? {
-        Some(u) => Ok(Some(u)),
-        None => match_email(db, slack, slack_user, now).await,
+    #[derive(Deserialize)]
+    struct Via {
+        via: String,
     }
+    let Some(user) = person(db, &slack.team, slack_user).await? else {
+        return match_email(db, slack, slack_user, now).await;
+    };
+    let via: Option<Via> = q(
+        db,
+        "SELECT via FROM slack_accounts WHERE team_id = ? AND slack_user_id = ?",
+        &[s(&slack.team), s(slack_user)],
+    )?
+    .first()
+    .await?;
+    if via.is_none_or(|v| v.via != "email") || email_allowed(db, &slack.team, &user.id).await? {
+        return Ok(Some(user));
+    }
+    q(
+        db,
+        "DELETE FROM slack_accounts WHERE team_id = ? AND slack_user_id = ? AND via = 'email'",
+        &[s(&slack.team), s(slack_user)],
+    )?
+    .run()
+    .await?;
+    Ok(None)
+}
+
+/// Whether fctl may know `user` by their address in Slack workspace
+/// `team`: the instance allows it, and a workspace connected to it that
+/// they are a member of turned it on.
+async fn email_allowed(db: &D1Database, team: &str, user: &str) -> AppResult<bool> {
+    if !crate::instance::settings(db).await?.slack_match_email {
+        return Ok(false);
+    }
+    let workspaces: Vec<String> = connected(db, team)
+        .await?
+        .into_iter()
+        .filter(|c| c.settings().match_email)
+        .map(|c| c.workspace_id)
+        .collect();
+    if workspaces.is_empty() {
+        return Ok(false);
+    }
+    let member: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM workspace_members WHERE user_id = ? AND workspace_id IN (SELECT value FROM json_each(?))",
+        &[s(user), s(&serde_json::to_string(&workspaces)?)],
+    )?
+    .first()
+    .await?;
+    Ok(member.is_some_and(|m| m.n > 0))
 }
 
 /// Gives up fctl's app in the Slack workspaces no fctl workspace works in

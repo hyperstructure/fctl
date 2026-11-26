@@ -430,3 +430,64 @@ async fn fctl_notes_the_newest_messages_it_passed_on() -> AppResult<()> {
     assert_eq!(d.last().map(String::as_str), Some("204.0"));
     Ok(())
 }
+
+#[wasm_bindgen_test]
+async fn an_address_match_counts_while_it_is_allowed() -> AppResult<()> {
+    let db = crate::testing::database();
+    world(&db).await?;
+    let slack = bot();
+    let grace = who("U_GRACE", "Grace");
+    super::keep_account(
+        &db,
+        "usr_grace",
+        "T1",
+        "Acme",
+        None,
+        &grace,
+        SlackVia::Email,
+        NOW,
+    )
+    .await?;
+    // The instance allows it, and Acme turned it on: Grace is known.
+    let mut settings = crate::instance::settings(&db).await?;
+    settings.slack_match_email = true;
+    crate::instance::save(&db, &settings).await?;
+    let on = SlackSettings {
+        match_email: true,
+        ..SlackSettings::default()
+    };
+    q(
+        &db,
+        "UPDATE workspace_slack SET settings = ? WHERE workspace_id = 'wsp_acme'",
+        &[s(&serde_json::to_string(&on)?)],
+    )?
+    .run()
+    .await?;
+    let known = super::who(&db, &slack, "U_GRACE", NOW).await?;
+    assert_eq!(known.map(|u| u.id).as_deref(), Some("usr_grace"));
+    // Acme turns it off: fctl forgets her, and asks her to link instead.
+    q(
+        &db,
+        "UPDATE workspace_slack SET settings = ? WHERE workspace_id = 'wsp_acme'",
+        &[s(&serde_json::to_string(&SlackSettings::default())?)],
+    )?
+    .run()
+    .await?;
+    assert!(super::who(&db, &slack, "U_GRACE", NOW).await?.is_none());
+    assert!(super::person(&db, "T1", "U_GRACE").await?.is_none());
+    // A linked account stays whatever anyone allows.
+    super::keep_account(
+        &db,
+        "usr_grace",
+        "T1",
+        "Acme",
+        None,
+        &grace,
+        SlackVia::Linked,
+        NOW,
+    )
+    .await?;
+    let linked = super::who(&db, &slack, "U_GRACE", NOW).await?;
+    assert_eq!(linked.map(|u| u.id).as_deref(), Some("usr_grace"));
+    Ok(())
+}

@@ -201,7 +201,7 @@ pub enum SlackCmd {
     /// Mentions of fctl in a channel start sessions in a project (admins):
     /// `none` for no project of its own.
     Map {
-        /// The channel: #web-team, web-team, or its id.
+        /// The channel: web-team, or its id (a `#` needs quotes in a shell).
         channel: String,
         /// The project (slug or id), or `none`.
         project: String,
@@ -211,7 +211,7 @@ pub enum SlackCmd {
     /// Agents of projects that read Slack read these public channels
     /// (admins). fctl's app joins them, which shows there.
     Readable {
-        /// Channels: #incidents, deploys…
+        /// Channels: incidents, deploys…
         #[arg(required = true)]
         channels: Vec<String>,
         /// Stop agents reading them instead.
@@ -530,7 +530,7 @@ pub enum WorkspacesCmd {
     /// steer agents: connect one (admins), choose what people and agents
     /// may do there, map channels to projects, and make channels readable.
     #[command(
-        after_help = "Examples:\n  fctl workspaces slack\n  fctl workspaces slack connect\n  fctl workspaces slack map #web-team web\n  fctl workspaces slack readable #incidents #deploys\n  fctl workspaces slack set --agent-replies off"
+        after_help = "Examples:\n  fctl workspaces slack\n  fctl workspaces slack connect\n  fctl workspaces slack map web-team web\n  fctl workspaces slack readable incidents deploys\n  fctl workspaces slack set --agent-replies off"
     )]
     Slack {
         #[command(subcommand)]

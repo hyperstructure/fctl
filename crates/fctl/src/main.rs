@@ -182,7 +182,7 @@ Examples:
   fctl slack                           # what this session reaches in Slack
   fctl slack thread                    # what's new in its thread since you last read it
   fctl slack thread --all
-  fctl slack history #deploys --since 2d
+  fctl slack history deploys --since 2d
   fctl slack read https://acme.slack.com/archives/C0123ABC/p1700000000000100
   fctl slack search \"checkout 500\"
   fctl slack reply \"Looking into it: the deploy log is at https://…\"")]

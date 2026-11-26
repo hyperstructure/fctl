@@ -5,8 +5,8 @@ import type { SlackPlace } from "./SlackPlace";
  * What a `slack_*` notice is about: what fctl posted in the session's
  * Slack thread for it (`slack_replied`: the turn's last message;
  * `slack_asked`: the agent's question, with its answers), what the agent
- * posted there itself (`slack_posted`, `fctl slack reply`), what it read
- * (`slack_read`), or why fctl couldn't (`slack_failed`).
+ * posted there itself (`slack_posted`, `fctl slack reply`), or why fctl
+ * couldn't post (`slack_failed`).
  */
 export type SlackNotice = { place: SlackPlace, channel_name?: string, 
 /**

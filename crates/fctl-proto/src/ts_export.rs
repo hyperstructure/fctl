@@ -382,7 +382,6 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         slack::UpdateMySlackRequest,
         slack::AdminSlack,
         slack::AdminSlackTeam,
-        slack::SlackRun,
         service_accounts::ServiceAccountAnswer,
         service_accounts::ServiceAccountTally,
         service_accounts::ServiceAccount,

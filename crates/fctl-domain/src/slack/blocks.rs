@@ -262,8 +262,8 @@ pub struct Card {
     pub url: String,
     /// `web#12`.
     pub reference: String,
-    /// The project's name.
-    pub project: String,
+    /// The workspace's name, which `reference`'s project is in.
+    pub workspace: String,
     /// Whom it runs for.
     pub by: String,
     pub status: Status,
@@ -284,12 +284,20 @@ pub fn card(c: &Card, plan_block: bool) -> Value {
             text::link(&c.url, &text::clip(&c.title, 150)),
             c.status.line()
         )),
-        context(&format!(
-            "{} · {} · for {}",
-            text::escape(&c.project),
-            text::escape(&c.reference),
-            text::escape(&c.by)
-        )),
+        context(&if c.workspace.is_empty() {
+            format!(
+                "{} · for {}",
+                text::escape(&c.reference),
+                text::escape(&c.by)
+            )
+        } else {
+            format!(
+                "{} · {} · for {}",
+                text::escape(&c.workspace),
+                text::escape(&c.reference),
+                text::escape(&c.by)
+            )
+        }),
     ];
     if !c.plan.is_empty() {
         let done = c.plan.iter().filter(|t| t.status == "complete").count();
@@ -814,7 +822,7 @@ mod tests {
             title: "Fix the flaky login test".into(),
             url: "https://fctl.acme.dev/s/ses_1".into(),
             reference: "web#12".into(),
-            project: "Web".into(),
+            workspace: "Acme".into(),
             by: "Ada Lovelace".into(),
             status: Status::Working {
                 step: Some("Running the tests".into()),

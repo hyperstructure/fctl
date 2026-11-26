@@ -13,7 +13,7 @@
 //! its workspace's and project's choices before it reads anything.
 
 use crate::session::UserRef;
-use crate::{Millis, ProjectId, SessionId, WorkspaceId};
+use crate::{Millis, ProjectId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -164,8 +164,8 @@ pub struct SlackMessage {
 /// What a `slack_*` notice is about: what fctl posted in the session's
 /// Slack thread for it (`slack_replied`: the turn's last message;
 /// `slack_asked`: the agent's question, with its answers), what the agent
-/// posted there itself (`slack_posted`, `fctl slack reply`), what it read
-/// (`slack_read`), or why fctl couldn't (`slack_failed`).
+/// posted there itself (`slack_posted`, `fctl slack reply`), or why fctl
+/// couldn't post (`slack_failed`).
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -817,18 +817,6 @@ pub struct AdminSlackTeam {
     pub status: SlackStatus,
     pub workspaces: u32,
     pub installed_at: Millis,
-}
-
-/// A session's thread in Slack, as lists show where sessions started.
-#[skip_serializing_none]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
-pub struct SlackRun {
-    pub slack: SessionSlack,
-    pub session: crate::session::SessionRef,
-    pub session_id: SessionId,
-    pub by: Option<UserRef>,
-    pub at: Millis,
 }
 
 #[cfg(test)]

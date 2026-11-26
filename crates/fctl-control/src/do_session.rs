@@ -4131,9 +4131,24 @@ impl SessionObject {
         if !crate::slack::outbound::due(shown.as_ref(), at, &card, now) {
             return;
         }
+        // Slack's agent session falls back from working after an hour
+        // without a word: it hears again before then, while it works.
+        let working = matches!(
+            card.status,
+            fctl_domain::slack::blocks::Status::Queued
+                | fctl_domain::slack::blocks::Status::Starting
+                | fctl_domain::slack::blocks::Status::Working { .. }
+        );
+        let told_at = self
+            .meta("slack_status_at")
+            .and_then(|a| a.parse::<i64>().ok())
+            .unwrap_or(0);
         let status_changed = shown.as_ref().is_none_or(|c| {
             std::mem::discriminant(&c.status) != std::mem::discriminant(&card.status)
-        });
+        }) || (working && now - told_at > 50 * 60 * 1000);
+        if status_changed {
+            self.set_meta("slack_status_at", &now.to_string());
+        }
         if let Ok(text) = serde_json::to_string(&card) {
             self.set_meta("slack_card", &text);
         }

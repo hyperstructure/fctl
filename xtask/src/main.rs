@@ -40,7 +40,7 @@ Develop
                                 shows what fctl did there; uninstall removes fctl's app
   linear check                  Check every query and mutation fctl sends Linear against
                                 Linear's schema (xtask/linear/schema.graphql); check web does
-  slack mention [<#channel>] [<text>] [--as <person>]
+  slack mention [<text>] [--channel <name>] [--as <person>]
   slack dm <text> [--as <person>]
   slack reply [<thread>] <text> [--as <person>]
   slack answer <n> | press <label> | project <name> [remember]
@@ -150,10 +150,11 @@ fn main() -> Result<()> {
                 "what to do: mention, dm, reply, answer, press, project, command, home, stop, show or uninstall",
             )?;
             let who = a.value("--as")?;
+            let channel = a.value("--channel")?;
             let target = a.optional();
             let text = a.optional();
             a.done()?;
-            slack::command(&action, target, text, who)
+            slack::command(&action, target, text, who, channel)
         }
         "demo" => {
             // The flags first: --cast's value would pass for a positional.

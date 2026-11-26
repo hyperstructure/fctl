@@ -581,6 +581,10 @@ pub struct HookSession {
     /// (its name absent once it's deleted).
     pub service_account: Option<crate::session::SessionServiceAccount>,
     pub ticket: Option<HookTicket>,
+    /// The Slack thread it started from: its Slack workspace, conversation
+    /// and channel, and its link. Absent for other sessions, and from
+    /// control planes before Slack.
+    pub slack: Option<crate::slack::SessionSlack>,
     pub branch: Option<String>,
     pub base_branch: Option<String>,
     /// Its agent's pull requests, in the order it opened them.

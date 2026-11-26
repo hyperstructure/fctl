@@ -266,6 +266,10 @@ pub async fn notify(env: &Env, user: &str, events: &[NotifyEvent]) -> AppResult<
         let Some(t) = target(&db, user, e.session_id.as_str()).await? else {
             continue;
         };
+        // Whoever asked in a Slack thread hears of it there already.
+        if asked_there(&db, user, e.session_id.as_str(), &t.team_id).await? {
+            continue;
+        }
         match by_team.iter_mut().find(|(x, _)| x.team_id == t.team_id) {
             Some((_, list)) => list.push(e),
             None => by_team.push((t, vec![e])),
@@ -324,6 +328,19 @@ pub async fn notify(env: &Env, user: &str, events: &[NotifyEvent]) -> AppResult<
         }
     }
     Ok(sent)
+}
+
+/// Whether `user` asked for session `session_id` in a thread of Slack
+/// workspace `team`, where it answers: its card and replies tell them.
+async fn asked_there(db: &D1Database, user: &str, session_id: &str, team: &str) -> AppResult<bool> {
+    let c: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM sessions WHERE id = ? AND created_by = ? AND json_extract(slack, '$.team') = ?",
+        &[s(session_id), s(user), s(team)],
+    )?
+    .first()
+    .await?;
+    Ok(c.is_some_and(|c| c.n > 0))
 }
 
 fn words(kind: Kind) -> &'static str {

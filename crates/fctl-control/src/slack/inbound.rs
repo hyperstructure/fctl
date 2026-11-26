@@ -422,13 +422,40 @@ async fn in_thread(
     let Some(author) = m.user.as_deref() else {
         return Ok(());
     };
+    // What they ask in it, as a request of its own.
+    let fresh = || Ask {
+        team: slack.team.clone(),
+        channel: m.channel.clone(),
+        channel_name: None,
+        place: if m.in_dm() {
+            SlackPlace::Dm
+        } else {
+            SlackPlace::Channel
+        },
+        thread_ts: t.thread_ts.clone(),
+        message_ts: m.ts.clone(),
+        user: author.to_owned(),
+        text: m.text.clone(),
+        how: if m.in_dm() {
+            AskHow::Direct
+        } else {
+            AskHow::Mentioned
+        },
+        quoted: None,
+        action_token: None,
+        updates: true,
+        project: None,
+    };
+    // Asking fctl there, as a mention does, or anything in one's own
+    // messages with it.
+    let asks = m.in_dm() || m.mentions(&slack.bot_user);
     match (t.state.as_str(), t.session_id.as_deref()) {
         ("started", Some(session_id)) => reply(env, cfg, db, slack, t, session_id, m, now).await,
         // Before its session starts, only whoever asked moves it on: anyone
         // else's message would start it, or choose its project, on their
         // subscription. Theirs takes it up again, as things may have
         // changed (they linked their account meanwhile, say).
-        _ if t.slack_user_id.as_deref() == Some(author) => {
+        ("waiting", _) if t.slack_user_id.as_deref() == Some(author) => {
             let kept = t
                 .payload
                 .as_deref()
@@ -440,33 +467,11 @@ async fn in_thread(
                     }
                     k
                 }
-                None => Ask {
-                    team: slack.team.clone(),
-                    channel: m.channel.clone(),
-                    channel_name: None,
-                    place: if m.in_dm() {
-                        SlackPlace::Dm
-                    } else {
-                        SlackPlace::Channel
-                    },
-                    thread_ts: t.thread_ts.clone(),
-                    message_ts: m.ts.clone(),
-                    user: author.to_owned(),
-                    text: m.text.clone(),
-                    how: if m.in_dm() {
-                        AskHow::Direct
-                    } else {
-                        AskHow::Mentioned
-                    },
-                    quoted: None,
-                    action_token: None,
-                    updates: true,
-                    project: None,
-                },
+                None => fresh(),
             };
             take(env, cfg, db, slack, &ask, None, now).await
         }
-        _ if m.mentions(&slack.bot_user) => {
+        ("waiting", _) if asks => {
             let _ = slack
                 .ephemeral(
                     &m.channel,
@@ -481,8 +486,31 @@ async fn in_thread(
                 .await;
             Ok(())
         }
+        // A thread whose request was refused, or waited too long: whoever
+        // asks fctl there now starts afresh.
+        ("refused" | "expired", _) if asks => {
+            if restart(db, &t.id, author, now).await? {
+                take(env, cfg, db, slack, &fresh(), None, now).await
+            } else {
+                Ok(())
+            }
+        }
         _ => Ok(()),
     }
+}
+
+/// Takes a refused or expired thread over for a new request by `author`:
+/// whether it did (another message may have first).
+async fn restart(db: &D1Database, id: &str, author: &str, now: i64) -> AppResult<bool> {
+    let changed = q(
+        db,
+        "UPDATE slack_threads SET state = 'new', slack_user_id = ?, waiting_for = NULL, payload = NULL, expires_at = NULL, \
+         updated_at = ? WHERE id = ? AND state IN ('refused', 'expired')",
+        &[s(author), n(now), s(id)],
+    )?
+    .run()
+    .await?;
+    Ok(changed > 0)
 }
 
 /// A new request: its thread, kept as new, and seen at once (a reaction),
@@ -515,7 +543,42 @@ async fn begin(
     .run()
     .await?;
     if inserted == 0 {
-        // Slack sent it again.
+        let Some(t) = thread(db, &id).await? else {
+            return Ok(());
+        };
+        // Slack sent it again: nothing more.
+        if t.slack_user_id.as_deref() == Some(ask.user.as_str())
+            && t.state != "refused"
+            && t.state != "expired"
+        {
+            if t.state == "started" && ask.how == AskHow::Shortcut {
+                tell(
+                    slack,
+                    &ask,
+                    "This thread has a session already.",
+                    &blocks::only_you(
+                        ":speech_balloon:",
+                        "This thread has an fctl session already: reply in it, and its agent reads what you write.",
+                    ),
+                )
+                .await;
+            }
+            return Ok(());
+        }
+        // A thread whose request was refused or expired: theirs now.
+        if restart(db, &id, &ask.user, now).await? {
+            return take(env, cfg, db, slack, &ask, None, now).await;
+        }
+        tell(
+            slack,
+            &ask,
+            "fctl works on this thread already.",
+            &blocks::only_you(
+                ":speech_balloon:",
+                "fctl works on this thread already: reply in it to reach its session, or start a new thread.",
+            ),
+        )
+        .await;
         return Ok(());
     }
     take(env, cfg, db, slack, &ask, None, now).await
@@ -626,6 +689,17 @@ async fn take_up(
     now: i64,
 ) -> AppResult<()> {
     let id = ask.thread_id();
+    // Slack keeps its guests from agent apps; so does fctl, before it asks
+    // them to link an account that would change nothing.
+    if let Ok(who) = slack.user(&ask.user).await
+        && (who.guest || who.bot)
+    {
+        set_state(db, &id, "refused", None, now).await?;
+        let why =
+            "Slack's guests can't use fctl's agents here: ask a member of this Slack workspace.";
+        tell(slack, ask, why, &blocks::only_you(":no_entry_sign:", why)).await;
+        return Ok(());
+    }
     let Some(user) = super::who(db, slack, &ask.user, now).await? else {
         wait(db, &id, "link", ask, now).await?;
         let link = link_url(cfg, &slack.team, &id);
@@ -650,16 +724,6 @@ async fn take_up(
         .await;
         Ok::<(), AppError>(())
     };
-    // Slack keeps its guests from agent apps; so does fctl.
-    if let Ok(who) = slack.user(&ask.user).await
-        && (who.guest || who.bot)
-    {
-        return refuse(
-            "Slack's guests can't use fctl's agents here: ask a member of this Slack workspace."
-                .into(),
-        )
-        .await;
-    }
     // The channel's name and kind, for the session and what fctl says.
     let mut ask = ask.clone();
     if ask.place != SlackPlace::Dm {
@@ -1119,7 +1183,7 @@ async fn context(
         ),
         None => return (Vec::new(), false, true),
     };
-    let found = slack.replies(channel, thread_ts, None, 50).await;
+    let found = slack.thread(channel, thread_ts, None, 50, 4).await;
     let (messages, more) = match found {
         Ok(m) => m,
         // A shortcut's message in a conversation fctl isn't in: nothing to
@@ -1413,16 +1477,19 @@ async fn stopped(
     let Some(session_id) = t.session_id.as_deref().filter(|_| t.state == "started") else {
         return Ok(());
     };
+    // Only someone fctl knows, who may message the session, stops its
+    // agent: as anyone's stop in fctl takes that.
     let by = match user {
         Some(u) => super::who(db, slack, u, now).await?,
         None => None,
     };
-    if let Some(b) = &by
-        && !may_message(db, b, session_id).await?
-    {
+    let Some(by) = by else {
+        return Ok(());
+    };
+    if !may_message(db, &by, session_id).await? {
         return Ok(());
     }
-    interrupt(env, session_id, by.map(|b| b.to_ref())).await?;
+    interrupt(env, session_id, Some(by.to_ref())).await?;
     slack
         .set_status(channel, thread_ts, "active", None, None)
         .await;

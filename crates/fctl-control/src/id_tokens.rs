@@ -215,6 +215,9 @@ struct FactsRow {
     autopilot_id: Option<String>,
     autopilot_role: Option<String>,
     service_account_id: Option<String>,
+    /// It started in Slack.
+    #[serde(deserialize_with = "crate::db::int_bool", default)]
+    from_slack: bool,
     runner_id: Option<String>,
     project_slug: String,
     default_branch: String,
@@ -229,7 +232,7 @@ async fn facts(db: &D1Database, public_url: &str, session: &RunnerSession) -> Ap
     let row: Option<FactsRow> = q(
         db,
         "SELECT s.number, s.status, s.created_by, s.branch, s.base_branch, s.schedule_id, s.ticket, \
-         s.autopilot_id, s.autopilot_role, s.service_account_id, s.runner_id, \
+         s.autopilot_id, s.autopilot_role, s.service_account_id, s.slack IS NOT NULL AS from_slack, s.runner_id, \
          p.slug AS project_slug, p.default_branch, w.slug AS workspace_slug, wm.email AS user_email, \
          r.name AS runner_name, rw.personal AS runner_personal \
          FROM sessions s JOIN projects p ON p.id = s.project_id \
@@ -281,6 +284,7 @@ async fn facts(db: &D1Database, public_url: &str, session: &RunnerSession) -> Ap
             row.autopilot_id.is_some(),
             row.schedule_id.is_some(),
             ticket.is_some(),
+            row.from_slack,
             row.service_account_id.is_some(),
         ),
         schedule_id: row.schedule_id,

@@ -440,7 +440,6 @@ export type { SlackProject } from "./SlackProject";
 export type { SlackProjectRef } from "./SlackProjectRef";
 export type { SlackProjectUse } from "./SlackProjectUse";
 export type { SlackRequest } from "./SlackRequest";
-export type { SlackRun } from "./SlackRun";
 export type { SlackSettings } from "./SlackSettings";
 export type { SlackSpec } from "./SlackSpec";
 export type { SlackStatus } from "./SlackStatus";
