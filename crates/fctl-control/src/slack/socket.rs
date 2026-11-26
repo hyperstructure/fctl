@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::ctx::now_ms;
 use crate::internal;
 use fctl_domain::slack as sl;
-use fctl_proto::{ApiError, ErrorCode};
+use fctl_proto::ApiError;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -298,12 +298,4 @@ pub async fn kick(env: &Env) -> Option<Status> {
             })
         }
     }
-}
-
-/// An `ErrorCode` for what's never there without an app-level token.
-pub fn not_socket() -> ApiError {
-    ApiError::new(
-        ErrorCode::NotConfigured,
-        "This instance takes Slack's events over HTTP",
-    )
 }

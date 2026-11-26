@@ -24,6 +24,8 @@ pub mod home;
 pub mod inbound;
 pub mod outbound;
 pub mod socket;
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests;
 
 use crate::config::{Config, SlackConfig};
 use crate::crypto::Keys;
@@ -415,10 +417,10 @@ impl Slack {
             "unfurl_links": false, "unfurl_media": false,
         });
         if let Some(t) = thread_ts {
-            args["thread_ts"] = json!(t);
+            put(&mut args, "thread_ts", json!(t));
         }
         if let Some(b) = blocks {
-            args["blocks"] = b.clone();
+            put(&mut args, "blocks", b.clone());
         }
         let v = self.call("chat.postMessage", args).await?;
         Ok(v.get("ts")
@@ -454,7 +456,7 @@ impl Slack {
     ) -> Result<(), Failure> {
         let mut args = json!({ "channel": channel, "user": user, "text": text, "blocks": blocks });
         if let Some(t) = thread_ts {
-            args["thread_ts"] = json!(t);
+            put(&mut args, "thread_ts", json!(t));
         }
         self.call("chat.postEphemeral", args).await.map(|_| ())
     }
@@ -608,10 +610,14 @@ impl Slack {
     ) {
         let mut args = json!({ "channel_id": channel, "thread_ts": thread_ts, "status": status });
         if let Some(t) = title {
-            args["title"] = json!(fctl_domain::slack::text::clip(t, 200));
+            put(
+                &mut args,
+                "title",
+                json!(fctl_domain::slack::text::clip(t, 200)),
+            );
         }
         if let Some(u) = initiator {
-            args["initiator_user_id"] = json!(u);
+            put(&mut args, "initiator_user_id", json!(u));
         }
         let _ = self.call("agents.sessions.setStatus", args).await;
     }
@@ -677,9 +683,16 @@ impl Slack {
     ) -> Result<(), Failure> {
         let mut args = json!({ "channel": channel, "ts": ts, "session_status": status });
         if let Some(m) = markdown.filter(|m| !m.is_empty()) {
-            args["markdown_text"] = json!(m);
+            put(&mut args, "markdown_text", json!(m));
         }
         self.call("chat.stopStream", args).await.map(|_| ())
+    }
+}
+
+/// Sets `key` of a JSON object.
+fn put(v: &mut Value, key: &str, value: Value) {
+    if let Some(o) = v.as_object_mut() {
+        o.insert(key.to_owned(), value);
     }
 }
 
@@ -703,7 +716,6 @@ pub struct InstallationRow {
     pub team_id: String,
     pub name: String,
     pub domain: Option<String>,
-    pub icon_url: Option<String>,
     pub bot_user_id: String,
     secret_enc: String,
     pub status: String,
@@ -715,7 +727,8 @@ impl InstallationRow {
     }
 }
 
-const INSTALLATION_SELECT: &str = "SELECT team_id, name, domain, icon_url, bot_user_id, secret_enc, status FROM slack_installations";
+const INSTALLATION_SELECT: &str =
+    "SELECT team_id, name, domain, bot_user_id, secret_enc, status FROM slack_installations";
 
 pub async fn installation(db: &D1Database, team: &str) -> AppResult<Option<InstallationRow>> {
     q(

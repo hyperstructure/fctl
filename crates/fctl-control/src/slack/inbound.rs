@@ -55,11 +55,8 @@ pub(crate) struct ThreadRow {
     pub waiting_for: Option<String>,
     pub payload: Option<String>,
     pub card_ts: Option<String>,
-    pub question_ts: Option<String>,
     pub read_ts: Option<String>,
     pub delivered: Option<String>,
-    #[serde(deserialize_with = "crate::db::int_bool", default)]
-    pub updates: bool,
     pub stream: Option<String>,
 }
 
@@ -268,7 +265,7 @@ pub async fn event(
         }
         Event::TokensRevoked { bots } => {
             if let Some(row) = super::installation(db, &e.team_id).await?
-                && bots.iter().any(|b| *b == row.bot_user_id)
+                && bots.contains(&row.bot_user_id)
             {
                 worker::console_log!("the bot token of {} was revoked", e.team_id);
                 return super::mark_revoked(db, &e.team_id, now).await;
@@ -583,10 +580,34 @@ async fn take(
 /// A project someone may start a request's session in.
 struct Candidate {
     row: ProjectRow,
-    settings: SlackSettings,
     /// The caller administers its workspace: they may remember it for the
     /// channel.
     admin: bool,
+}
+
+/// A candidate, as tests see it.
+#[cfg(all(test, target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub(crate) struct CandidateView {
+    pub id: String,
+    pub admin: bool,
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+pub(crate) async fn candidate_views(
+    db: &D1Database,
+    slack: &Slack,
+    user: &UserRow,
+    ask: &Ask,
+) -> AppResult<Vec<CandidateView>> {
+    Ok(candidates(db, slack, user, ask)
+        .await?
+        .into_iter()
+        .map(|c| CandidateView {
+            id: c.row.id,
+            admin: c.admin,
+        })
+        .collect())
 }
 
 /// Takes a request to a session: as its person, in the project the
@@ -955,15 +976,7 @@ async fn candidates(
             .workspace_role
             .as_deref()
             .is_some_and(|r| r == "owner" || r == "admin");
-        let settings = settings_of
-            .get(row.workspace_id())
-            .cloned()
-            .unwrap_or_default();
-        out.push(Candidate {
-            row,
-            settings,
-            admin,
-        });
+        out.push(Candidate { row, admin });
     }
     Ok(out)
 }
@@ -1776,10 +1789,9 @@ async fn chose(
     if remember
         && ask.place != SlackPlace::Dm
         && let Some(person) = super::who(db, slack, user, now).await?
+        && let Err(e) = remember_channel(db, &person, slack, &ask, project, now).await
     {
-        if let Err(e) = remember_channel(db, &person, slack, &ask, project, now).await {
-            worker::console_error!("remembering a channel's project: {}", e.0.message);
-        }
+        worker::console_error!("remembering a channel's project: {}", e.0.message);
     }
     take(env, cfg, db, slack, &ask, Some(project), now).await
 }
@@ -2075,7 +2087,11 @@ async fn submitted(
         }
         c if c == callback::START => Ask {
             team: slack.team.clone(),
-            channel: String::new(),
+            // `/fctl` in a channel, where its thread goes when fctl's app
+            // is there; the Home tab and the shortcut: none.
+            channel: m("channel")
+                .filter(|c| !c.starts_with('D'))
+                .unwrap_or_default(),
             channel_name: None,
             place: SlackPlace::Dm,
             thread_ts: String::new(),
@@ -2092,8 +2108,8 @@ async fn submitted(
     };
     // The message sent, as Slack has it now: fctl reads it where its app
     // can, and keeps only what the session needs.
-    if let Some(qd) = ask.quoted.as_mut() {
-        if let Ok((msgs, _)) = slack
+    if let Some(qd) = ask.quoted.as_mut()
+        && let Ok((msgs, _)) = slack
             .replies(
                 &qd.channel,
                 qd.thread_ts.as_deref().unwrap_or(&qd.ts),
@@ -2101,41 +2117,69 @@ async fn submitted(
                 50,
             )
             .await
-            && let Some(found) = msgs
-                .iter()
-                .find(|x| x.get("ts").and_then(Value::as_str) == Some(qd.ts.as_str()))
-        {
-            qd.text = found
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-        }
+        && let Some(found) = msgs
+            .iter()
+            .find(|x| x.get("ts").and_then(Value::as_str) == Some(qd.ts.as_str()))
+    {
+        qd.text = found
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
     }
-    // Where its card goes: the message's thread, or a new thread in their
+    // Where its card goes: the message's thread; for `/fctl`, a new thread
+    // in its channel, where fctl's app is; else a new thread in their
     // direct messages with the app.
     if !ask.updates || ask.how == AskHow::Command {
-        let dm = slack.open_dm(user).await?;
         let words = if ask.text.trim().is_empty() {
             "Starting a session…".to_owned()
         } else {
             format!("Starting a session: {}", text::clip(&ask.text, 200))
         };
-        let ts = slack
-            .post(
-                &dm,
-                None,
-                &words,
-                Some(&blocks::note(
-                    ":hourglass_flowing_sand:",
-                    &text::escape(&words),
-                )),
-            )
-            .await?;
-        ask.channel = dm;
-        ask.place = SlackPlace::Dm;
-        ask.thread_ts = ts.clone();
-        ask.message_ts = ts;
+        let in_channel = if ask.how == AskHow::Command && !ask.channel.is_empty() {
+            let who = super::who(db, slack, user, now).await?;
+            let said = format!(
+                "*{}* asked fctl: {}",
+                text::escape(&who.map_or_else(|| "Someone".to_owned(), |u| u.name)),
+                text::escape(&text::clip(&ask.text, 1500))
+            );
+            slack
+                .post(
+                    &ask.channel,
+                    None,
+                    &words,
+                    Some(&blocks::note(":speech_balloon:", &said)),
+                )
+                .await
+                .ok()
+        } else {
+            None
+        };
+        match in_channel {
+            Some(ts) => {
+                ask.place = SlackPlace::Channel;
+                ask.thread_ts = ts.clone();
+                ask.message_ts = ts;
+            }
+            None => {
+                let dm = slack.open_dm(user).await?;
+                let ts = slack
+                    .post(
+                        &dm,
+                        None,
+                        &words,
+                        Some(&blocks::note(
+                            ":hourglass_flowing_sand:",
+                            &text::escape(&words),
+                        )),
+                    )
+                    .await?;
+                ask.channel = dm;
+                ask.place = SlackPlace::Dm;
+                ask.thread_ts = ts.clone();
+                ask.message_ts = ts;
+            }
+        }
         ask.updates = true;
     }
     begin(env, cfg, db, slack, ask, now).await
@@ -2329,47 +2373,46 @@ pub async fn linked(
     let slack = super::client(db, cfg, &keys, team).await?;
     let mut reached = Vec::new();
     for t in waiting {
-        let result =
-            match t.waiting_for.as_deref() {
-                Some("link" | "retry") if t.slack_user_id.as_deref() == Some(slack_user) => match t
+        let result = match t.waiting_for.as_deref() {
+            Some("link" | "retry") if t.slack_user_id.as_deref() == Some(slack_user) => match t
+                .payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str::<Ask>(p).ok())
+            {
+                Some(ask) => take(env, cfg, db, &slack, &ask, None, now).await,
+                None => Ok(()),
+            },
+            Some("reply") => {
+                let kept = t
                     .payload
                     .as_deref()
-                    .and_then(|p| serde_json::from_str::<Ask>(p).ok())
-                {
-                    Some(ask) => take(env, cfg, db, &slack, &ask, None, now).await,
-                    None => Ok(()),
-                },
-                Some("reply") => {
-                    let kept = t
-                        .payload
-                        .as_deref()
-                        .and_then(|p| serde_json::from_str::<Value>(p).ok())
-                        .and_then(|v| v.pointer(&format!("/replies/{slack_user}")).cloned());
-                    match (kept, t.session_id.as_deref()) {
-                        (Some(k), Some(session_id)) => {
-                            let m = MessageEvent {
-                                user: Some(slack_user.to_owned()),
-                                text: k
-                                    .get("text")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned(),
-                                ts: k
-                                    .get("ts")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned(),
-                                thread_ts: Some(t.thread_ts.clone()),
-                                channel: t.channel_id.clone(),
-                                ..MessageEvent::default()
-                            };
-                            reply(env, cfg, db, &slack, &t, session_id, &m, now).await
-                        }
-                        _ => Ok(()),
+                    .and_then(|p| serde_json::from_str::<Value>(p).ok())
+                    .and_then(|v| v.pointer(&format!("/replies/{slack_user}")).cloned());
+                match (kept, t.session_id.as_deref()) {
+                    (Some(k), Some(session_id)) => {
+                        let m = MessageEvent {
+                            user: Some(slack_user.to_owned()),
+                            text: k
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            ts: k
+                                .get("ts")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            thread_ts: Some(t.thread_ts.clone()),
+                            channel: t.channel_id.clone(),
+                            ..MessageEvent::default()
+                        };
+                        reply(env, cfg, db, &slack, &t, session_id, &m, now).await
                     }
+                    _ => Ok(()),
                 }
-                _ => Ok(()),
-            };
+            }
+            _ => Ok(()),
+        };
         if let Err(err) = result {
             worker::console_error!("taking up {} after a link: {}", t.id, err.0.message);
         }
@@ -2508,7 +2551,7 @@ pub async fn expire(db: &D1Database, now: i64) -> AppResult<()> {
     q(
         db,
         "UPDATE slack_threads SET state = CASE WHEN state IN ('waiting', 'new') THEN 'expired' ELSE state END, \
-         waiting_for = NULL, payload = NULL, expires_at = NULL WHERE expires_at IS NOT NULL AND expires_at <= ?",
+         waiting_for = NULL, payload = NULL, expires_at = NULL, updated_at = ?1 WHERE expires_at IS NOT NULL AND expires_at <= ?1",
         &[n(now)],
     )?
     .run()

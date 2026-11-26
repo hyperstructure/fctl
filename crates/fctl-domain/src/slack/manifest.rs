@@ -195,6 +195,29 @@ pub fn reachable(public_url: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// What a test expects to be there: it fails the test where it isn't.
+    trait Must<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> Must<T> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(v) => v,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    }
+
+    impl<T> Must<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(v) => v,
+                None => panic!("nothing there"),
+            }
+        }
+    }
+
     #[test]
     fn the_manifest_names_the_instances_addresses() {
         let m = manifest("Acme fctl", "https://fctl.acme.dev/", false);
@@ -219,7 +242,7 @@ mod tests {
         assert_eq!(m["settings"]["org_deploy_enabled"], false);
         let events = m["settings"]["event_subscriptions"]["bot_events"]
             .as_array()
-            .unwrap();
+            .must();
         assert!(events.contains(&json!("agent_session_stopped")));
         // Over Socket Mode, no addresses for events.
         let s = manifest("fctl", "http://fctl.internal", true);
@@ -234,14 +257,14 @@ mod tests {
         assert!(
             m["features"]["agent_view"]["agent_description"]
                 .as_str()
-                .unwrap()
+                .must()
                 .chars()
                 .count()
                 <= 300
         );
         let long = m["display_information"]["long_description"]
             .as_str()
-            .unwrap()
+            .must()
             .chars()
             .count();
         assert!((175..=4000).contains(&long));

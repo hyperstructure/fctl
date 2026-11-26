@@ -786,6 +786,29 @@ pub fn event(emoji: &str, headline: &str, detail: Option<&str>, url: &str) -> Va
 mod tests {
     use super::*;
 
+    /// What a test expects to be there: it fails the test where it isn't.
+    trait Must<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> Must<T> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(v) => v,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    }
+
+    impl<T> Must<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(v) => v,
+                None => panic!("nothing there"),
+            }
+        }
+    }
+
     fn sample() -> Card {
         Card {
             title: "Fix the flaky login test".into(),
@@ -816,9 +839,9 @@ mod tests {
     fn the_card_says_how_the_session_stands_in_a_few_blocks() {
         let c = sample();
         let b = card(&c, true);
-        let blocks = b.as_array().unwrap();
+        let blocks = b.as_array().must();
         assert_eq!(blocks.len(), 5);
-        let head = blocks[0]["text"]["text"].as_str().unwrap();
+        let head = blocks[0]["text"]["text"].as_str().must();
         assert!(head.starts_with(
             "*<https://fctl.acme.dev/s/ses_1|Fix the flaky login test>*\n:gear: Running the tests"
         ));
@@ -826,7 +849,7 @@ mod tests {
         assert_eq!(blocks[2]["type"], "plan");
         assert_eq!(blocks[2]["title"], "1 of 3 done");
         assert_eq!(blocks[2]["tasks"][1]["status"], "in_progress");
-        let pr = blocks[3]["text"]["text"].as_str().unwrap();
+        let pr = blocks[3]["text"]["text"].as_str().must();
         assert!(pr.contains("<https://github.com/acme/web/pull/42|acme/web#42> Fix the login race · :x: 1 check failed"));
         assert_eq!(
             blocks[4]["elements"][0]["url"],
@@ -837,7 +860,7 @@ mod tests {
         assert!(
             listed[2]["text"]["text"]
                 .as_str()
-                .unwrap()
+                .must()
                 .contains(":arrow_forward: Fix the race")
         );
         assert_eq!(
@@ -869,13 +892,13 @@ mod tests {
     #[test]
     fn replies_are_markdown_without_mentions_and_cut_past_slacks_limits() {
         let (b, text) = reply("Done: see **#42**. <!channel> @here", "https://x/s/1");
-        let md = b[0]["text"].as_str().unwrap();
+        let md = b[0]["text"].as_str().must();
         assert_eq!(b[0]["type"], "markdown");
         assert!(!md.contains("<!channel>") && !md.contains("@here"));
         assert!(text.starts_with("Done: see **#42**."));
         let long = "word ".repeat(2000);
         let (b, _) = reply(&long, "https://x/s/1");
-        let md = b[0]["text"].as_str().unwrap();
+        let md = b[0]["text"].as_str().must();
         assert!(md.chars().count() <= text::MAX_REPLY + 10);
         assert!(md.ends_with("[The rest is in fctl](https://x/s/1)"));
         let m = reply_mrkdwn("**Done**", "https://x/s/1");
@@ -908,7 +931,7 @@ mod tests {
             .collect();
         let b = choose_project(&few, Some("web-team"), "T1:C1:1.1");
         assert_eq!(b[1]["block_id"], act::REMEMBER);
-        let buttons = b[2]["elements"].as_array().unwrap();
+        let buttons = b[2]["elements"].as_array().must();
         assert_eq!(buttons.len(), 4);
         assert_eq!(buttons[0]["value"], "T1:C1:1.1|prj_0");
         assert_eq!(buttons[3]["action_id"], act::CANCEL);
@@ -946,7 +969,7 @@ mod tests {
         assert!(
             s["blocks"][4]["elements"][0]["text"]
                 .as_str()
-                .unwrap()
+                .must()
                 .contains("isn't in this channel")
         );
     }

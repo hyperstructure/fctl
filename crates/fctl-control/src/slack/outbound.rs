@@ -187,14 +187,6 @@ async fn claim_card(db: &D1Database, id: &str, now: i64) -> AppResult<bool> {
     Ok(claimed > 0)
 }
 
-/// The card's place: what fctl last showed on it, so that a change shows
-/// once.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Shown {
-    pub card: Option<Card>,
-    pub at: i64,
-}
-
 /// The least time between two changes of a card that only the agent's
 /// step changes: Slack takes about 50 changes a minute in a Slack
 /// workspace, which every session there shares.
@@ -635,23 +627,5 @@ pub async fn keep_notified(
     )?
     .run()
     .await?;
-    Ok(())
-}
-
-/// Nothing posts for a moment: Slack shows a thread's agent session as
-/// closed once its session stops for good (it was archived or deleted).
-pub async fn closed(env: &Env, session_id: &str) -> AppResult<()> {
-    let Some(a) = answering(env, session_id).await? else {
-        return Ok(());
-    };
-    a.slack
-        .set_status(
-            &a.thread.channel_id,
-            &a.thread.thread_ts,
-            "closed",
-            None,
-            None,
-        )
-        .await;
     Ok(())
 }

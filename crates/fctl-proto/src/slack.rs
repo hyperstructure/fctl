@@ -835,15 +835,38 @@ pub struct SlackRun {
 mod tests {
     use super::*;
 
+    /// What a test expects to be there: it fails the test where it isn't.
+    trait Must<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> Must<T> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(v) => v,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    }
+
+    impl<T> Must<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(v) => v,
+                None => panic!("nothing there"),
+            }
+        }
+    }
+
     #[test]
     fn requests_read_as_agents_send_them() {
-        let r: SlackRequest = serde_json::from_str(r#"{"op":"thread"}"#).unwrap();
+        let r: SlackRequest = serde_json::from_str(r#"{"op":"thread"}"#).must();
         assert_eq!(r, SlackRequest::Thread { all: false });
         assert!(r.reads());
-        let r: SlackRequest = serde_json::from_str(r#"{"op":"reply","text":"On it"}"#).unwrap();
+        let r: SlackRequest = serde_json::from_str(r#"{"op":"reply","text":"On it"}"#).must();
         assert!(!r.reads());
         let r: SlackRequest =
-            serde_json::from_str(r##"{"op":"history","channel":"#deploys","since":1}"##).unwrap();
+            serde_json::from_str(r##"{"op":"history","channel":"#deploys","since":1}"##).must();
         assert_eq!(
             r,
             SlackRequest::History {
@@ -856,20 +879,20 @@ mod tests {
 
     #[test]
     fn settings_keep_their_defaults_for_what_they_leave_out() {
-        let s: SlackSettings = serde_json::from_str(r#"{"channels":false}"#).unwrap();
+        let s: SlackSettings = serde_json::from_str(r#"{"channels":false}"#).must();
         assert!(!s.channels);
         assert!(s.direct_messages && s.agent_replies && s.search && s.notifications);
         assert!(!s.match_email);
         assert_eq!(s.transcripts, SlackTranscripts::Keep);
-        let p: SlackProject = serde_json::from_str("{}").unwrap();
+        let p: SlackProject = serde_json::from_str("{}").must();
         assert!(p.read_channels);
     }
 
     #[test]
     fn unknown_places_read_as_other() {
-        let p: SlackPlace = serde_json::from_str(r#""huddle""#).unwrap();
+        let p: SlackPlace = serde_json::from_str(r#""huddle""#).must();
         assert_eq!(p, SlackPlace::Other);
-        let e: SlackEvent = serde_json::from_str(r#""reacted""#).unwrap();
+        let e: SlackEvent = serde_json::from_str(r#""reacted""#).must();
         assert_eq!(e, SlackEvent::Other);
     }
 }

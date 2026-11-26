@@ -115,7 +115,7 @@ pub async fn reached(
 
 /// Takes the session's place among its calls of `kind` in the last hour,
 /// in one statement: `false` when it made its most.
-async fn take_place(
+pub(crate) async fn take_place(
     db: &D1Database,
     session_id: &str,
     kind: CallKind,
@@ -609,7 +609,7 @@ fn views(
                     .map(|n| n as u32)
                     .filter(|n| *n > 0),
                 new: since.is_none_or(|s| ts.as_str() > s),
-                delivered: delivered.iter().any(|d| *d == ts),
+                delivered: delivered.contains(&ts),
                 files: m
                     .get("files")
                     .and_then(Value::as_array)
@@ -745,7 +745,7 @@ async fn search(
         let names = names(slack, &hits).await;
         out.extend(views(slack, &c.id, Some(&c.name), &hits, &names, None, &[]));
     }
-    out.sort_by(|a, b| b.at.cmp(&a.at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.at));
     let more = out.len() > max as usize;
     out.truncate(max as usize);
     Ok(SlackAnswer::Messages {

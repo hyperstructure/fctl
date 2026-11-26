@@ -931,6 +931,29 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// What a test expects to be there: it fails the test where it isn't.
+    trait Must<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> Must<T> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(v) => v,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    }
+
+    impl<T> Must<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(v) => v,
+                None => panic!("nothing there"),
+            }
+        }
+    }
+
     const SECRET: &str = "8f742231b10e8888abcd99yyyzzz85a5";
 
     #[test]
@@ -965,13 +988,13 @@ mod tests {
 
     #[test]
     fn links_read_their_message_and_thread() {
-        let l = link("https://acme.slack.com/archives/C0123ABC/p1700000000000100").unwrap();
+        let l = link("https://acme.slack.com/archives/C0123ABC/p1700000000000100").must();
         assert_eq!(l.domain.as_deref(), Some("acme"));
         assert_eq!(l.channel, "C0123ABC");
         assert_eq!(l.ts, "1700000000.000100");
         assert_eq!(l.thread_ts, None);
         assert_eq!(l.thread(), "1700000000.000100");
-        let r = link("https://acme.slack.com/archives/C0123ABC/p1700000500000200?thread_ts=1700000000.000100&cid=C0123ABC").unwrap();
+        let r = link("https://acme.slack.com/archives/C0123ABC/p1700000500000200?thread_ts=1700000000.000100&cid=C0123ABC").must();
         assert_eq!(r.thread(), "1700000000.000100");
         assert_eq!(
             permalink(Some("acme"), "C0123ABC", &r.ts, Some(r.thread())),
@@ -1028,7 +1051,7 @@ mod tests {
         let edited = json!({ "type": "message", "subtype": "message_changed", "user": "U1", "ts": "1.2", "channel": "C1" });
         assert!(
             !serde_json::from_value::<MessageEvent>(edited)
-                .unwrap()
+                .must()
                 .by_person()
         );
 
@@ -1153,7 +1176,7 @@ mod tests {
         let ok = json!({ "ok": true, "access_token": "xoxb-1", "token_type": "bot", "scope": "chat:write,commands",
             "bot_user_id": "UBOT", "app_id": "A1", "team": { "id": "T1", "name": "Acme" }, "enterprise": null,
             "is_enterprise_install": false, "authed_user": { "id": "U1" } });
-        let i = installed(&ok).unwrap();
+        let i = installed(&ok).must();
         assert_eq!((i.team.as_str(), i.bot_user.as_str()), ("T1", "UBOT"));
         assert_eq!(i.scopes, vec!["chat:write", "commands"]);
         assert!(!i.enterprise);
@@ -1163,7 +1186,7 @@ mod tests {
         );
         let grid = json!({ "ok": true, "access_token": "xoxb-1", "bot_user_id": "UBOT",
             "enterprise": { "id": "E1" }, "is_enterprise_install": true, "team": null });
-        assert!(installed(&grid).unwrap().enterprise);
+        assert!(installed(&grid).must().enterprise);
 
         use base64::Engine;
         let claims = json!({ "iss": "https://slack.com", "sub": "U1", "https://slack.com/user_id": "U1",
@@ -1174,7 +1197,7 @@ mod tests {
             "e30.{}.sig",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string())
         );
-        let who = signed_in(&token).unwrap();
+        let who = signed_in(&token).must();
         assert_eq!((who.team.as_str(), who.user.as_str()), ("T1", "U1"));
         assert_eq!(who.team_domain.as_deref(), Some("acme"));
         assert!(who.email_verified);
@@ -1187,7 +1210,7 @@ mod tests {
         let u = user(&json!({ "ok": true, "user": { "id": "U1", "name": "ada", "real_name": "Ada Lovelace",
             "tz": "Europe/London", "is_restricted": true,
             "profile": { "display_name": "ada", "real_name": "Ada Lovelace", "email": "ada@acme.dev", "image_72": "https://a/72.png" } } }))
-        .unwrap();
+        .must();
         assert_eq!(u.name, "Ada Lovelace");
         assert_eq!(u.handle.as_deref(), Some("ada"));
         assert!(u.guest && !u.bot);

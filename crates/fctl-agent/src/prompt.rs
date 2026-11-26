@@ -1419,6 +1419,24 @@ mod tests {
     }
 
     #[test]
+    fn sessions_from_slack_hear_how_their_replies_go_back() {
+        let mut s = spec();
+        s.slack = Some(fctl_proto::slack::SlackSpec {
+            thread: None,
+            readable: Vec::new(),
+            search: false,
+            reply: false,
+            instructions: "\n## Slack\n\n- This session started in Slack.\n".into(),
+            without_cli: None,
+        });
+        let text = system_prompt(&s, "/work", &paths(), None, None, false, false, false);
+        assert!(text.contains("## Slack\n\n- This session started in Slack."));
+        // Nothing at all without it.
+        let none = system_prompt(&spec(), "/work", &paths(), None, None, false, false, false);
+        assert!(!none.contains("## Slack"));
+    }
+
+    #[test]
     fn says_how_long_background_work_keeps_the_session_up() {
         let text = system_prompt(
             &spec_with(serde_json::Value::Null),

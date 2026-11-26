@@ -459,6 +459,15 @@ export const api = {
   /** Your Linear accounts. */
   myLinear: () => request<G.MyLinear>("GET", "/me/linear"),
   unlinkLinear: (organization: string) => request<G.MyLinear>("DELETE", `/me/linear/${enc(organization)}`),
+  /** Your Slack accounts, and the Slack workspaces your workspaces work in. */
+  mySlack: () => request<G.MySlack>("GET", "/me/slack"),
+  /** The project your direct messages with fctl's app in a Slack workspace start sessions in ("": ask each time). */
+  updateMySlack: (team: string, b: G.UpdateMySlackRequest) =>
+    request<G.MySlack>("PATCH", `/me/slack/${enc(team)}`, b),
+  /** fctl forgets who you are in a Slack workspace: what you ask there starts nothing until you link it again. */
+  unlinkSlack: (team: string) => request<G.MySlack>("DELETE", `/me/slack/${enc(team)}`),
+  /** The instance's Slack app as it is set up, and the manifest that creates one (instance admins). */
+  adminSlack: () => request<G.AdminSlack>("GET", "/admin/slack"),
   github: () => request<G.GithubInfo>("GET", "/github"),
   /** The repositories a workspace's projects may use. */
   githubRepos: (workspace: string) =>
@@ -711,6 +720,24 @@ export const workspaces = {
     request<G.WorkspaceLinear>("DELETE", `/workspaces/${enc(id)}/linear/${enc(organization)}`),
   linearTeams: (id: string, organization: string) =>
     request<G.LinearTeamList>("GET", `/workspaces/${enc(id)}/linear/${enc(organization)}/teams`),
+  /** The Slack workspaces it works in, and what it lets people and agents do there (members read it). */
+  slack: (id: string) => request<G.WorkspaceSlack>("GET", `/workspaces/${enc(id)}/slack`),
+  // The link to the Slack sign-in that installs fctl's app in a Slack workspace and connects it.
+  connectSlack: (id: string) => request<G.SlackLink>("POST", `/workspaces/${enc(id)}/slack/connect`, {}),
+  /** What it names changes, the rest stays (its admins). */
+  updateSlack: (id: string, team: string, b: G.UpdateSlackRequest) =>
+    request<G.WorkspaceSlack>("PATCH", `/workspaces/${enc(id)}/slack/${enc(team)}`, b),
+  disconnectSlack: (id: string, team: string) =>
+    request<G.WorkspaceSlack>("DELETE", `/workspaces/${enc(id)}/slack/${enc(team)}`),
+  /** Public channels of a Slack workspace it works in, those whose names have `query` (its admins). */
+  slackChannels: (id: string, team: string, query?: string) =>
+    request<G.SlackChannelList>(
+      "GET",
+      `/workspaces/${enc(id)}/slack/${enc(team)}/channels${query ? `?query=${enc(query)}` : ""}`,
+    ),
+  /** The project a channel's mentions start sessions in, and whether agents read it; fctl's app joins it. */
+  setSlackChannel: (id: string, team: string, channel: string, b: G.SetSlackChannelRequest) =>
+    request<G.WorkspaceSlack>("PUT", `/workspaces/${enc(id)}/slack/${enc(team)}/channels/${enc(channel)}`, b),
   accept: (invitation: string) => request<G.Workspace>("POST", `/invitations/${enc(invitation)}/accept`, {}),
   decline: (invitation: string) => request<G.Ok>("POST", `/invitations/${enc(invitation)}/decline`, {}),
 };
@@ -729,6 +756,19 @@ export const emails = {
  */
 export function linearLinkUrl(project?: string): string {
   return `/api/v1/linear/link${project ? `?project=${enc(project)}` : ""}`;
+}
+
+/**
+ * Where the browser links your Slack account, by signing in with Slack: for the Slack workspace
+ * `team`, and the thread that asked you to (whose request then starts). Back at Settings → Slack,
+ * or at the session the thread's request started.
+ */
+export function slackLinkUrl(at: { team?: string; thread?: string } = {}): string {
+  const q = new URLSearchParams();
+  if (at.team) q.set("team", at.team);
+  if (at.thread) q.set("thread", at.thread);
+  const query = q.toString();
+  return `/api/v1/slack/link${query ? `?${query}` : ""}`;
 }
 
 export function wsUrl(path: string): string {

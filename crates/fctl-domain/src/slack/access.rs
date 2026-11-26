@@ -104,14 +104,14 @@ pub fn may_read(reach: &Reach<'_>, c: &Conversation, what: Reading<'_>) -> Resul
         return Ok(());
     }
     match c.place {
-        SlackPlace::Channel if reach.readable.iter().any(|r| *r == c.id) => {
+        SlackPlace::Channel if reach.readable.contains(&c.id) => {
             if c.archived {
                 Err(ApiError::forbidden("That channel is archived."))
             } else {
                 Ok(())
             }
         }
-        SlackPlace::Channel => Err(ApiError::forbidden(&format!(
+        SlackPlace::Channel => Err(ApiError::forbidden(format!(
             "{} isn't readable for this session's agents: a workspace's admins choose the channels agents read, and a project whether its agents read them.",
             c.name
                 .as_deref()
@@ -194,8 +194,31 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// What a test expects to be there: it fails the test where it isn't.
+    trait Must<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> Must<T> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(v) => v,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    }
+
+    impl<T> Must<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(v) => v,
+                None => panic!("nothing there"),
+            }
+        }
+    }
+
     fn info(v: Value) -> Conversation {
-        conversation(&json!({ "ok": true, "channel": v })).unwrap()
+        conversation(&json!({ "ok": true, "channel": v })).must()
     }
 
     #[test]
@@ -231,8 +254,8 @@ mod tests {
         let dm = info(json!({ "id": "D1", "is_im": true, "user": "U9" }));
         assert!(may_read(&reach, &public, Reading::Channel).is_ok());
         assert!(may_read(&reach, &public, Reading::Thread("5.5")).is_ok());
-        let no = may_read(&reach, &other, Reading::Channel).unwrap_err();
-        assert!(no.message.contains("#random isn't readable"));
+        let no = may_read(&reach, &other, Reading::Channel);
+        assert!(no.is_err_and(|e| e.message.contains("#random isn't readable")));
         // In a private channel: its own thread, nothing else.
         assert!(may_read(&reach, &private, Reading::Thread("1.1")).is_ok());
         assert!(may_read(&reach, &private, Reading::Thread("2.2")).is_err());
