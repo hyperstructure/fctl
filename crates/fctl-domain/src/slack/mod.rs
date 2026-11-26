@@ -152,6 +152,18 @@ pub fn is_id(s: &str) -> bool {
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
+/// Whether Slack's error `code` for a post in a thread says the thread
+/// takes no posts from fctl any more: the channel is gone or archived, fctl
+/// isn't in it, the thread is gone, or an admin keeps fctl from posting
+/// there (a read-only channel, a locked thread). What fctl meant to post
+/// there then goes to the person who asked; other errors don't say that.
+pub fn thread_refuses(code: &str) -> bool {
+    matches!(
+        code,
+        "channel_not_found" | "not_in_channel" | "is_archived" | "thread_not_found"
+    ) || code.starts_with("restricted_action")
+}
+
 /// Whether `s` looks like a Slack `ts`.
 pub fn is_ts(s: &str) -> bool {
     let Some((a, b)) = s.split_once('.') else {
@@ -955,6 +967,30 @@ mod tests {
     }
 
     const SECRET: &str = "8f742231b10e8888abcd99yyyzzz85a5";
+
+    #[test]
+    fn a_thread_refuses_posts_only_where_slack_says_so() {
+        for code in [
+            "channel_not_found",
+            "not_in_channel",
+            "is_archived",
+            "thread_not_found",
+            "restricted_action",
+            "restricted_action_read_only_channel",
+            "restricted_action_thread_locked",
+        ] {
+            assert!(thread_refuses(code), "{code}");
+        }
+        for code in [
+            "msg_too_long",
+            "no_text",
+            "token_revoked",
+            "missing_scope",
+            "invalid_blocks",
+        ] {
+            assert!(!thread_refuses(code), "{code}");
+        }
+    }
 
     #[test]
     fn slacks_signature_counts_within_five_minutes() {

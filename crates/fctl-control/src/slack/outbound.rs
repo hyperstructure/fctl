@@ -459,7 +459,9 @@ const POST_TRIES: u32 = 3;
 /// trying again while Slack asks fctl to wait, which means it posted
 /// nothing; never after Slack didn't answer, which may mean it posted it.
 /// Where the thread takes nothing any more (fctl left the channel, it was
-/// archived), it goes to the direct messages of the person who asked,
+/// archived, an admin made it read-only or locked it:
+/// `fctl_domain::slack::thread_refuses`), it goes to the direct messages
+/// of the person who asked,
 /// under a line that says why, so that it still reaches someone who can
 /// act on it. Other refusals come back as they are: of the blocks, for the
 /// caller to post simpler ones.
@@ -495,10 +497,9 @@ async fn post_in_thread(
             Err(e) => break e,
         }
     };
-    let gone = matches!(
-        failed.code(),
-        Some("channel_not_found" | "not_in_channel" | "is_archived" | "thread_not_found")
-    );
+    let gone = failed
+        .code()
+        .is_some_and(fctl_domain::slack::thread_refuses);
     let Some(person) = t
         .slack_user_id
         .as_deref()
