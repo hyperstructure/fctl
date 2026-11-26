@@ -1144,11 +1144,16 @@ mod d1_tests {
         // The workspace says so, and why.
         let settings = InstanceSettings::default();
         let rows = mine(&db, "usr_ada").await?;
-        let acme = rows.first().ok_or_else(|| crate::error::internal("no workspace"))?;
+        let acme = rows
+            .first()
+            .ok_or_else(|| crate::error::internal("no workspace"))?;
         assert!(acme.closed_to(&ada, &settings));
         let seen = acme.to_workspace(&settings, &ada, &[]);
         assert!(seen.blocked && seen.sign_in_blocked);
-        assert_eq!(seen.sign_in.map(|r| r.domains), Some(vec!["acme.com".to_owned()]));
+        assert_eq!(
+            seen.sign_in.map(|r| r.domains),
+            Some(vec!["acme.com".to_owned()])
+        );
         assert!(!acme.closed_to(&ada_google, &settings));
         // Cy, a contractor in it as his own address, signs in as he likes.
         let cy = user(&db, "usr_cy", Some(SignedIn::password())).await?;

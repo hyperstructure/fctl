@@ -156,8 +156,8 @@ pub enum WorkspacesCmd {
     },
     /// Change a workspace's name, address, avatar, rules or setup (admins).
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites", "autopilots", "snapshots", "snapshot_days", "claude_oversight", "claude_limit_pauses", "claude_admin_email"])),
-        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set --color '#2a9d8f'           # a color of its own\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on\n  fctl workspaces set -w acme --claude-oversight readiness   # less for its admins\n  fctl workspaces set -w acme --claude-admin-email each      # an email for each, not weekly"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "require_google", "skip_invites", "autopilots", "snapshots", "snapshot_days", "claude_oversight", "claude_limit_pauses", "claude_admin_email"])),
+        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set --color '#2a9d8f'           # a color of its own\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w acme --require-google acme.com,acme.dev   # members there open it only signed in with Google as such an address\n  fctl workspaces set -w acme --require-google off\n  fctl workspaces set -w side-project --skip-invites on\n  fctl workspaces set -w acme --claude-oversight readiness   # less for its admins\n  fctl workspaces set -w acme --claude-admin-email each      # an email for each, not weekly"
     )]
     Set {
         /// The workspace (slug or id); default from `fctl workspaces use`,
@@ -185,6 +185,16 @@ pub enum WorkspacesCmd {
         /// It stays on while the instance requires it.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         require_two_factor: Option<bool>,
+        /// Its members who are in it as an address at these domains
+        /// (comma-separated, acme.com,acme.dev) open it only when they
+        /// signed in with Google as such an address; members in it as
+        /// other addresses sign in as before. `off` stops requiring it.
+        /// Sign in with Google as your own address there first.
+        #[arg(long, value_name = "DOMAINS|off")]
+        require_google: Option<String>,
+        /// With --require-google: a passkey alone opens it too.
+        #[arg(long, requires = "require_google")]
+        google_passkeys: bool,
         /// Leave inviting people out of the app's setup checklist, as in a
         /// workspace for one; `off` asks for it again.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
@@ -755,6 +765,25 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 }
             );
             println!(
+                "sign-in:  {}",
+                match &w.sign_in {
+                    Some(r) => format!(
+                        "members in it as an address at {} sign in with Google as one{}",
+                        fctl_domain::sign_in::domains_words(&r.domains),
+                        if r.passkeys { ", or a passkey" } else { "" }
+                    ),
+                    None => "as the instance lets each member".to_owned(),
+                }
+            );
+            if w.sign_in_blocked {
+                println!(
+                    "          {}",
+                    style::dim(
+                        "closed to you: sign in again with Google as your address there (fctl login, then continue with Google)"
+                    )
+                );
+            }
+            println!(
                 "2fa:      {}",
                 if w.instance_requires_two_factor {
                     "required of members, as the instance requires it"
@@ -839,14 +868,20 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             claude_oversight,
             claude_limit_pauses,
             claude_admin_email,
+            require_google,
+            google_passkeys,
         } => {
             let w = resolve(&api, workspace).await?;
             let mut out = w.clone();
+            let sign_in = require_google
+                .as_deref()
+                .map(|d| google_rule(d, google_passkeys));
             if name.is_some()
                 || slug.is_some()
                 || color.is_some()
                 || base_role.is_some()
                 || require_two_factor.is_some()
+                || sign_in.is_some()
                 || skip_invites.is_some()
                 || autopilots.is_some()
                 || snapshots.is_some()
@@ -873,6 +908,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                             claude_oversight: claude_oversight.map(Into::into),
                             claude_limit_pauses,
                             claude_admin_email: claude_admin_email.map(Into::into),
+                            sign_in,
                         },
                     )
                     .await?;
@@ -1852,6 +1888,25 @@ fn review_app_state(
     }
 }
 
+/// The requirement `--require-google` asks for: Google at `domains`
+/// (comma-separated), or none (`off`).
+fn google_rule(domains: &str, passkeys: bool) -> fctl_proto::api::SignInRule {
+    let off = matches!(domains.trim(), "off" | "none" | "");
+    fctl_proto::api::SignInRule {
+        domains: if off {
+            Vec::new()
+        } else {
+            domains
+                .split([',', ' '])
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| d.trim().to_owned())
+                .collect()
+        },
+        provider: fctl_domain::sign_in::GOOGLE.to_owned(),
+        passkeys,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1872,6 +1927,14 @@ mod tests {
             WorkspacesCmd::Set { color, .. } => color,
             _ => None,
         }
+    }
+
+    #[test]
+    fn require_google_reads_domains_or_off() {
+        let r = google_rule("acme.com, acme.dev", true);
+        assert_eq!(r.domains, ["acme.com", "acme.dev"]);
+        assert!(r.passkeys && r.provider == "google");
+        assert!(google_rule("off", false).domains.is_empty());
     }
 
     #[test]
