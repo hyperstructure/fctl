@@ -1103,6 +1103,9 @@ pub async fn match_email(
     let Some(user) = user else {
         return Ok(None);
     };
+    if !may_match(db, &user.id, &slack.team).await? {
+        return Ok(None);
+    }
     keep_account(
         db,
         &user.id,
@@ -1115,6 +1118,21 @@ pub async fn match_email(
     )
     .await?;
     Ok(Some(user))
+}
+
+/// Whether an address may make fctl account `user` someone in Slack
+/// workspace `team`: not where fctl knows them there already, as another
+/// Slack user. An address never takes over an account they linked, or
+/// one an earlier match found.
+pub(crate) async fn may_match(db: &D1Database, user: &str, team: &str) -> AppResult<bool> {
+    let known: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM slack_accounts WHERE user_id = ? AND team_id = ?",
+        &[s(user), s(team)],
+    )?
+    .first()
+    .await?;
+    Ok(known.is_none_or(|k| k.n == 0))
 }
 
 /// Who `slack_user` is in fctl: their linked account, or the one their

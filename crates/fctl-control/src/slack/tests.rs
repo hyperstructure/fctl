@@ -489,5 +489,10 @@ async fn an_address_match_counts_while_it_is_allowed() -> AppResult<()> {
     .await?;
     let linked = super::who(&db, &slack, "U_GRACE", NOW).await?;
     assert_eq!(linked.map(|u| u.id).as_deref(), Some("usr_grace"));
+    // Nor does another Slack user with her address take it over: an address
+    // matches only people fctl doesn't know there yet.
+    assert!(!super::may_match(&db, "usr_grace", "T1").await?);
+    assert!(super::may_match(&db, "usr_grace", "T2").await?);
+    assert!(super::may_match(&db, "usr_ada", "T1").await?);
     Ok(())
 }

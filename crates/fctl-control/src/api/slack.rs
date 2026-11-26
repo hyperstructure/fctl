@@ -770,15 +770,14 @@ async fn respond(ctx: &Ctx, workspace_id: &str) -> AppResult<WorkspaceSlack> {
         .iter()
         .filter(|p| crate::access::project_role(&user, &instance, ctx.limits(), p).is_some())
         .collect();
+    // Only the projects the caller sees: a channel mapped to another says
+    // nothing of it.
     let project_ref = |pid: &str| {
-        projects
-            .iter()
-            .find(|p| p.id == pid)
-            .map(|p| SlackProjectRef {
-                id: fctl_proto::ProjectId(p.id.clone()),
-                slug: p.slug.clone(),
-                name: p.name.clone(),
-            })
+        seen.iter().find(|p| p.id == pid).map(|p| SlackProjectRef {
+            id: fctl_proto::ProjectId(p.id.clone()),
+            slug: p.slug.clone(),
+            name: p.name.clone(),
+        })
     };
     let linked: Vec<String> = {
         #[derive(Deserialize)]
