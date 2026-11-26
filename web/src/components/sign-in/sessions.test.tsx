@@ -65,10 +65,10 @@ function open(policy: G.SessionPolicy) {
 }
 
 describe("Admin → Sign-in: staying signed in", () => {
-  it("says what the policy is while nothing changes", () => {
+  it("says what it doesn't hold while nothing changes", () => {
     const page = open(DEFAULT_POLICY);
     expect(page.container.textContent).toContain(
-      "Browsers stay signed in while they're used, until 30 days unused. CLIs stay signed in while they're used, until 180 days unused. Everyone makes access tokens, each lasting as long as its maker chooses.",
+      "Admin tokens and service accounts' secrets last as long as their makers chose",
     );
     expect(page.button("Save")).toBeUndefined();
     expect(sessionPolicyPreview).not.toHaveBeenCalled();
@@ -114,7 +114,9 @@ describe("Admin → Sign-in: staying signed in", () => {
     expect(page.container.textContent).toContain("It ends 3 access tokens, all of them members'");
     await act(async () => page.button("Cancel")?.click());
     expect(page.button("Save")).toBeUndefined();
-    expect(page.container.textContent).toContain("Everyone makes access tokens");
+    expect(page.container.textContent).toContain(
+      "Everyone makes tokens for scripts, CI and bots in Settings.",
+    );
     expect(updateInstanceSettings).not.toHaveBeenCalled();
   });
 });

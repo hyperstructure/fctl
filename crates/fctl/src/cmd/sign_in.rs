@@ -317,6 +317,7 @@ pub fn policy_consequences(p: &SessionPolicyPreview) -> Vec<String> {
     if p.access_tokens > 0 {
         let members = match p.member_tokens {
             0 => String::new(),
+            1 if p.access_tokens == 1 => ", a member's".to_owned(),
             n if n == p.access_tokens => ", all of them members'".to_owned(),
             n => format!(", {n} of them members'"),
         };
@@ -700,6 +701,15 @@ mod tests {
                 "Saving signs out 14 browsers and 1 CLI at once, yours among them: their people sign in again.",
                 "It ends 5 access tokens, 3 of them members': scripts and CI that use them need new ones.",
             ]
+        );
+        let one = SessionPolicyPreview {
+            access_tokens: 1,
+            member_tokens: 1,
+            ..SessionPolicyPreview::default()
+        };
+        assert_eq!(
+            policy_consequences(&one),
+            ["It ends 1 access token, a member's: scripts and CI that use it need new ones."]
         );
         assert_eq!(
             policy_consequences(&SessionPolicyPreview::default()),

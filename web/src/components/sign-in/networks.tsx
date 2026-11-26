@@ -65,7 +65,7 @@ export function Networks({ overview }: { overview?: G.SignInOverview }) {
             {networksLead(overview.networks ?? [])}
           </p>
           <Field
-            label="Networks"
+            label="Ranges"
             hint="One range a line, as CIDR: 203.0.113.0/24, 2001:db8::/32, or an address alone. None: anywhere."
             error={field === "networks" ? save.error?.message : undefined}
           >

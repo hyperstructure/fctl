@@ -4,32 +4,13 @@ import {
   browserMaxChoices,
   consequences,
   DEFAULT_POLICY,
-  describe as describePolicy,
   devicesNote,
   minutes,
   tokenMaxChoices,
 } from "./session-policy";
 
 describe("session policies", () => {
-  it("read as the CLI says them", () => {
-    expect(describePolicy(DEFAULT_POLICY)).toEqual([
-      "Browsers stay signed in while they're used, until 30 days unused.",
-      "CLIs stay signed in while they're used, until 180 days unused.",
-      "Everyone makes access tokens, each lasting as long as its maker chooses.",
-    ]);
-    expect(
-      describePolicy({
-        browser_max_hours: 12,
-        browser_idle_minutes: 60,
-        cli_max_days: 30,
-        access_token_max_days: 365,
-        member_access_tokens: false,
-      }),
-    ).toEqual([
-      "Browsers sign in again after 12 hours, and after an hour unused.",
-      "CLIs sign in again after 30 days, and after 180 days unused.",
-      "Only admins make access tokens, each lasting a year at most.",
-    ]);
+  it("say durations as the CLI does", () => {
     expect([1, 15, 60, 90, 1440, 10080, 43200].map(minutes)).toEqual([
       "a minute",
       "15 minutes",
@@ -48,6 +29,9 @@ describe("session policies", () => {
     ]);
     expect(consequences({ browsers: 0, clis: 0, access_tokens: 0, member_tokens: 0, you: false })).toEqual([
       "Nobody is signed out now: sign-ins end as it says from here on.",
+    ]);
+    expect(consequences({ browsers: 0, clis: 0, access_tokens: 1, member_tokens: 1, you: false })).toEqual([
+      "It ends 1 access token, a member's: scripts and CI that use it need new ones.",
     ]);
     expect(consequences({ browsers: 0, clis: 0, access_tokens: 0, member_tokens: 0, you: true })).toEqual([
       "Saving signs you out at once: you sign in again.",
@@ -74,7 +58,13 @@ describe("session policies", () => {
     expect(
       devicesNote({ ...DEFAULT_POLICY, browser_max_hours: 12, browser_idle_minutes: 60, cli_max_days: 30 }),
     ).toBe(
-      "This instance signs out browsers 12 hours after they sign in, browsers unused for an hour and CLIs 30 days after they sign in.",
+      "This instance signs browsers out 12 hours after they sign in, or after an hour unused, and CLIs 30 days after they sign in.",
+    );
+    expect(devicesNote({ ...DEFAULT_POLICY, cli_max_days: 7 })).toBe(
+      "This instance signs CLIs out a week after they sign in.",
+    );
+    expect(devicesNote({ ...DEFAULT_POLICY, browser_max_hours: 24 })).toBe(
+      "This instance signs browsers out a day after they sign in.",
     );
   });
 });

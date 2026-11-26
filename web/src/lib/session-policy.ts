@@ -66,25 +66,6 @@ export const cliMaxChoices = (current?: number) =>
 export const tokenMaxChoices = (current?: number) =>
   choices([0, 7, 30, 90, 365], current, days, "As its maker chooses", 0);
 
-/** What a policy says, a sentence for browsers, CLIs and access tokens each, as the CLI says it. */
-export function describe(p: G.SessionPolicy): string[] {
-  const idle = minutes(p.browser_idle_minutes);
-  const browsers =
-    p.browser_max_hours > 0
-      ? `Browsers sign in again after ${hours(p.browser_max_hours)}, and after ${idle} unused.`
-      : `Browsers stay signed in while they're used, until ${idle} unused.`;
-  const clis =
-    p.cli_max_days > 0
-      ? `CLIs sign in again after ${days(p.cli_max_days)}, and after 180 days unused.`
-      : "CLIs stay signed in while they're used, until 180 days unused.";
-  const who = p.member_access_tokens ? "Everyone makes access tokens" : "Only admins make access tokens";
-  const tokens =
-    p.access_token_max_days > 0
-      ? `${who}, each lasting ${days(p.access_token_max_days)} at most.`
-      : `${who}, each lasting as long as its maker chooses.`;
-  return [browsers, clis, tokens];
-}
-
 /** "a", "a and b". */
 const and = (items: string[]) =>
   items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
@@ -107,7 +88,9 @@ export function consequences(p: G.SessionPolicyPreview): string[] {
       p.member_tokens === 0
         ? ""
         : p.member_tokens === p.access_tokens
-          ? ", all of them members'"
+          ? p.access_tokens === 1
+            ? ", a member's"
+            : ", all of them members'"
           : `, ${p.member_tokens} of them members'`;
     lines.push(
       `It ends ${count(p.access_tokens, "access token", "access tokens")}${members}: scripts and CI that use ${p.access_tokens === 1 ? "it" : "them"} need new ones.`,
@@ -128,10 +111,12 @@ export const samePolicy = (a: G.SessionPolicy, b: G.SessionPolicy) =>
 /** What Settings → Devices says of how long its sign-ins last, where the instance limits them more than by default. */
 export function devicesNote(p: G.SessionPolicy | undefined): string | undefined {
   if (!p) return undefined;
-  const parts: string[] = [];
-  if (p.browser_max_hours > 0) parts.push(`browsers ${hours(p.browser_max_hours)} after they sign in`);
+  const browser: string[] = [];
+  if (p.browser_max_hours > 0) browser.push(`${hours(p.browser_max_hours)} after they sign in`);
   if (p.browser_idle_minutes < DEFAULT_POLICY.browser_idle_minutes)
-    parts.push(`browsers unused for ${minutes(p.browser_idle_minutes)}`);
-  if (p.cli_max_days > 0) parts.push(`CLIs ${days(p.cli_max_days)} after they sign in`);
-  return parts.length ? `This instance signs out ${and(parts)}.` : undefined;
+    browser.push(`after ${minutes(p.browser_idle_minutes)} unused`);
+  const cli = p.cli_max_days > 0 ? `CLIs ${days(p.cli_max_days)} after they sign in` : undefined;
+  if (browser.length === 0) return cli && `This instance signs ${cli.replace(/^CLIs/, "CLIs out")}.`;
+  const browsers = `This instance signs browsers out ${browser.join(", or ")}`;
+  return cli ? `${browsers}, and ${cli}.` : `${browsers}.`;
 }

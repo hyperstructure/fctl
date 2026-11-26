@@ -14,15 +14,31 @@ import {
   browserMaxChoices,
   cliMaxChoices,
   consequences,
-  describe,
   samePolicy,
   tokenMaxChoices,
 } from "@/lib/session-policy";
 
-/** A limit's row: what it is and what its value means, its control beside them. */
-function Row({ label, hint, children }: { label: string; hint: ReactNode; children: ReactNode }) {
+/** A limit's row: what it is and what its value means, its control beside them (under them on a phone, but a switch). */
+function Row({
+  label,
+  hint,
+  inline,
+  children,
+}: {
+  label: string;
+  hint: ReactNode;
+  inline?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex flex-col gap-2 text-[13.5px] text-ink-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <div
+      className={cn(
+        "flex text-[13.5px] text-ink-2",
+        inline
+          ? "items-center justify-between gap-4"
+          : "flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4",
+      )}
+    >
       <span>
         {label}
         <span className="block text-[12.5px] leading-relaxed text-ink-4">{hint}</span>
@@ -124,6 +140,7 @@ export function SessionPolicies({ policy }: { policy?: G.SessionPolicy }) {
             />
           </Row>
           <Row
+            inline
             label="Members make access tokens"
             hint={
               draft.member_access_tokens
@@ -149,8 +166,9 @@ export function SessionPolicies({ policy }: { policy?: G.SessionPolicy }) {
               }}
             />
           ) : (
-            <p className="text-[12.5px] leading-relaxed text-ink-4" aria-live="polite">
-              {describe(draft).join(" ")}
+            <p className="text-[12.5px] leading-relaxed text-ink-4">
+              Admin tokens and service accounts' secrets last as long as their makers chose: they're for
+              machines, such as the directory sync that closes people's accounts.
             </p>
           )}
         </form>
