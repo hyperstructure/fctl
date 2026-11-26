@@ -134,6 +134,40 @@ describe("a workspace's own sign-in requirement", () => {
     expect(page.button("Require Google")).toBeUndefined();
   });
 
+  it("lets a rule be stopped where nobody signs in with Google any more", async () => {
+    update.mockResolvedValue(acme);
+    const required = { ...acme, sign_in: { domains: ["acme.com"], provider: "google", passkeys: false } };
+    const page = render(<WorkspaceSignIn w={required} members={members} onSaved={() => {}} />, false);
+    expect(page.container.textContent).toContain("nobody it covers can open Acme");
+    expect(page.button("Change domains")).toBeUndefined();
+    await act(async () => page.button("Stop requiring it")?.click());
+    expect(update).toHaveBeenCalledWith("ws_acme", {
+      sign_in: { domains: [], provider: "google", passkeys: false },
+    });
+  });
+
+  it("lets its primary admin stop requiring it while it closes it to them", async () => {
+    update.mockResolvedValue(acme);
+    const closed = {
+      ...acme,
+      role: "owner" as const,
+      blocked: true,
+      sign_in_blocked: true,
+      sign_in: { domains: ["acme.com"], provider: "google", passkeys: false },
+    };
+    const page = render(<SignInBlocked w={closed} />, false);
+    // Nobody signs in with Google here now: no link that goes nowhere.
+    expect(page.container.querySelector("a")).toBeNull();
+    expect(page.container.textContent).toContain("doesn't sign people in with Google any more");
+    await act(async () => page.button("Stop requiring Google")?.click());
+    expect(update).toHaveBeenCalledWith("ws_acme", {
+      sign_in: { domains: [], provider: "google", passkeys: false },
+    });
+    // A member isn't offered it.
+    const member = render(<SignInBlocked w={{ ...closed, role: "member" }} />);
+    expect(member.button("Stop requiring Google")).toBeUndefined();
+  });
+
   it("tells a member it closes to why, and the way in", () => {
     const closed = {
       ...acme,

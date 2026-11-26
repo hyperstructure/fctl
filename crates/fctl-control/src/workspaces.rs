@@ -1173,6 +1173,23 @@ mod d1_tests {
         // Cy, a contractor in it as his own address, signs in as he likes.
         let cy = user(&db, "usr_cy", Some(SignedIn::password())).await?;
         assert!(sees_web(&db, &cy).await?);
+        // An open socket's recheck reads its token's sign-in too.
+        q(
+            &db,
+            "INSERT INTO tokens (id, hash, kind, user_id, created_at, expires_at, auth_method, auth_domain) VALUES \
+             ('tok_pw', 'h1', 'web', 'usr_ada', 0, 9000000000000, 'password', NULL), \
+             ('tok_g', 'h2', 'web', 'usr_ada', 0, 9000000000000, 'google', 'acme.com')",
+            &[],
+        )?
+        .run()
+        .await?;
+        for (token, closed) in [("tok_pw", true), ("tok_g", false)] {
+            let holder = crate::auth::by_token_id(&db, token, 1)
+                .await?
+                .ok_or_else(|| crate::error::internal("no holder"))?;
+            assert_eq!(acme.closed_to(&holder.user, &settings), closed, "{token}");
+            assert_eq!(sees_web(&db, &holder.user).await?, !closed, "{token}");
+        }
         Ok(())
     }
 }

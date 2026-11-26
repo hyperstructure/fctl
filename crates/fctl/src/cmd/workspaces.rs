@@ -876,7 +876,8 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             let mut out = w.clone();
             let sign_in = require_google
                 .as_deref()
-                .map(|d| google_rule(d, google_passkeys));
+                .map(|d| google_rule(d, google_passkeys))
+                .transpose()?;
             if name.is_some()
                 || slug.is_some()
                 || color.is_some()
@@ -1890,22 +1891,25 @@ fn review_app_state(
 }
 
 /// The requirement `--require-google` asks for: Google at `domains`
-/// (comma-separated), or none (`off`).
-fn google_rule(domains: &str, passkeys: bool) -> fctl_proto::api::SignInRule {
-    let off = matches!(domains.trim(), "off" | "none" | "");
-    fctl_proto::api::SignInRule {
-        domains: if off {
-            Vec::new()
-        } else {
-            domains
-                .split([',', ' '])
-                .filter(|d| !d.trim().is_empty())
-                .map(|d| d.trim().to_owned())
-                .collect()
-        },
+/// (comma-separated), or none, said as `off` or `none` alone: an empty
+/// value (an unset variable in a script) is an error, not none.
+fn google_rule(domains: &str, passkeys: bool) -> Result<fctl_proto::api::SignInRule> {
+    let off = matches!(domains.trim().to_ascii_lowercase().as_str(), "off" | "none");
+    let list: Vec<String> = domains
+        .split([',', ' '])
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| d.trim().to_owned())
+        .collect();
+    if !off && list.is_empty() {
+        bail!(
+            "--require-google needs domains, like acme.com,acme.dev, or off to stop requiring it"
+        );
+    }
+    Ok(fctl_proto::api::SignInRule {
+        domains: if off { Vec::new() } else { list },
         provider: fctl_domain::sign_in::GOOGLE.to_owned(),
         passkeys,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1932,10 +1936,21 @@ mod tests {
 
     #[test]
     fn require_google_reads_domains_or_off() {
-        let r = google_rule("acme.com, acme.dev", true);
-        assert_eq!(r.domains, ["acme.com", "acme.dev"]);
-        assert!(r.passkeys && r.provider == "google");
-        assert!(google_rule("off", false).domains.is_empty());
+        let r = google_rule("acme.com, acme.dev", true).ok();
+        assert_eq!(
+            r.as_ref().map(|r| r.domains.clone()),
+            Some(vec!["acme.com".to_owned(), "acme.dev".to_owned()])
+        );
+        assert!(r.is_some_and(|r| r.passkeys && r.provider == "google"));
+        for off in ["off", "OFF", "none"] {
+            assert!(
+                google_rule(off, false).is_ok_and(|r| r.domains.is_empty()),
+                "{off}"
+            );
+        }
+        // An unset variable isn't off.
+        assert!(google_rule("", false).is_err());
+        assert!(google_rule(" , ", false).is_err());
     }
 
     #[test]

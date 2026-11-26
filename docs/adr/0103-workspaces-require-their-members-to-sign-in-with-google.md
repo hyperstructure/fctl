@@ -10,8 +10,7 @@ left a workspace's own requirement for later (#618). On an instance that
 people of several organizations share, app.fctl.sh above all, an
 organization's workspace has no instance admin of its own: it can require
 two-factor sign-in of its members, but not that they sign in through its
-Google Workspace, under its two-step verification and device checks, and
-not once it closes their account.
+Google Workspace, under its two-step verification and device checks.
 
 A requirement that sends people to a provider from the sign-in page, or
 holds them anywhere but the workspace, would let one customer claim
@@ -49,9 +48,16 @@ already remove anyone from it.
 ## Consequences
 
 - An organization on app.fctl.sh holds its people to its Google
-  Workspace in its own workspace, and Google closing their account closes
-  the workspace to them once their sign-in ends (session policies, ADR
-  0102, set how soon on an instance of one's own).
+  Workspace in its own workspace. Google closing someone's account stops
+  their next sign-in there, not the sign-ins they have, which last as
+  the instance lets them: its admins remove them from the workspace too
+  (session policies, #657, set how long sign-ins last on an instance of
+  one's own).
+- Its primary admin can always stop requiring it, even while it closes
+  the workspace to them, so that a workspace nobody can meet the
+  requirement of (Google sign-in no longer set up, their Google accounts
+  closed) doesn't stay closed for good. They can change nothing else
+  until they sign in with Google.
 - A member signed in with a password finds the workspace closed until
   they sign in with Google, then finds it open in every tab.
 - A member in it as a covered address who has no Google account there

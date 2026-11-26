@@ -266,7 +266,7 @@ export function WorkspacePage() {
       {w?.blocked ? (
         <div className="mt-8 flex flex-col items-start gap-4">
           {w.sign_in_blocked ? (
-            <SignInBlocked w={w} />
+            <SignInBlocked w={w} onChanged={refresh} />
           ) : (
             <Banner tone="warn" className="self-stretch">
               {w.name} requires two-factor sign-in of its members, and you haven't set it up. Until you do,

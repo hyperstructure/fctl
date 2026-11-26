@@ -136,7 +136,10 @@ its projects and sessions only once they've signed in with Google as
 that address: a password's sign-in, or a personal Google account's,
 finds it closed, and its page says how to open it. Their other
 workspaces are as before, and members in it as other addresses
-(contractors) sign in as they like. It closes only this workspace, so it
+(contractors) sign in as they like. Closing someone's Google account
+stops their next sign-in, not the sign-ins they have: remove them from
+the workspace too. Its primary admin can stop requiring it whatever their
+own sign-in, for when nobody can meet it. It closes only this workspace, so it
 needs no proof that the domains are yours; requiring Google of everyone
 at a domain, for the whole instance, is its admins' ([above](#signing-in-with-your-google-workspace)).
 

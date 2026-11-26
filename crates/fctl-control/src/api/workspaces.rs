@@ -218,7 +218,25 @@ pub async fn get(ctx: &Ctx, id: &str) -> AppResult<Response> {
 pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateWorkspaceRequest = http::body(req).await?;
     let a = ws::load(ctx, id).await?;
-    a.require_admin()?;
+    // Its primary admin may lift or change its sign-in requirement while it
+    // closes the workspace to them, and only that: where nobody can meet
+    // it any more (Google sign-in no longer set up, their Google accounts
+    // closed), the workspace would stay closed to everyone otherwise.
+    // Requiring less still takes confirming it's them, below.
+    let lifting = a.sign_in_blocked
+        && a.role == Some(WorkspaceRole::Owner)
+        && body.sign_in.is_some()
+        && body
+            == UpdateWorkspaceRequest {
+                sign_in: body.sign_in.clone(),
+                ..UpdateWorkspaceRequest::default()
+            }
+        && !ctx
+            .user()?
+            .blocked_by(&ctx.settings(), a.row.require_two_factor, None);
+    if !lifting {
+        a.require_admin()?;
+    }
     let user = ctx.user()?.clone();
     let name = body.name.as_deref().map(policy::name).transpose()?;
     let slug = match body.slug.as_deref() {

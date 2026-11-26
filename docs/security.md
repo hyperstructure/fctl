@@ -147,10 +147,13 @@ owner and purpose), so a value copied between rows does not decrypt.
   (`fctl workspaces set --require-google acme.com`): such a member's
   request with a sign-in made another way, a password's or a personal
   Google account's, finds the workspace, its projects and sessions
-  closed, as its two-factor requirement closes it. It closes nothing
-  else, so it needs no proof of the domains. An admin can't save one that
-  would close it to their own sign-in, and requiring less is a sensitive
-  action.
+  closed, as its two-factor requirement closes it, open sockets
+  included. It closes nothing else, so it needs no proof of the domains.
+  An admin can't save one that would close it to their own sign-in, its
+  primary admin can lift it whatever their sign-in, and requiring less
+  is a sensitive action. Closing someone's Google account stops their
+  next sign-in, not the sign-ins they have: remove them from the
+  workspace too.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin

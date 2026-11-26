@@ -4031,22 +4031,42 @@ impl FleetObject {
             if sockets.is_empty() {
                 continue;
             }
-            let Ok(Some(user)) = user_row(&db, user_id).await else {
+            let Ok(Some(person)) = user_row(&db, user_id).await else {
                 continue;
             };
-            let ident = match crate::workspaces::feed_identity(&db, &user, &settings).await {
-                Ok(i) => i,
-                Err(e) => {
-                    worker::console_error!("feed identity: {}", e.0.message);
-                    continue;
-                }
-            };
-            let messages = self.view_changed(&ident).await;
             for ws in sockets {
-                // Each keeps the token it was opened with, checked as before.
+                // Each keeps the token it was opened with, checked as before,
+                // and sees what its sign-in opens: a workspace's own sign-in
+                // requirement may close it to one of their browsers and not
+                // another.
                 let old = ws.deserialize_attachment::<FeedIdentity>().ok().flatten();
-                let mut ident = ident.clone();
-                ident.token_id = old.as_ref().and_then(|o| o.token_id.clone());
+                let token_id = old.as_ref().and_then(|o| o.token_id.clone());
+                let mut user = person.clone();
+                if let Some(t) = &token_id {
+                    match crate::auth::by_token_id(&db, t, now_ms()).await {
+                        Ok(Some(h)) if h.user.id == *user_id => {
+                            user.request_sign_in = h.user.request_sign_in;
+                        }
+                        Ok(_) => {
+                            let _ = ws.close(Some(CLOSE_NO_ACCESS), Some("signed out"));
+                            continue;
+                        }
+                        Err(e) => {
+                            worker::console_error!("checking a feed: {}", e.0.message);
+                            continue;
+                        }
+                    }
+                }
+                let mut ident = match crate::workspaces::feed_identity(&db, &user, &settings).await
+                {
+                    Ok(i) => i,
+                    Err(e) => {
+                        worker::console_error!("feed identity: {}", e.0.message);
+                        continue;
+                    }
+                };
+                let messages = self.view_changed(&ident).await;
+                ident.token_id = token_id;
                 ident.checked_at = old.and_then(|o| o.checked_at);
                 let _ = ws.serialize_attachment(&ident);
                 for text in &messages {

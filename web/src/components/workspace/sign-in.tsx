@@ -87,7 +87,7 @@ export function WorkspaceSignIn({
           Members at your domains sign in with Google
           <span className="block text-[12.5px] leading-relaxed text-ink-4">
             {rule
-              ? `Members in ${w.name} as an address at ${domainsWords(rule.domains)} open it only once they've signed in with Google as that address${rule.passkeys ? ", or with a passkey" : ""}: under your Google Workspace's two-step verification and device checks, and not once it closes their account. Members in it as other addresses sign in as before.`
+              ? `Members in ${w.name} as an address at ${domainsWords(rule.domains)} open it only once they've signed in with Google as that address${rule.passkeys ? ", or with a passkey" : ""}, under your Google Workspace's two-step verification and device checks. Closing someone's Google account stops their next sign-in, not the ones they have: remove them here too. Members in it as other addresses sign in as before.`
               : `Members in ${w.name} as an address at your domains open it only once they've signed in with Google as that address. Members in it as other addresses, contractors say, sign in as before.`}
           </span>
         </span>
@@ -98,11 +98,11 @@ export function WorkspaceSignIn({
           </span>
         )}
       </div>
-      {!google ? (
+      {!google && !rule ? (
         <p className="text-[12.5px] text-ink-4">
           This instance doesn't sign people in with Google: its admins set that up first.
         </p>
-      ) : editing ? (
+      ) : google && editing ? (
         <form
           className="flex flex-col gap-4 rounded-lg border border-line px-4 py-4"
           onSubmit={(e) => {
@@ -180,11 +180,19 @@ export function WorkspaceSignIn({
           </div>
         </form>
       ) : (
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant={rule ? "ghost" : "secondary"} onClick={() => setEditing(true)}>
-            <Building2 className="size-3.5" />
-            {rule ? "Change domains" : "Require Google"}
-          </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {google ? (
+            <Button size="sm" variant={rule ? "ghost" : "secondary"} onClick={() => setEditing(true)}>
+              <Building2 className="size-3.5" />
+              {rule ? "Change domains" : "Require Google"}
+            </Button>
+          ) : (
+            // Nobody signs in with Google here now: the requirement closes the workspace to everyone it covers.
+            <span className="text-[12.5px] text-amber">
+              This instance doesn't sign people in with Google any more, so nobody it covers can open {w.name}
+              .
+            </span>
+          )}
           {rule && (
             <Button
               size="sm"
@@ -202,24 +210,48 @@ export function WorkspaceSignIn({
   );
 }
 
-/** Why the workspace is closed to its member, the caller, by its own requirement, and the way in. */
-export function SignInBlocked({ w }: { w: G.Workspace }) {
+/**
+ * Why the workspace is closed to its member, the caller, by its own requirement, and the way in: signing in with
+ * Google, or, for its primary admin, stopping the requirement, as where nobody can meet it.
+ */
+export function SignInBlocked({ w, onChanged }: { w: G.Workspace; onChanged?: () => void }) {
   const { data: instance } = useInstance();
   const google = providers(instance).find((p) => p.id === GOOGLE);
   const domains = w.sign_in?.domains ?? [];
+  const lift = useMutation({
+    mutationFn: () =>
+      workspaces.update(w.id, { sign_in: { domains: [], provider: GOOGLE, passkeys: false } }),
+    onSuccess: () => {
+      onChanged?.();
+      toast(`${w.name}'s members sign in as the instance lets them`);
+    },
+  });
   return (
-    <Banner tone="warn" className="self-stretch">
-      {w.name} requires its members at {domainsWords(domains, "and")} to sign in with Google as that address,
-      and you signed in another way. Until you do, its projects and sessions are closed to you; your other
-      workspaces aren't.{" "}
-      {google && (
-        <a
-          href={startHref(google, { next: `/w/${w.slug}`, hint: w.email })}
-          className="font-medium underline underline-offset-2"
-        >
-          Sign in with Google as {w.email}
-        </a>
+    <div className="flex flex-col gap-3 self-stretch">
+      <Banner tone="warn">
+        {w.name} requires its members at {domainsWords(domains, "and")} to sign in with Google as that
+        address, and you signed in another way. Until you do, its projects and sessions are closed to you;
+        your other workspaces aren't.{" "}
+        {google ? (
+          <a
+            href={startHref(google, { next: `/w/${w.slug}`, hint: w.email })}
+            className="font-medium underline underline-offset-2"
+          >
+            Sign in with Google as {w.email}
+          </a>
+        ) : (
+          "This instance doesn't sign people in with Google any more: ask its admins, or the workspace's primary admin."
+        )}
+      </Banner>
+      {w.role === "owner" && (
+        <div className="flex flex-wrap items-center gap-3 text-[12.5px] text-ink-3">
+          <Button size="sm" variant="ghost" loading={lift.isPending} onClick={() => lift.mutate()}>
+            Stop requiring Google
+          </Button>
+          As its primary admin, you can, for when nobody can sign in with Google.
+          {lift.error && <Banner tone="error">{lift.error.message}</Banner>}
+        </div>
       )}
-    </Banner>
+    </div>
   );
 }

@@ -305,9 +305,13 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
             f.user.has_password(),
             f.user.factors(),
         );
+        // The token's own sign-in, which workspaces' own requirements
+        // check, as `authenticate` gives a request.
+        let mut user = f.user;
+        user.request_sign_in = Some(how);
         (!setup_required).then(|| Holder {
             limits: Limits::parse(f.scope.as_deref()),
-            user: f.user,
+            user,
             settings,
         })
     }))
