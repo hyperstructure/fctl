@@ -254,7 +254,7 @@ impl TokenLookup {
     /// Whether, and why, the token no longer signs its person in at `now`
     /// under `settings`' session policy (`fctl_domain::session_policy`).
     /// `in_use`: a socket opened with it is open, which counts as use,
-    /// though nothing records it in `last_used_at`.
+    /// though nothing records it ([`session_policy::Token::in_use`]).
     fn ended(
         &self,
         kind: TokenKind,
@@ -262,17 +262,15 @@ impl TokenLookup {
         now: i64,
         in_use: bool,
     ) -> Option<session_policy::Ended> {
-        session_policy::ended(
-            &settings.session_policy(),
-            &session_policy::Token {
-                kind,
-                created_at: self.token_created_at,
-                last_used_at: if in_use { Some(now) } else { self.last_used_at },
-                expires_at: self.expires_at,
-                member: self.user.role() == fctl_proto::session::InstanceRole::Member,
-            },
-            now,
-        )
+        let token = session_policy::Token {
+            kind,
+            created_at: self.token_created_at,
+            last_used_at: self.last_used_at,
+            expires_at: self.expires_at,
+            member: self.user.role() == fctl_proto::session::InstanceRole::Member,
+        };
+        let token = if in_use { token.in_use(now) } else { token };
+        session_policy::ended(&settings.session_policy(), &token, now)
     }
 }
 
@@ -339,11 +337,21 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
     let found: Option<TokenLookup> = q(db, &token_lookup_sql("id"), &[s(token_id)])?
         .first()
         .await?;
+    // An open socket is in use: it records that as a request does
+    // ([`authenticate`]), so that its sign-in's end slides, and the hourly
+    // job, which deletes ended sign-ins, leaves it.
+    if let Some(f) = &found {
+        let settings = crate::instance::parse(f.instance_settings.as_deref());
+        let kind = TokenKind::parse(&f.kind).unwrap_or(TokenKind::Pat);
+        if f.ended(kind, &settings, now, true).is_none() {
+            touch(db, f, kind, &settings.session_policy(), now).await?;
+        }
+    }
     Ok(found.and_then(|f| {
         let settings = crate::instance::parse(f.instance_settings.as_deref());
         let kind = TokenKind::parse(&f.kind).unwrap_or(TokenKind::Pat);
-        // An open socket is in use: only its sign-in's age, its end and
-        // who makes access tokens close it.
+        // Only its sign-in's age, its end as its maker chose and who makes
+        // access tokens close it.
         if f.ended(kind, &settings, now, true).is_some() || !f.user.is_active() {
             return None;
         }
@@ -362,6 +370,61 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
             settings,
         })
     }))
+}
+
+/// When a token's use is recorded again after its last record: often
+/// enough, for a browser, that one in use isn't taken for unused.
+fn touch_after(kind: TokenKind, policy: &fctl_proto::api::SessionPolicy) -> i64 {
+    match kind {
+        TokenKind::Web => session_policy::touch_after_ms(policy),
+        TokenKind::Cli | TokenKind::Pat => session_policy::TOUCH_MS,
+    }
+}
+
+/// The end a token of `kind` slides to as it's used at `now`: a browser's
+/// or a CLI's as the session policy says; an access token's stays its
+/// maker's ([`issue_token`]).
+fn slid(
+    found: &TokenLookup,
+    kind: TokenKind,
+    policy: &fctl_proto::api::SessionPolicy,
+    now: i64,
+) -> Option<i64> {
+    match kind {
+        TokenKind::Pat => found.expires_at,
+        TokenKind::Web | TokenKind::Cli => {
+            session_policy::expires_at(policy, kind, found.token_created_at, now, None)
+        }
+    }
+}
+
+/// Records a socket's use of its token, at most as often as
+/// [`touch_after`] says.
+async fn touch(
+    db: &D1Database,
+    found: &TokenLookup,
+    kind: TokenKind,
+    policy: &fctl_proto::api::SessionPolicy,
+    now: i64,
+) -> AppResult<()> {
+    if found
+        .last_used_at
+        .is_some_and(|t| now - t <= touch_after(kind, policy))
+    {
+        return Ok(());
+    }
+    q(
+        db,
+        "UPDATE tokens SET last_used_at = ?, expires_at = ? WHERE id = ?",
+        &[
+            n(now),
+            on(slid(found, kind, policy, now)),
+            s(&found.token_id),
+        ],
+    )?
+    .run()
+    .await?;
+    Ok(())
 }
 
 /// Resolves the caller from the bearer token or the session cookie. Invalid
@@ -461,19 +524,11 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     // browsers sign out after a short while unused; slide web and CLI
     // expiry, never past what the session policy lets them last.
     let policy = settings.session_policy();
-    let touch_after = match kind {
-        TokenKind::Web => session_policy::touch_after_ms(&policy),
-        TokenKind::Cli | TokenKind::Pat => session_policy::TOUCH_MS,
-    };
-    let stale = found.last_used_at.is_none_or(|t| ctx.now - t > touch_after);
+    let stale = found
+        .last_used_at
+        .is_none_or(|t| ctx.now - t > touch_after(kind, &policy));
     if stale {
-        // An access token's end stays its maker's ([`issue_token`]).
-        let new_expiry = match kind {
-            TokenKind::Pat => found.expires_at,
-            TokenKind::Web | TokenKind::Cli => {
-                session_policy::expires_at(&policy, kind, found.token_created_at, ctx.now, None)
-            }
-        };
+        let new_expiry = slid(&found, kind, &policy, ctx.now);
         let db = crate::db::handle(&ctx.db);
         let id = found.token_id.clone();
         let now = ctx.now;

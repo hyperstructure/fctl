@@ -104,6 +104,25 @@ pub struct Token {
     pub member: bool,
 }
 
+impl Token {
+    /// It as a socket opened with it reads it while it stays open: used at
+    /// `now`, as an open socket is in use though nothing records it. A
+    /// browser's or a CLI's stored end is its last recorded use plus the
+    /// time it may go unused, capped by the policy's longest, so it goes
+    /// too: [`ended`] applies that longest from its sign-in. An access
+    /// token keeps the end its maker chose.
+    pub fn in_use(self, now: i64) -> Self {
+        Self {
+            last_used_at: Some(now),
+            expires_at: match self.kind {
+                TokenKind::Pat => self.expires_at,
+                TokenKind::Web | TokenKind::Cli => None,
+            },
+            ..self
+        }
+    }
+}
+
 /// Why a token no longer signs its person in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ended {
@@ -424,6 +443,37 @@ mod tests {
         assert_eq!(
             expires_at(&short, TokenKind::Web, 0, 0, None),
             Some(5 * MINUTE_MS)
+        );
+    }
+
+    #[test]
+    fn an_open_socket_is_in_use() {
+        let p = SessionPolicy {
+            browser_max_hours: 12,
+            browser_idle_minutes: 15,
+            ..policy()
+        };
+        // A browser last recorded in use an hour ago, its stored end the
+        // 15 minutes after: a request ends it, its open socket doesn't.
+        let watching = Token {
+            expires_at: Some(15 * MINUTE_MS),
+            ..token(TokenKind::Web, 0, Some(0))
+        };
+        assert_eq!(ended(&p, &watching, HOUR_MS), Some(Ended::Expired));
+        assert_eq!(ended(&p, &watching.in_use(HOUR_MS), HOUR_MS), None);
+        // Past the policy's longest from its sign-in, it ends either way.
+        assert_eq!(
+            ended(&p, &watching.in_use(12 * HOUR_MS), 12 * HOUR_MS),
+            Some(Ended::TooOld)
+        );
+        // An access token keeps its maker's end.
+        let pat = Token {
+            expires_at: Some(HOUR_MS),
+            ..token(TokenKind::Pat, 0, None)
+        };
+        assert_eq!(
+            ended(&p, &pat.in_use(HOUR_MS), HOUR_MS),
+            Some(Ended::Expired)
         );
     }
 
