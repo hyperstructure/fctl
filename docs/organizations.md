@@ -119,6 +119,27 @@ two-factor requirement. [Requiring Google for your
 domains](self-hosting.md#requiring-google-for-your-domains) has the
 details.
 
+### A workspace of your organization's
+
+On an instance that people of several organizations share (app.fctl.sh,
+or yours with contractors' workspaces), a workspace's own admins require
+Google of its members at their domains, without an instance admin: in
+the workspace's **Settings → Access → Members at your domains sign in
+with Google**, or
+
+```sh
+fctl workspaces set -w acme --require-google acme.com,acme.dev
+```
+
+Members who are in the workspace as an address at those domains open it,
+its projects and sessions only once they've signed in with Google as
+that address: a password's sign-in, or a personal Google account's,
+finds it closed, and its page says how to open it. Their other
+workspaces are as before, and members in it as other addresses
+(contractors) sign in as they like. It closes only this workspace, so it
+needs no proof that the domains are yours; requiring Google of everyone
+at a domain, for the whole instance, is its admins' ([above](#signing-in-with-your-google-workspace)).
+
 ## People from your directory
 
 On an instance of yours, your identity provider, your HR system or a

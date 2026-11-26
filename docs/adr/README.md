@@ -107,3 +107,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0099](0099-domains-require-signing-in-with-their-provider.md) | Domains require signing in with their provider |
 | [0100](0100-autopilots-keep-trying-after-their-sessions-fail.md) | Autopilots keep trying after their sessions fail (experimental) |
 | [0101](0101-runners-keep-snapshots-in-a-bucket-of-their-own.md) | Runners keep snapshots in a bucket of their own |
+| [0103](0103-workspaces-require-their-members-to-sign-in-with-google.md) | Workspaces require their members to sign in with Google |

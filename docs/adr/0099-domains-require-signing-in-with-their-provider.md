@@ -70,7 +70,9 @@ none of the organization's business.
   `api::sign_in`, which links, signs in and signs up by the rules. Rules,
   tokens and identities name providers by id.
 - **Rules are the instance's**, as its admins own its allowlist: a
-  workspace of its own doesn't require a provider, and app.fctl.sh, where
+  workspace of its own doesn't require a provider (since [ADR
+  0103](0103-workspaces-require-their-members-to-sign-in-with-google.md),
+  it requires one of its own members), and app.fctl.sh, where
   workspaces of many organizations share the instance, has none to set.
 
 ## Consequences

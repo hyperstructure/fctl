@@ -142,6 +142,15 @@ owner and purpose), so a value copied between rows does not decrypt.
   sensitive action. Closing someone's account at the provider stops their
   next sign-in, not the sessions they have: disable their account here
   too.
+- **A workspace's own requirement.** A workspace's admins can require
+  Google of its members who are in it as an address at some domains
+  (`fctl workspaces set --require-google acme.com`): such a member's
+  request with a sign-in made another way, a password's or a personal
+  Google account's, finds the workspace, its projects and sessions
+  closed, as its two-factor requirement closes it. It closes nothing
+  else, so it needs no proof of the domains. An admin can't save one that
+  would close it to their own sign-in, and requiring less is a sensitive
+  action.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
