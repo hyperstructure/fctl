@@ -229,14 +229,37 @@ pub(crate) async fn route_autopilot(
     dispatch(ctx, req, method, segs.as_slice()).await
 }
 
+/// The route a request takes. Unoptimized (`cargo xtask dev`'s Worker, the
+/// wasm tests), a function's stack frame keeps a slot for the future of
+/// each of its routes, which together came near the Worker's 1 MiB stack:
+/// the routes come in two halves, tried one after the other, so that only
+/// one half's frame is ever on the stack. Add a route to the smaller one.
 async fn dispatch(
     ctx: &mut Ctx,
     req: &mut Request,
     method: Method,
     segs: &[&str],
 ) -> AppResult<Response> {
+    if let Some(answer) = Box::pin(dispatch_first(ctx, req, method.clone(), segs)).await {
+        return answer;
+    }
+    Box::pin(dispatch_rest(ctx, req, method, segs)).await
+}
+
+/// [`dispatch`]'s first half: the instance, signing in, accounts, admins,
+/// workspaces, integrations, runners and projects.
+async fn dispatch_first(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    method: Method,
+    segs: &[&str],
+) -> Option<AppResult<Response>> {
     use Method::*;
-    match (method, segs) {
+    Some(match (method, segs) {
+        // Slack's routes come as one, for the same reason as the halves.
+        (method, segs) if api::slack::routes(segs) => {
+            Box::pin(api::slack::route(ctx, req, method, segs)).await
+        }
         (Get, ["instance"]) => api::auth::instance(ctx).await,
         (Post, ["setup"]) => api::auth::setup(ctx, req).await,
         (Get, ["invites", token]) => api::auth::invite_preview(ctx, token).await,
@@ -280,7 +303,6 @@ async fn dispatch(
         // Admin
         (Get, ["admin", "users"]) => api::admin::users(ctx).await,
         (Get, ["admin", "claude"]) => api::admin::claude(ctx).await,
-        (Get, ["admin", "slack"]) => api::slack::admin(ctx).await,
         (Patch, ["admin", "users", id]) => {
             api::admin::update_user(ctx, req, &http::decode(id)).await
         }
@@ -426,16 +448,6 @@ async fn dispatch(
         (Delete, ["workspaces", id, "github", "offers", account]) => {
             api::github::dismiss(ctx, id, &http::decode(account)).await
         }
-        (Get, ["workspaces", id, "slack"]) => api::slack::workspace(ctx, id).await,
-        (Post, ["workspaces", id, "slack", "connect"]) => api::slack::connect(ctx, req, id).await,
-        (Patch, ["workspaces", id, "slack", team]) => api::slack::update(ctx, req, id, team).await,
-        (Delete, ["workspaces", id, "slack", team]) => api::slack::disconnect(ctx, id, team).await,
-        (Get, ["workspaces", id, "slack", team, "channels"]) => {
-            api::slack::channels(ctx, req, id, team).await
-        }
-        (Put, ["workspaces", id, "slack", team, "channels", channel]) => {
-            api::slack::set_channel(ctx, req, id, team, channel).await
-        }
         (Get, ["workspaces", id, "linear"]) => api::linear::workspace(ctx, id).await,
         (Post, ["workspaces", id, "linear", "connect"]) => api::linear::connect(ctx, req, id).await,
         (Delete, ["workspaces", id, "linear", organization]) => {
@@ -466,13 +478,6 @@ async fn dispatch(
         (Get, ["github-review", "installed"]) => api::review_app::installed(ctx, req).await,
         // GitHub's webhook: signed with its secret, not by a person.
         (Post, ["github", "webhook"]) => api::webhooks::receive(ctx, req).await,
-        (Post, ["slack", "events"]) => api::slack::events(ctx, req).await,
-        (Post, ["slack", "interactivity"]) => api::slack::interactivity(ctx, req).await,
-        (Post, ["slack", "commands"]) => api::slack::commands(ctx, req).await,
-        (Get, ["slack", "connect"]) => api::slack::connect_link(ctx, req).await,
-        (Get, ["slack", "installed"]) => api::slack::installed(ctx, req).await,
-        (Get, ["slack", "link"]) => api::slack::link(ctx, req).await,
-        (Get, ["slack", "linked"]) => api::slack::linked(ctx, req).await,
         (Get, ["linear", "connect"]) => api::linear::connect_link(ctx, req).await,
         (Get, ["linear", "link"]) => api::linear::link(ctx, req).await,
         (Get, ["linear", "installed"]) => api::linear::installed(ctx, req).await,
@@ -540,6 +545,20 @@ async fn dispatch(
             api::repos::remove(ctx, id, owner, name).await
         }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
+        _ => return None,
+    })
+}
+
+/// [`dispatch`]'s second half: autopilots, webhooks, sessions and the
+/// rest.
+async fn dispatch_rest(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    method: Method,
+    segs: &[&str],
+) -> AppResult<Response> {
+    use Method::*;
+    match (method, segs) {
         // Autopilots (experimental)
         (Get, ["autopilots", "asks"]) => api::autopilots::open_asks(ctx).await,
         (Get, ["projects", id, "autopilot"]) => api::autopilots::get(ctx, id).await,
@@ -692,10 +711,6 @@ async fn dispatch(
         }
         (Post, ["me", "claude", id, "default"]) => api::claude::set_default(ctx, id).await,
         // Linear accounts
-        (Get, ["me", "slack"]) => api::slack::mine(ctx).await,
-        (Post, ["me", "slack", "link"]) => api::slack::link_for(ctx, req).await,
-        (Patch, ["me", "slack", team]) => api::slack::update_mine(ctx, req, team).await,
-        (Delete, ["me", "slack", team]) => api::slack::unlink(ctx, team).await,
         (Get, ["me", "linear"]) => api::linear::mine(ctx).await,
         (Delete, ["me", "linear", organization]) => api::linear::unlink(ctx, organization).await,
         (Delete, ["me", "claude", id]) => api::claude::remove(ctx, id).await,

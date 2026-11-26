@@ -36,13 +36,57 @@ use fctl_proto::slack::{
 use fctl_proto::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use worker::{Request, Response};
+use worker::{Method, Request, Response};
 
 /// How long a link that connects a Slack workspace, and the Slack sign-in
 /// it starts, work.
 const CONNECT_TTL_MS: i64 = 10 * 60 * 1000;
 
 // ───────────────────────────── what Slack sends ─────────────────────────────
+
+/// Whether `segs` are one of Slack's routes ([`route`]).
+pub fn routes(segs: &[&str]) -> bool {
+    matches!(
+        segs,
+        ["slack", ..] | ["me", "slack", ..] | ["workspaces", _, "slack", ..] | ["admin", "slack"]
+    )
+}
+
+/// Slack's routes, apart from `crate::dispatch`'s: Slack's requests, the
+/// ways to and back from Slack's sign-in, workspaces' Slack, your Slack
+/// accounts and the instance's Slack app.
+pub async fn route(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    method: Method,
+    segs: &[&str],
+) -> AppResult<Response> {
+    use Method::*;
+    match (method, segs) {
+        // Slack's own requests, signed with its secret, not by a person.
+        (Post, ["slack", "events"]) => events(ctx, req).await,
+        (Post, ["slack", "interactivity"]) => interactivity(ctx, req).await,
+        (Post, ["slack", "commands"]) => commands(ctx, req).await,
+        (Get, ["slack", "connect"]) => connect_link(ctx, req).await,
+        (Get, ["slack", "installed"]) => installed(ctx, req).await,
+        (Get, ["slack", "link"]) => link(ctx, req).await,
+        (Get, ["slack", "linked"]) => linked(ctx, req).await,
+        (Get, ["workspaces", id, "slack"]) => workspace(ctx, id).await,
+        (Post, ["workspaces", id, "slack", "connect"]) => connect(ctx, req, id).await,
+        (Patch, ["workspaces", id, "slack", team]) => update(ctx, req, id, team).await,
+        (Delete, ["workspaces", id, "slack", team]) => disconnect(ctx, id, team).await,
+        (Get, ["workspaces", id, "slack", team, "channels"]) => channels(ctx, req, id, team).await,
+        (Put, ["workspaces", id, "slack", team, "channels", channel]) => {
+            set_channel(ctx, req, id, team, channel).await
+        }
+        (Get, ["me", "slack"]) => mine(ctx).await,
+        (Post, ["me", "slack", "link"]) => link_for(ctx, req).await,
+        (Patch, ["me", "slack", team]) => update_mine(ctx, req, team).await,
+        (Delete, ["me", "slack", team]) => unlink(ctx, team).await,
+        (Get, ["admin", "slack"]) => admin(ctx).await,
+        _ => Err(not_found("Endpoint")),
+    }
+}
 
 /// The body of a request from Slack, once its signature counts.
 async fn signed_body(ctx: &Ctx, req: &mut Request) -> AppResult<Vec<u8>> {
