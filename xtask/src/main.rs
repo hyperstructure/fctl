@@ -40,7 +40,7 @@ Develop
                                 shows what fctl did there; uninstall removes fctl's app
   linear check                  Check every query and mutation fctl sends Linear against
                                 Linear's schema (xtask/linear/schema.graphql); check web does
-  slack mention [<text>] [--channel <name>] [--as <person>]
+  slack mention ['#<channel>'] [<text>] [--as <person>]
   slack dm <text> [--as <person>]
   slack reply [<thread>] <text> [--as <person>]
   slack answer <n> | press <label> | project <name> [remember]

@@ -610,7 +610,7 @@ fn where_of(t: &ThreadRow, a: &Answering) -> String {
     }
 }
 
-async fn channel_name(db: &D1Database, session_id: &str) -> Option<String> {
+pub(crate) async fn channel_name(db: &D1Database, session_id: &str) -> Option<String> {
     crate::spec::session_row(db, session_id)
         .await
         .ok()

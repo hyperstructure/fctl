@@ -644,11 +644,14 @@ impl Slack {
         .map(|_| ())
     }
 
-    /// Shows someone fctl's Home tab.
-    pub async fn publish_home(&self, user: &str, view: &Value) -> Result<(), Failure> {
-        self.call("views.publish", json!({ "user_id": user, "view": view }))
-            .await
-            .map(|_| ())
+    /// Shows someone fctl's Home tab, made of `blocks`.
+    pub async fn publish_home(&self, user: &str, blocks: &Value) -> Result<(), Failure> {
+        self.call(
+            "views.publish",
+            json!({ "user_id": user, "view": { "type": "home", "blocks": blocks } }),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Sets the agent session of a thread: `processing` while the agent

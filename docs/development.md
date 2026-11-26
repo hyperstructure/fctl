@@ -330,7 +330,7 @@ cargo xtask slack mention "write notes.md"      # Dev Owner mentions fctl in #we
 cargo xtask slack mention '#incidents' "what broke the deploy?"   # in another channel (quoted: the shell takes # for a comment)
 cargo xtask slack dm "fctl slack thread"        # Dev Owner writes to fctl in its messages
 cargo xtask slack reply "watch 60"              # a reply in the thread of the last request
-cargo xtask slack reply "Can I help?" --as grace   # Grace's reply: fctl asks her to link her account
+cargo xtask slack reply "@fctl can I help?" --as grace   # Grace asks fctl: it asks her to link her account first
 cargo xtask slack answer 0                      # click the first answer to the agent's question
 cargo xtask slack project playground remember   # choose the project, and remember it for the channel
 cargo xtask slack command "write notes.md"      # /fctl in #web-team (home: the Home tab)

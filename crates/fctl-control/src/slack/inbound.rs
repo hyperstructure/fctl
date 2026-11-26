@@ -1366,7 +1366,7 @@ async fn reply(
         event: SlackEvent::Replied,
         by: Some(person_of(slack, author, &user).await),
         place: t.place(),
-        channel_name: None,
+        channel_name: super::outbound::channel_name(db, session_id).await,
         team_name: Some(slack.team_name.clone()).filter(|n| !n.is_empty()),
         body: Some(body.clone()),
         url: Some(slack.link(&m.channel, &m.ts, Some(&t.thread_ts)).await),
@@ -1795,15 +1795,20 @@ async fn answer(
         .await;
         return Ok(());
     }
+    // Where the session's thread is, as it started there.
+    let started = row
+        .slack
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<fctl_proto::slack::SessionSlack>(j).ok());
     let message = SlackMessage {
         event: SlackEvent::Answered,
         by: Some(person_of(slack, clicker, &user).await),
-        place: if channel.is_some_and(|c| c.starts_with('D')) {
-            SlackPlace::Dm
-        } else {
-            SlackPlace::Channel
+        place: match &started {
+            Some(st) => st.place,
+            None if channel.is_some_and(|c| c.starts_with('D')) => SlackPlace::Dm,
+            None => SlackPlace::Channel,
         },
-        channel_name: None,
+        channel_name: started.and_then(|st| st.channel_name),
         team_name: Some(slack.team_name.clone()).filter(|n| !n.is_empty()),
         body: Some(option.clone()),
         url: None,

@@ -295,11 +295,19 @@ pub fn command(
         .unwrap_or_else(|| CHANNEL.to_owned());
     let mut body = match action {
         // `mention "<text>" [--channel <name>]`.
-        "mention" => match (target, text) {
-            (Some(a), Some(b)) => json!({ "channel": channel, "text": format!("{a} {b}") }),
-            (Some(t), None) => json!({ "channel": channel, "text": t }),
-            (None, _) => json!({ "channel": channel }),
-        },
+        // `mention ['#<channel>'] "<text>"`, or `--channel <name>`.
+        "mention" => {
+            let (channel, text) = match (target, text) {
+                (Some(c), t) if c.starts_with('#') => (c.trim_start_matches('#').to_owned(), t),
+                (Some(a), Some(b)) => (channel, Some(format!("{a} {b}"))),
+                (t, None) => (channel, t),
+                (None, t) => (channel, t),
+            };
+            match text {
+                Some(t) => json!({ "channel": channel, "text": t }),
+                None => json!({ "channel": channel }),
+            }
+        }
         "dm" => json!({
             "text": target.context("say what you write to fctl: cargo xtask slack dm \"…\"")?,
         }),
@@ -337,7 +345,7 @@ pub fn command(
                 None => format!("/standin/channels/{channel}"),
             };
             show(&standin("GET", &path, None)?);
-            return problems_note();
+            return problems_note(0);
         }
         "uninstall" => {
             standin("POST", "/standin/uninstall", Some(json!({})))?;
@@ -353,40 +361,88 @@ pub fn command(
     if let Some(who) = who {
         body["as"] = json!(who);
     }
+    // The problems from before are other actions'.
+    let before = problems()?.len();
     let done = act(action, body)?;
-    if let (Some(channel), Some(ts)) = (
+    // Stop answers with nothing to follow.
+    if let (Some(channel), Some(ts), false) = (
         done["thread"]["channel"]["id"].as_str(),
         done["thread"]["ts"].as_str(),
+        action == "stop",
     ) {
-        follow(channel, ts)?;
+        // What fctl posts after the person's message, or after now.
+        let after = done["ts"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            format!("{}.{:06}", now.as_secs(), now.subsec_micros())
+        });
+        follow(channel, ts, &after)?;
     }
-    problems_note()
+    problems_note(before)
 }
 
 /// Prints what fctl posts in a thread from now on, until it replies or a
 /// few minutes pass.
-fn follow(channel: &str, ts: &str) -> Result<()> {
+fn follow(channel: &str, ts: &str, after: &str) -> Result<()> {
     let path = format!("/standin/thread?channel={channel}&ts={ts}");
     let start = Instant::now();
-    let mut seen = 0usize;
+    let mut seen = std::collections::HashSet::new();
     let mut replied = false;
     while start.elapsed() < FOLLOW && !replied {
         let t = standin("GET", &path, None)?;
         let messages = t["messages"].as_array().cloned().unwrap_or_default();
-        for m in messages.iter().skip(seen) {
-            if m["user"].as_str() == Some(BOT_USER) {
-                let words = message_words(m);
-                println!("  fctl: {words}");
-                replied |= !words.starts_with("card:");
+        for m in &messages {
+            let Some(at) = m["ts"].as_str() else {
+                continue;
+            };
+            if m["user"].as_str() != Some(BOT_USER)
+                || ts_after(at, after).is_none_or(|later| !later)
+                || !seen.insert(at.to_owned())
+            {
+                continue;
             }
+            let words = message_words(m);
+            println!("  fctl: {words}");
+            replied |= !words.starts_with("card:");
         }
-        seen = seen.max(messages.len());
+        // What fctl shows one person alone, in the thread or beside it in
+        // the channel: a refusal, or the way to link their account, answers
+        // them as a reply would.
+        let beside = standin("GET", &format!("/standin/channels/{channel}"), None)?;
+        let alone = t["ephemeral"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(beside["ephemeral"].as_array().into_iter().flatten());
+        for m in alone {
+            let Some(at) = m["ts"].as_str() else {
+                continue;
+            };
+            if ts_after(at, after).is_none_or(|later| !later) || !seen.insert(format!("e{at}")) {
+                continue;
+            }
+            let to = m["to"].as_str().unwrap_or("someone");
+            let words = m["shown"]
+                .as_str()
+                .or(m["text"].as_str())
+                .unwrap_or_default()
+                .replace('\n', " · ");
+            println!("  fctl, to {to} alone: {words}");
+            replied = true;
+        }
         std::thread::sleep(Duration::from_secs(2));
     }
     if !replied {
         println!("  (no reply from fctl yet: `cargo xtask slack show {ts}` shows the thread)");
     }
     Ok(())
+}
+
+/// Whether Slack's `ts` `a` comes after `b`, where both read as one.
+fn ts_after(a: &str, b: &str) -> Option<bool> {
+    let (a, b) = (a.parse::<f64>().ok()?, b.parse::<f64>().ok()?);
+    Some(a > b)
 }
 
 /// fctl's bot user in the stand-in's Acme.
@@ -444,13 +500,17 @@ fn show(state: &Value) {
 }
 
 /// What the stand-in found that Slack would refuse, if anything.
-fn problems_note() -> Result<()> {
-    let p = standin("GET", "/standin/problems", None)?;
-    let problems = p["problems"].as_array().cloned().unwrap_or_default();
-    for problem in &problems {
+fn problems_note(skip: usize) -> Result<()> {
+    for problem in problems()?.iter().skip(skip) {
         eprintln!("\x1b[33mSlack would refuse:\x1b[0m {problem}");
     }
     Ok(())
+}
+
+/// What fctl sent that Slack would refuse, oldest first.
+fn problems() -> Result<Vec<Value>> {
+    let p = standin("GET", "/standin/problems", None)?;
+    Ok(p["problems"].as_array().cloned().unwrap_or_default())
 }
 
 /// The smoke test's part in Slack: the dev owner mentions fctl in
@@ -500,11 +560,16 @@ pub(crate) fn smoke(token: &str, children: &mut Children) -> Result<String> {
     if !from_slack {
         bail!("no session of Playground names the thread in #{CHANNEL} it started from");
     }
+    // fctl's Home tab, which lists that session.
+    let home = act("home", json!({ "wait": 10_000 }))?;
+    if home["view"]["type"] != "home" {
+        bail!("fctl published no Home tab for the dev owner as they opened it");
+    }
     let p = standin("GET", "/standin/problems", None)?;
     if let Some(first) = p["problems"].as_array().and_then(|a| a.first()) {
         bail!("the Slack stand-in found what Slack would refuse: {first}");
     }
     Ok(format!(
-        "a mention in #{CHANNEL} started a session, whose card and reply came to its thread"
+        "a mention in #{CHANNEL} started a session, whose card and reply came to its thread, and the Home tab opened"
     ))
 }
