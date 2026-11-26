@@ -388,6 +388,40 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_message_keeps_who_wrote_it_where() {
+        let m = fctl_proto::slack::SlackMessage {
+            event: fctl_proto::slack::SlackEvent::Mentioned,
+            by: Some(fctl_proto::slack::SlackPerson {
+                name: "Ada Lovelace".into(),
+                user: Some("U1".into()),
+                handle: None,
+                avatar_url: None,
+                bot: false,
+            }),
+            place: SlackPlace::Channel,
+            channel_name: Some("web-team".into()),
+            team_name: None,
+            body: Some("the secret plan".into()),
+            url: Some("https://acme.slack.com/archives/C1/p1".into()),
+            context: None,
+            quoted: None,
+            dropped: false,
+        };
+        let d = dropped(&m);
+        assert!(d.starts_with(
+            "[Ada Lovelace wrote in #web-team: https://acme.slack.com/archives/C1/p1."
+        ));
+        assert!(!d.contains("secret"));
+        let dm = fctl_proto::slack::SlackMessage {
+            place: SlackPlace::Dm,
+            channel_name: None,
+            url: None,
+            ..m
+        };
+        assert!(dropped(&dm).contains("wrote in their direct messages with fctl."));
+    }
+
+    #[test]
     fn instructions_say_what_the_agent_reaches() {
         let thread = SessionSlack {
             team: "T1".into(),

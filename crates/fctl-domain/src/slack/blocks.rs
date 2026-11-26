@@ -975,6 +975,35 @@ mod tests {
     }
 
     #[test]
+    fn notifications_carry_the_question_or_what_happened() {
+        let options = vec!["Yes".to_owned(), "Not yet".to_owned()];
+        let n = notification(
+            ":raising_hand: *web#12* asks you",
+            None,
+            "https://x/s/1",
+            Some(("Ship it?", &options, "fctl_q:ses_1:5")),
+        );
+        assert_eq!(n[2]["block_id"], "fctl_q:ses_1:5");
+        assert_eq!(n[2]["elements"][1]["action_id"], "fctl_answer_1");
+        // The last button opens the session.
+        assert_eq!(n[2]["elements"][2]["url"], "https://x/s/1");
+        let w = notification(
+            ":speech_balloon: waits",
+            Some("Done <!here>"),
+            "https://x/s/1",
+            None,
+        );
+        assert_eq!(w[1]["text"]["text"], "> Done &lt;!here&gt;");
+        let e = event(
+            ":eyes:",
+            "web#12 is ready for review",
+            Some("Fix it"),
+            "https://x/s/1",
+        );
+        assert_eq!(e[2]["elements"][0]["url"], "https://x/s/1");
+    }
+
+    #[test]
     fn the_home_tab_lists_what_needs_you() {
         let h = home(&Home {
             name: Some("Ada".into()),
