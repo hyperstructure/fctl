@@ -420,11 +420,12 @@ function NewLine({ thread, className }: { thread: boolean; className?: string })
 
 /**
  * What someone asked, as the card that opens a turn: who, when and from where, and what they
- * wrote, with what they attached. Messages from fctl about a pull request, a review or a ticket
- * keep the look of the messages that come during a turn, which shows what happened there.
+ * wrote, with what they attached. Messages from fctl about a pull request, a review, a ticket or
+ * Slack keep the look of the messages that come during a turn, which shows what happened there.
  */
 export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
-  if (item.followUp || item.ticket || item.review) return <UserMessage item={item} sessionId={sessionId} />;
+  if (item.followUp || item.ticket || item.slack || item.review)
+    return <UserMessage item={item} sessionId={sessionId} />;
   // fctl woke an autopilot: what for, in a card of its own.
   if (item.wake) return <WakeCard item={item} />;
   const author = item.author;

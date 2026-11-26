@@ -47,11 +47,14 @@ describe("the page an address opens", () => {
     expect(askedTab({}, "#security")).toBe("security");
   });
 
-  it("is where Google and Linear send people back to", () => {
+  it("is where Google, Linear and Slack send people back to", () => {
     expect(askedTab({ linked: "google" }, "")).toBe("security");
     expect(askedTab({ error: "google_cancelled" }, "")).toBe("security");
     expect(askedTab({ linear: "linked" }, "#linear")).toBe("linear");
     expect(askedTab({ linear: "linked" }, "")).toBe("linear");
+    expect(askedTab({ slack: "linked" }, "")).toBe("slack");
+    // On the way to link an account, where the instance asks people to confirm it's them first.
+    expect(askedTab({ slack: "confirm" }, "")).toBe("slack");
   });
 });
 

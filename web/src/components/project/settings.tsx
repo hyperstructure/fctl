@@ -26,6 +26,7 @@ import { ProjectIconPicker } from "@/components/project/icon-picker";
 import { IdentitySettings } from "@/components/project/identity";
 import { ProjectIcon } from "@/components/project/project-icon";
 import { Secrets } from "@/components/project/secrets";
+import { ProjectSlack } from "@/components/project/slack";
 import { TicketsSettings } from "@/components/project/tickets";
 import { SwitchRow, SwitchRows, sameDraft, UnsavedGuard, useDraft } from "@/components/settings/form";
 import { type NavEntry, type NavLinkProps, SettingsList, SettingsNav } from "@/components/settings/nav";
@@ -42,6 +43,7 @@ import {
   SectionLayout,
   Select,
   type SelectOption,
+  SlackIcon,
   Textarea,
   toast,
 } from "@/components/ui";
@@ -99,7 +101,7 @@ import { keys, queryClient, useInstance, useMe, useRunners, useWorkspace } from 
 import type { Gist } from "@/lib/settings";
 import type { LinearOutcome } from "@/lib/tickets";
 
-const ICONS: Record<ProjectSettingsPage, LucideIcon> = {
+const ICONS: Record<Exclude<ProjectSettingsPage, "slack">, LucideIcon> = {
   // Not the gear: that's the Settings tab right above.
   general: SlidersHorizontal,
   agents: Bot,
@@ -117,14 +119,16 @@ function entries(pages: ProjectSettingsPage[]): NavEntry<ProjectSettingsPage>[][
   return SETTINGS_GROUPS.map((group) =>
     group
       .filter((e) => pages.includes(e.page))
-      .map((e) => {
-        const Icon = ICONS[e.page];
-        return {
-          key: e.page,
-          label: e.label,
-          icon: (className: string) => <Icon className={className} aria-hidden="true" />,
-        };
-      }),
+      .map((e) => ({
+        key: e.page,
+        label: e.label,
+        icon: (className: string) => {
+          // Slack's mark, in one color as the icons beside it are.
+          if (e.page === "slack") return <SlackIcon mono className={cn(className, "scale-[0.9]")} />;
+          const Icon = ICONS[e.page];
+          return <Icon className={className} aria-hidden="true" />;
+        },
+      })),
   );
 }
 
@@ -142,7 +146,9 @@ export function ProjectSettings({
   /** The webhook Webhooks opens. */
   webhook?: string;
 }) {
-  const pages = settingsPagesFor(project.role);
+  const { data: instance } = useInstance();
+  // Slack's page where the instance has a Slack app.
+  const pages = settingsPagesFor(project.role, (p) => p !== "slack" || !!instance?.features.slack);
   // The page the address names; Settings itself shows the first beside the list where both fit.
   const asked = isSettingsPage(view) ? view : undefined;
   const open = asked ?? pages[0];
@@ -266,6 +272,8 @@ function SettingsBody({
       return <PullRequests project={project} />;
     case "tickets":
       return <TicketsSettings project={project} returned={linear} />;
+    case "slack":
+      return <ProjectSlack project={project} />;
     case "runners":
       return <Runners project={project} />;
     case "sandbox":

@@ -723,18 +723,30 @@ export const workspaces = {
   /** The Slack workspaces it works in, and what it lets people and agents do there (members read it). */
   slack: (id: string) => request<G.WorkspaceSlack>("GET", `/workspaces/${enc(id)}/slack`),
   // The link to the Slack sign-in that installs fctl's app in a Slack workspace and connects it.
-  connectSlack: (id: string) => request<G.SlackLink>("POST", `/workspaces/${enc(id)}/slack/connect`, {}),
+  /** `team` has Slack's sign-in offer that Slack workspace alone, as when connecting one again. */
+  connectSlack: (id: string, team?: string) =>
+    request<G.SlackLink>("POST", `/workspaces/${enc(id)}/slack/connect`, {
+      team,
+    } satisfies G.ConnectSlackRequest),
   /** What it names changes, the rest stays (its admins). */
   updateSlack: (id: string, team: string, b: G.UpdateSlackRequest) =>
     request<G.WorkspaceSlack>("PATCH", `/workspaces/${enc(id)}/slack/${enc(team)}`, b),
   disconnectSlack: (id: string, team: string) =>
     request<G.WorkspaceSlack>("DELETE", `/workspaces/${enc(id)}/slack/${enc(team)}`),
-  /** Public channels of a Slack workspace it works in, those whose names have `query` (its admins). */
-  slackChannels: (id: string, team: string, query?: string) =>
-    request<G.SlackChannelList>(
+  /**
+   * Public channels of a Slack workspace it works in, those whose names have `query`: for its admins,
+   * and for `project`'s maintainers choosing where its events go.
+   */
+  slackChannels: (id: string, team: string, query?: string, project?: string) => {
+    const q = new URLSearchParams();
+    if (query) q.set("query", query);
+    if (project) q.set("project", project);
+    const qs = q.toString();
+    return request<G.SlackChannelList>(
       "GET",
-      `/workspaces/${enc(id)}/slack/${enc(team)}/channels${query ? `?query=${enc(query)}` : ""}`,
-    ),
+      `/workspaces/${enc(id)}/slack/${enc(team)}/channels${qs ? `?${qs}` : ""}`,
+    );
+  },
   /** The project a channel's mentions start sessions in, and whether agents read it; fctl's app joins it. */
   setSlackChannel: (id: string, team: string, channel: string, b: G.SetSlackChannelRequest) =>
     request<G.WorkspaceSlack>("PUT", `/workspaces/${enc(id)}/slack/${enc(team)}/channels/${enc(channel)}`, b),

@@ -16,6 +16,7 @@ import { lastMoved } from "@/lib/sessions";
 import { statusReason } from "@/lib/status";
 import { ticketLabel } from "@/lib/tickets";
 import { PullRequestChecksIcon, PullRequestReviewMark, PullRequestStateIcon } from "./pull-request";
+import { SlackMark } from "./slack";
 
 /**
  * A session's row. `workspace` names its workspace, where the list has several; in its project's
@@ -62,6 +63,7 @@ export function SessionRow({
           </span>
           <ScheduledMark s={s} />
           <TicketMark s={s} />
+          <SlackMark s={s} />
           <ServiceAccountMark s={s} />
           {inProject && s.branch && (
             <>

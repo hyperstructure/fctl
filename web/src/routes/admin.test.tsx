@@ -306,6 +306,7 @@ const instanceSettings = (s: Partial<G.InstanceSettings> = {}): G.InstanceSettin
   claude_refusals: 2,
   sign_in: [],
   self_sign_up: true,
+  slack_match_email: false,
   ...s,
 });
 

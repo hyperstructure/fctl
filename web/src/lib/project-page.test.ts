@@ -97,6 +97,7 @@ describe("a project's page", () => {
       "agents",
       "pull-requests",
       "tickets",
+      "slack",
       "runners",
       "sandbox",
       "secrets",
@@ -106,6 +107,8 @@ describe("a project's page", () => {
     expect(settingsPagesFor("maintainer")).toEqual(settingsPagesFor("owner"));
     expect(settingsPagesFor("editor")).toEqual(["tickets"]);
     expect(settingsPagesFor("viewer")).toEqual(["tickets"]);
+    // Slack's page only where the instance has a Slack app.
+    expect(settingsPagesFor("owner", (p) => p !== "slack")).not.toContain("slack");
     // Settings itself opens its first page beside the list.
     expect(settingsPageOf("settings", "maintainer")).toBe("general");
     expect(settingsPageOf("settings", "viewer")).toBe("tickets");

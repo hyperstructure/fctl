@@ -233,7 +233,7 @@ export function NewProject() {
           <Link
             to="/w/$slug"
             params={{ slug: ws.slug }}
-            search={{ tab: "github" }}
+            search={{ tab: "integrations", integration: "github" }}
             className="underline underline-offset-2"
           >
             Connect one

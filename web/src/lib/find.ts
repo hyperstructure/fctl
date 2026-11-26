@@ -309,8 +309,8 @@ function tool(
 function item(out: Out, part: string, it: Item, outer: readonly Reveal[], cwd?: string) {
   switch (it.kind) {
     case "user": {
-      // From fctl about a pull request, a review or a ticket: what it told the agent, a click away.
-      if (it.followUp || it.ticket || it.review) {
+      // From fctl about a pull request, a review, a ticket or Slack: what it told the agent, a click away.
+      if (it.followUp || it.ticket || it.slack || it.review) {
         push(out, `told:${it.key}`, part, it.seq, it.text.trim(), [[`told:${it.key}`, "open"]]);
         return;
       }
@@ -355,8 +355,8 @@ function notice(out: Out, part: string, it: Item, n: G.Notice) {
     push(out, `notice:${it.key}`, part, it.seq, n.question.text, []);
     return;
   }
-  // Screenshots, reviews, follow-ups held and tickets show as lines of their own.
-  if (n.published || n.review || n.follow_up || n.ticket) return;
+  // Screenshots, reviews, follow-ups held, tickets and Slack show as lines of their own.
+  if (n.published || n.review || n.follow_up || n.ticket || n.slack) return;
   push(out, `notice:${it.key}`, part, it.seq, n.message, []);
 }
 

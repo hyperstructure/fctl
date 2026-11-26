@@ -4,6 +4,7 @@
 // posts to a channel, and what a change to a workspace's choices comes to.
 
 import type * as G from "@/gen";
+import { ago } from "./format";
 
 // ───────────────────────────── a workspace's integrations ─────────────────────────────
 
@@ -40,6 +41,8 @@ export interface Standing {
   state: "on" | "off" | "wrong" | "loading";
   /** In a few words: "Connected to acme", "Not connected yet", "Access revoked". */
   text: string;
+  /** In a word or two, where a phone leaves little room: "Connected", "Not yet", "Revoked". */
+  short: string;
 }
 
 /** "acme", "acme and globex", "acme and 2 more". */
@@ -50,28 +53,55 @@ export function someNames(names: readonly string[]): string {
 
 /** How GitHub stands: the accounts the workspace works in, which its summary lists. */
 export function githubStanding(accounts: readonly string[], instanceHasApp: boolean): Standing {
-  if (accounts.length > 0) return { state: "on", text: `Connected to ${someNames(accounts)}` };
-  return { state: "off", text: instanceHasApp ? "Not connected yet" : "No GitHub App here" };
+  if (accounts.length > 0)
+    return { state: "on", text: `Connected to ${someNames(accounts)}`, short: "Connected" };
+  return instanceHasApp
+    ? { state: "off", text: "Not connected yet", short: "Not yet" }
+    : { state: "off", text: "No GitHub App here", short: "No app" };
 }
 
 /** How Linear stands: the Linear workspaces it works in, and whether Linear took fctl's access back. */
 export function linearStanding(l: G.WorkspaceLinear | undefined): Standing {
-  if (!l) return { state: "loading", text: "" };
-  if (!l.configured) return { state: "off", text: "No Linear app here" };
-  const active = l.connections.filter((c) => c.status === "active").map((c) => c.name);
-  if (active.length > 0) return { state: "on", text: `Connected to ${someNames(active)}` };
-  if (l.connections.length > 0) return { state: "wrong", text: "Access revoked" };
-  return { state: "off", text: "Not connected yet" };
+  if (!l) return LOADING;
+  if (!l.configured) return { state: "off", text: "No Linear app here", short: "No app" };
+  return standing(
+    l.connections.length,
+    l.connections.filter((c) => c.status === "active").map((c) => c.name),
+  );
 }
 
 /** How Slack stands: the Slack workspaces it works in, and whether Slack took fctl's access back. */
 export function slackStanding(s: G.WorkspaceSlack | undefined): Standing {
-  if (!s) return { state: "loading", text: "" };
-  if (!s.configured) return { state: "off", text: "No Slack app yet" };
-  const active = s.connections.filter((c) => c.status === "active").map((c) => c.name);
-  if (active.length > 0) return { state: "on", text: `Connected to ${someNames(active)}` };
-  if (s.connections.length > 0) return { state: "wrong", text: "Access revoked" };
-  return { state: "off", text: "Not connected yet" };
+  if (!s) return LOADING;
+  if (!s.configured) return { state: "off", text: "No Slack app yet", short: "No app" };
+  const st = standing(
+    s.connections.length,
+    s.connections.filter((c) => c.status === "active").map((c) => c.name),
+  );
+  // Connected, while nothing people do there reaches fctl: the instance takes no events, or Socket
+  // Mode is down. Its page says why.
+  if (st.state === "on" && (!s.events || (s.socket_mode && s.socket_connected === false)))
+    return { state: "wrong", text: "Connected, but nothing reaches fctl", short: "No events" };
+  return st;
+}
+
+const LOADING: Standing = { state: "loading", text: "", short: "" };
+
+/** Connected to the ones that work; revoked where none does; or none yet. */
+function standing(connections: number, active: string[]): Standing {
+  if (active.length > 0)
+    return { state: "on", text: `Connected to ${someNames(active)}`, short: "Connected" };
+  if (connections > 0) return { state: "wrong", text: "Access revoked", short: "Revoked" };
+  return { state: "off", text: "Not connected yet", short: "Not yet" };
+}
+
+/**
+ * When, after a verb: "3 days ago", "yesterday", and "on Nov 14" past a week, where `ago` gives the
+ * day alone ("connected by Noor on Nov 14", not "… Noor Nov 14").
+ */
+export function agoAfterVerb(ms: number, now = Date.now()): string {
+  const words = ago(ms, now);
+  return now - ms >= 7 * 86_400_000 ? `on ${words}` : words;
 }
 
 // ───────────────────────────── coming back from Slack ─────────────────────────────
@@ -254,8 +284,16 @@ export const SLACK_EVENT_KINDS: { type: string; label: string; phrase: string }[
   { type: "session.failed", label: "A session fails", phrase: "a session fails" },
   { type: "session.question", label: "An agent asks something", phrase: "an agent asks something" },
   { type: "session.finished", label: "An agent finishes a turn", phrase: "an agent finishes a turn" },
-  { type: "pull_request.opened", label: "An agent opens a pull request", phrase: "an agent opens a pull request" },
-  { type: "pull_request.merged", label: "An agent's pull request merges", phrase: "an agent's pull request merges" },
+  {
+    type: "pull_request.opened",
+    label: "An agent opens a pull request",
+    phrase: "an agent opens a pull request",
+  },
+  {
+    type: "pull_request.merged",
+    label: "An agent's pull request merges",
+    phrase: "an agent's pull request merges",
+  },
 ];
 
 /** What a channel hears when nobody chose (`SlackEvents::DEFAULT`): pull requests ready for review, and failures. */
@@ -327,13 +365,17 @@ export function settingSaved(b: G.UpdateSlackRequest): string {
       ? "Agents search the readable channels now"
       : "Agents read the readable channels without searching them now";
   if (b.agent_replies !== undefined)
-    return b.agent_replies ? "Agents post in their own threads now" : "Only fctl posts in sessions' threads now";
+    return b.agent_replies
+      ? "Agents post in their own threads now"
+      : "Only fctl posts in sessions' threads now";
   if (b.notifications !== undefined)
     return b.notifications
       ? "People who choose it get their notifications in Slack now"
       : "Notifications stay out of Slack now";
   if (b.project_events !== undefined)
-    return b.project_events ? "Projects post the events they choose to channels now" : "Projects post no events to Slack now";
+    return b.project_events
+      ? "Projects post the events they choose to channels now"
+      : "Projects post no events to Slack now";
   if (b.match_email !== undefined)
     return b.match_email
       ? "fctl knows people by their verified address in Slack now"
@@ -351,6 +393,9 @@ export function slackGist(accounts: G.SlackAccount[] | undefined): { text: strin
   const [first] = accounts;
   if (!first) return { text: "Not linked" };
   return {
-    text: accounts.length === 1 ? `Linked in ${first.team_name}` : `Linked in ${accounts.length} Slack workspaces`,
+    text:
+      accounts.length === 1
+        ? `Linked in ${first.team_name}`
+        : `Linked in ${accounts.length} Slack workspaces`,
   };
 }

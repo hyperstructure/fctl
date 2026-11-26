@@ -259,6 +259,7 @@ export function CommandPalette({
     // they don't crowd.
     for (const p of SETTINGS_PAGES) {
       if (p.tab === "linear" && !instance?.features.linear) continue;
+      if (p.tab === "slack" && !instance?.features.slack) continue;
       list.push({
         id: `settings-${p.tab}`,
         group: "Settings",

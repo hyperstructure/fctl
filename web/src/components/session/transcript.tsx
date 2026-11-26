@@ -59,6 +59,7 @@ import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Busy, Milestone, MilestoneButton, RailIcon, Thread } from "./lines";
 import { RetrospectiveCard } from "./retrospective";
+import { SlackMessageView, SlackNoticeView } from "./slack";
 import { TicketMessageView, TicketNoticeView } from "./ticket";
 import { Run, ToolRow } from "./tool";
 
@@ -79,6 +80,16 @@ export const UserMessage = memo(function UserMessage({
     return (
       <TicketMessageView
         message={item.ticket}
+        author={author}
+        text={item.text}
+        ts={item.ts}
+        findKey={item.key}
+      />
+    );
+  if (item.slack)
+    return (
+      <SlackMessageView
+        message={item.slack}
         author={author}
         text={item.text}
         ts={item.ts}
@@ -579,6 +590,10 @@ export const ItemView = memo(function ItemView({
       if (item.notice.follow_up)
         return <HeldFollowUp followUp={item.notice.follow_up} code={item.notice.code} ts={item.ts} />;
       if (item.notice.ticket) return <TicketNoticeView notice={item.notice.ticket} code={item.notice.code} />;
+      if (item.notice.slack)
+        return (
+          <SlackNoticeView notice={item.notice.slack} code={item.notice.code} message={item.notice.message} />
+        );
       if (item.notice.question) return <QuestionNotice question={item.notice.question} findKey={item.key} />;
       if (item.notice.autopilot) return <AutopilotAction notice={item.notice} />;
       if (item.notice.memory)

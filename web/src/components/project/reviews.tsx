@@ -571,7 +571,7 @@ function PostedAs({ project, agents }: { project: G.Project; agents: G.ReviewAge
             <Link
               to="/w/$slug"
               params={{ slug: project.workspace.slug }}
-              search={{ tab: "github" }}
+              search={{ tab: "integrations", integration: "github" }}
               className="inline-flex items-center gap-1 text-[12.5px] text-ink-2 hover:text-ink hover:underline"
             >
               {elsewhere.accounts.some((a) => a.install_url) ? `Install ${app.slug}` : "Where it's installed"}

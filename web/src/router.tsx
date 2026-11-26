@@ -8,6 +8,7 @@ import { appHistory } from "@/lib/history";
 import { PROJECT_VIEWS, type ProjectView } from "@/lib/project-page";
 import { fetchMe, keys, queryClient, startRetries } from "@/lib/queries";
 import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings";
+import { INTEGRATIONS, type Integration, SLACK_OUTCOMES, type SlackOutcome } from "@/lib/slack";
 import { routerScrolls } from "@/lib/stick-to-bottom";
 import { LINEAR_OUTCOMES, type LinearOutcome } from "@/lib/tickets";
 import { Admin } from "@/routes/admin";
@@ -138,17 +139,22 @@ const workspace = createRoute({
     s: Record<string, unknown>,
   ): {
     tab?: WorkspaceTab;
+    integration?: Integration;
     github?: GithubOutcome;
     account?: string;
     reason?: GithubRefusal;
     linear?: LinearOutcome;
+    slack?: SlackOutcome;
+    team?: string;
     webhook?: string;
     serviceAccount?: string;
   } => ({
+    // GitHub's and Linear's tabs from before Integrations held them open them there.
     tab: oneOf(s.tab, [
       "projects",
       "people",
       "runners",
+      "integrations",
       "github",
       "linear",
       "webhooks",
@@ -156,12 +162,18 @@ const workspace = createRoute({
       "settings",
       "audit",
     ] as const),
+    // The one Integrations opens: GitHub, Linear or Slack.
+    integration: oneOf(s.integration, INTEGRATIONS),
     // Back from GitHub: installing the app, or the sign-in that connects an account (api::github).
     github: oneOf(s.github, GITHUB_OUTCOMES),
     account: str(s.account),
     reason: oneOf(s.reason, GITHUB_REFUSALS),
     // Back from Linear: installing fctl's app there (api::linear).
     linear: oneOf(s.linear, LINEAR_OUTCOMES),
+    // Back from Slack: installing fctl's app there (api::slack::installed), and in which Slack
+    // workspace.
+    slack: oneOf(s.slack, SLACK_OUTCOMES),
+    team: str(s.team),
     // The webhook the Webhooks tab opens.
     webhook: str(s.webhook),
     // The service account the Service accounts tab opens.
@@ -213,7 +225,15 @@ const settings = createRoute({
   component: SettingsPage,
   validateSearch: (
     s: Record<string, unknown>,
-  ): { tab?: SettingsTab; linked?: string; error?: string; linear?: LinearOutcome } => ({
+  ): {
+    tab?: SettingsTab;
+    linked?: string;
+    error?: string;
+    linear?: LinearOutcome;
+    slack?: SlackOutcome;
+    team?: string;
+    thread?: string;
+  } => ({
     // The page open; none: the list of pages on a phone, Profile beside it (lib/settings.ts).
     tab: oneOf(s.tab, SETTINGS_TABS),
     // Back from Google: linking it, which worked or didn't (api::google).
@@ -221,6 +241,11 @@ const settings = createRoute({
     error: str(s.error),
     // Back from Linear: linking your account (api::linear).
     linear: oneOf(s.linear, LINEAR_OUTCOMES),
+    // Back from Slack: linking your account (api::slack::linked), or on the way there, to confirm
+    // it's you first (`confirm`), with the Slack workspace and the thread that asked you to link it.
+    slack: oneOf(s.slack, SLACK_OUTCOMES),
+    team: str(s.team),
+    thread: str(s.thread),
   }),
 });
 const admin = createRoute({
@@ -239,6 +264,7 @@ const admin = createRoute({
             "early-access",
             "workspaces",
             "github",
+            "slack",
             "runners",
             "settings",
             "audit",
