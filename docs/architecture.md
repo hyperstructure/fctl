@@ -5202,7 +5202,7 @@ keep the project's memory and record and update retrospectives,
 ([Ticket trackers](#ticket-trackers)), and `fctl id-token` mints identity
 tokens ([Identity tokens](#identity-tokens)), with no fctl credentials in
 the sandbox. fctl-agents of fctl 0.38.1 and earlier give the setup script
-neither variable, so `fctl` there can't reach them.
+neither variable, so `fctl` there can't reach the socket.
 
 Docker sandboxes don't reach cloud metadata services
 (`fctl_domain::metadata`), which hand out the machine's own credentials,
