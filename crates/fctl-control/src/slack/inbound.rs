@@ -317,7 +317,7 @@ async fn refuse_shared(slack: &Slack, m: &MessageEvent) {
             .ephemeral(
                 &m.channel,
                 user,
-                Some(m.thread()),
+                m.thread_ts.as_deref(),
                 "fctl doesn't work in channels shared with other organizations yet.",
                 &blocks::only_you(
                     ":no_entry_sign:",
@@ -533,8 +533,12 @@ async fn tell(slack: &Slack, ask: &Ask, words: &str, blocks: &Value) {
             .await
             .map(|_| ())
     } else {
+        // Slack shows a message only one person sees in a thread once the
+        // thread has replies: for a mention that starts none yet, in the
+        // channel.
+        let thread = (ask.thread_ts != ask.message_ts).then_some(ask.thread_ts.as_str());
         slack
-            .ephemeral(&ask.channel, &ask.user, Some(&ask.thread_ts), words, blocks)
+            .ephemeral(&ask.channel, &ask.user, thread, words, blocks)
             .await
     };
     if let Err(e) = posted {
@@ -1129,6 +1133,22 @@ async fn context(
         }
     };
     let quoted_ts = ask.quoted.as_ref().map(|q| q.ts.as_str());
+    // The names of the thread's other authors, asked of Slack: at most ten.
+    let mut names = names.clone();
+    let mut asked = 0;
+    for m in &messages {
+        let Some(user) = m.get("user").and_then(Value::as_str) else {
+            continue;
+        };
+        if names.contains_key(user) || asked >= 10 {
+            continue;
+        }
+        asked += 1;
+        if let Ok(u) = slack.user(user).await {
+            names.insert(user.to_owned(), u.name);
+        }
+    }
+    let names = &names;
     let name = |m: &Value| -> String {
         let user = m.get("user").and_then(Value::as_str).unwrap_or_default();
         names
