@@ -355,7 +355,7 @@ pub fn command(
     }
     let done = act(action, body)?;
     if let (Some(channel), Some(ts)) = (
-        done["thread"]["channel"]["name"].as_str(),
+        done["thread"]["channel"]["id"].as_str(),
         done["thread"]["ts"].as_str(),
     ) {
         follow(channel, ts)?;

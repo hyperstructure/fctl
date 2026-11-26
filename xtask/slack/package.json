@@ -1,0 +1,18 @@
+{
+  "name": "@fctl/slack-standin",
+  "private": true,
+  "type": "module",
+  "description": "A stand-in for Slack in cargo xtask dev: its install and sign-in pages and Web API, and the events, interactions and commands it signs",
+  "scripts": {
+    "start": "node standin.mjs",
+    "check": "biome check .",
+    "fix": "biome check --write .",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
