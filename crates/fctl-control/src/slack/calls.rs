@@ -329,30 +329,6 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
                 }
                 None => r.readable.clone(),
             };
-            // Each channel as Slack has it now, as history checks it: one
-            // made private, shared with another organization or archived
-            // since it was made readable isn't searched.
-            let readable: Vec<String> = r.readable.iter().map(|c| c.id.clone()).collect();
-            let reach = Reach {
-                thread: None,
-                readable: &readable,
-            };
-            let mut open: Vec<SlackChannelRef> = Vec::new();
-            for c in within.iter().take(SEARCHED_CHANNELS) {
-                if let Ok(conv) = slack.conversation(&c.id).await
-                    && access::may_read(&reach, &conv, Reading::Channel).is_ok()
-                {
-                    open.push(SlackChannelRef {
-                        id: c.id.clone(),
-                        name: conv.name.unwrap_or_else(|| c.name.clone()),
-                    });
-                }
-            }
-            if open.is_empty() {
-                return Err(forbidden(
-                    "None of the channels this session's agents may read can be read now: they were made private, shared with another organization or archived, or Slack didn't answer.",
-                ));
-            }
             let token = r
                 .thread
                 .as_ref()
@@ -360,7 +336,8 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
             search(
                 &slack,
                 query,
-                &open,
+                &within,
+                &r.readable,
                 token.as_deref(),
                 max.unwrap_or(20).clamp(1, 50),
                 ctx.now,
@@ -661,20 +638,81 @@ fn views(
 /// first: through Slack's Real-time Search, where the thread's event gave
 /// fctl a token for it, keeping only what it found in those channels; else
 /// in their last week, read here.
-/// How many readable channels a search looks in at most.
+/// How many readable channels a search reads itself at most, where
+/// Slack's Real-time Search doesn't answer for them.
 const SEARCHED_CHANNELS: usize = 10;
 
+/// The readable channels' checks, as Slack has each now, as history checks
+/// it: one made private, shared with another organization or archived since
+/// it was made readable isn't searched. Each is asked once.
+struct Checks<'a> {
+    slack: &'a Slack,
+    readable: Vec<String>,
+    seen: std::collections::HashMap<String, Check>,
+}
+
+#[derive(Clone)]
+enum Check {
+    /// Agents may read it: its name now.
+    Open(String),
+    /// They may not, any more.
+    Closed,
+    /// Slack didn't say just now.
+    Unknown,
+}
+
+impl<'a> Checks<'a> {
+    fn new(slack: &'a Slack, readable: &[SlackChannelRef]) -> Self {
+        Self {
+            slack,
+            readable: readable.iter().map(|c| c.id.clone()).collect(),
+            seen: std::collections::HashMap::new(),
+        }
+    }
+
+    async fn check(&mut self, id: &str) -> Check {
+        if let Some(c) = self.seen.get(id) {
+            return c.clone();
+        }
+        let reach = Reach {
+            thread: None,
+            readable: &self.readable,
+        };
+        let c = match self.slack.conversation(id).await {
+            Ok(conv) => match access::may_read(&reach, &conv, Reading::Channel) {
+                Ok(()) => Check::Open(conv.name.unwrap_or_default()),
+                Err(_) => Check::Closed,
+            },
+            Err(super::Failure::Slack(code))
+                if code == "channel_not_found" || code == "not_in_channel" =>
+            {
+                Check::Closed
+            }
+            Err(_) => Check::Unknown,
+        };
+        self.seen.insert(id.to_owned(), c.clone());
+        c
+    }
+}
+
+/// Searches `within`, readable channels of `readable`: with Slack's
+/// Real-time Search where the session has an action token, keeping what it
+/// finds in channels agents may read now; else, or where it finds nothing
+/// there, by reading the channels' last week itself, ten at most.
 async fn search(
     slack: &Slack,
     query: &str,
     within: &[SlackChannelRef],
+    readable: &[SlackChannelRef],
     token: Option<&str>,
     max: u32,
     now: i64,
 ) -> AppResult<SlackAnswer> {
+    let mut checks = Checks::new(slack, readable);
+    let mut unanswered = false;
     // Slack's Real-time Search ranks every public channel's messages: those
-    // outside the readable channels drop, and where none is left, fctl
-    // reads the channels themselves.
+    // outside the channels searched drop, and so do those of channels agents
+    // may no longer read.
     if let Some(token) = token
         && let Ok(found) = slack.search(query, token, max).await
     {
@@ -691,6 +729,15 @@ async fn search(
                 .unwrap_or_default();
             let Some(c) = within.iter().find(|c| c.id == channel) else {
                 continue;
+            };
+            let name = match checks.check(channel).await {
+                Check::Open(name) if !name.is_empty() => name,
+                Check::Open(_) => c.name.clone(),
+                Check::Closed => continue,
+                Check::Unknown => {
+                    unanswered = true;
+                    continue;
+                }
             };
             let ts = m
                 .get("message_ts")
@@ -720,7 +767,7 @@ async fn search(
                     m.get("content").and_then(Value::as_str).unwrap_or_default(),
                     &|_| None,
                 ),
-                channel_name: Some(c.name.clone()),
+                channel_name: Some(name),
                 url: m
                     .get("permalink")
                     .and_then(Value::as_str)
@@ -740,7 +787,7 @@ async fn search(
                 channel: None,
                 messages: out,
                 more: false,
-                note: None,
+                note: unanswered.then(|| UNANSWERED.to_owned()),
             });
         }
     }
@@ -752,18 +799,35 @@ async fn search(
         .collect();
     let oldest = sl::millis_ts(now - 7 * 24 * 60 * 60 * 1000);
     let mut out: Vec<SlackMessageView> = Vec::new();
-    let mut note = None;
+    let mut notes: Vec<String> = Vec::new();
+    let (mut read, mut closed) = (0, 0);
     for c in within.iter().take(SEARCHED_CHANNELS) {
+        let name = match checks.check(&c.id).await {
+            Check::Open(name) => name,
+            Check::Closed => {
+                closed += 1;
+                continue;
+            }
+            Check::Unknown => {
+                unanswered = true;
+                continue;
+            }
+        };
         let (messages, _) = match slack.history(&c.id, Some(&oldest), 200).await {
             Ok(m) => m,
             Err(super::Failure::Limited(after)) => {
-                note = Some(format!(
+                notes.push(format!(
                     "Slack limits how often fctl reads channels here: some weren't searched. Try again in {after} seconds."
                 ));
                 continue;
             }
+            Err(super::Failure::Down(_)) => {
+                unanswered = true;
+                continue;
+            }
             Err(e) => return Err(e.into()),
         };
+        read += 1;
         let hits: Vec<Value> = messages
             .into_iter()
             .filter(|m| {
@@ -776,20 +840,53 @@ async fn search(
             })
             .collect();
         let names = names(slack, &hits).await;
-        out.extend(views(slack, &c.id, Some(&c.name), &hits, &names, None, &[]));
+        let shown = if name.is_empty() { &c.name } else { &name };
+        out.extend(views(slack, &c.id, Some(shown), &hits, &names, None, &[]));
+    }
+    if read == 0 && notes.is_empty() {
+        // Nothing could be read: say why, apart from what Slack didn't answer.
+        return Err(if unanswered {
+            AppError(ApiError::new(
+                ErrorCode::Unavailable,
+                "Slack didn't answer fctl just now, so nothing was searched: try again in a minute.",
+            ))
+        } else if closed > 0 {
+            forbidden(
+                "None of the channels this session's agents may read can be read now: they were made private, shared with another organization or archived since.",
+            )
+        } else {
+            forbidden(
+                "No channel is readable for this session's agents, so there's nothing to search.",
+            )
+        });
+    }
+    if unanswered {
+        notes.push(UNANSWERED.to_owned());
+    }
+    if within.len() > SEARCHED_CHANNELS {
+        notes.push(format!(
+            "fctl read the first {SEARCHED_CHANNELS} of {} readable channels: name one with --channel to search another.",
+            within.len()
+        ));
     }
     out.sort_by_key(|a| std::cmp::Reverse(a.at));
     let more = out.len() > max as usize;
     out.truncate(max as usize);
+    notes.push(
+        "fctl searched the readable channels' last week, for messages with all of those words."
+            .into(),
+    );
     Ok(SlackAnswer::Messages {
         channel: None,
         messages: out,
         more,
-        note: note.or_else(|| {
-            Some("fctl searched the readable channels' last week, for messages with all of those words.".into())
-        }),
+        note: Some(notes.join(" ")),
     })
 }
+
+/// What a search says where Slack didn't say whether some channels are
+/// still readable.
+const UNANSWERED: &str = "Slack didn't answer for some channels just now, so they weren't searched: try again in a minute.";
 
 /// What a session's agent reaches in Slack and is told of it
 /// (`SessionSpec::slack`): `None` where it reaches nothing there.
