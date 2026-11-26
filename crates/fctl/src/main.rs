@@ -746,6 +746,30 @@ mod tests {
     }
 
     #[test]
+    fn the_slack_events_a_project_may_choose_are_fctls() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let help = cmd
+            .find_subcommand("projects")
+            .and_then(|p| p.find_subcommand("slack"))
+            .and_then(|c| c.get_after_help())
+            .map(|h| h.to_string())
+            .unwrap_or_default();
+        let named: Vec<&str> = help
+            .split(|c: char| !(c.is_ascii_lowercase() || c == '_' || c == '.'))
+            .map(|w| w.trim_matches('.'))
+            .filter(|w| w.contains('.') && !w.contains(".."))
+            .collect();
+        assert!(named.len() >= 6, "{help}");
+        for kind in named {
+            assert!(
+                fctl_domain::hooks::Kind::parse(kind).is_some(),
+                "`fctl projects slack --help` names {kind}, which isn't an event"
+            );
+        }
+    }
+
+    #[test]
     fn the_log_takes_colors_only_in_a_terminal() {
         let plain = Some(OsStr::new("plain"));
         // `fctl host run` in a terminal; into a file or a pipe; as the host

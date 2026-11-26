@@ -475,7 +475,7 @@ pub enum ProjectsCmd {
     /// channels its workspace's admins made readable, and the channel its
     /// events go to. The flags change them (maintainers).
     #[command(
-        after_help = "Events: session.ready_for_review and session.failed unless you choose others, among session.question, session.turn_ended, session.pr_opened and session.pr_merged (as webhooks name them).\n\nExamples:\n  fctl projects slack -p web\n  fctl projects slack -p web --read-channels off\n  fctl projects slack -p web --events web-alerts\n  fctl projects slack -p web --events web-alerts --kinds session.failed,session.question\n  fctl projects slack -p web --events C0123ABCD   # a private channel, by its ID, once its members invited fctl\n  fctl projects slack -p web --events none"
+        after_help = "Events: session.ready_for_review and session.failed unless you choose others, among session.question, session.finished, pull_request.opened and pull_request.merged (as webhooks name them).\n\nExamples:\n  fctl projects slack -p web\n  fctl projects slack -p web --read-channels off\n  fctl projects slack -p web --events web-alerts\n  fctl projects slack -p web --events web-alerts --kinds session.failed,session.question\n  fctl projects slack -p web --events C0123ABCD   # a private channel, by its ID, once its members invited fctl\n  fctl projects slack -p web --events none"
     )]
     Slack {
         /// The project (slug or id); default from `fctl projects use`.
