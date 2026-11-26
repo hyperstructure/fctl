@@ -100,6 +100,19 @@ pub(crate) async fn thread_of(db: &D1Database, session_id: &str) -> AppResult<Op
     .await
 }
 
+/// Marks a new session's thread as started with it, as `crate::starts`
+/// starts it: before a runner asks for its spec, which names the thread
+/// only once it is (`thread_of`).
+pub(crate) async fn mark_started(
+    db: &D1Database,
+    slack: &SessionSlack,
+    session_id: &str,
+    now: i64,
+) -> AppResult<()> {
+    let id = sl::thread_id(&slack.team, &slack.channel, &slack.thread_ts);
+    set_state(db, &id, "started", Some(session_id), now).await
+}
+
 async fn set_state(
     db: &D1Database,
     id: &str,

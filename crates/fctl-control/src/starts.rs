@@ -130,6 +130,11 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
     )?
     .run()
     .await?;
+    // A session from Slack: its thread names it before a runner asks what
+    // its agent reaches there, which takes the thread only once it does.
+    if let Some(thread) = &st.slack {
+        crate::slack::inbound::mark_started(db, thread, id.as_str(), st.now).await?;
+    }
     if st.follow
         && let Err(e) = crate::notify::follow_own(db, id.as_str(), &st.user.id, st.now).await
     {
