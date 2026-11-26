@@ -364,6 +364,12 @@ pub async fn emit(env: &Env, workspace_id: Option<&str>, event: Event) -> AppRes
         },
         (None, None) => return Ok(()),
     };
+    // A project's chosen events in a Slack channel, through fctl's app.
+    if event.project_id.is_some()
+        && let Err(e) = crate::slack::home::project_event(env, &db, &event).await
+    {
+        worker::console_error!("a project's event in Slack: {}", e.0.message);
+    }
     let hooks = wanted(&db, &workspace, crate::ctx::now_ms()).await?;
     if !hooks
         .iter()

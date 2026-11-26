@@ -1162,6 +1162,9 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.self_sign_up {
         settings.self_sign_up = on;
     }
+    if let Some(on) = body.slack_match_email {
+        settings.slack_match_email = on;
+    }
     // No admin signs themselves out who might not sign in again: they
     // sign in with the provider first, which shows it works.
     let mut change = None;

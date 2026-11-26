@@ -476,6 +476,13 @@ pub struct SessionSpec {
     /// out of the agent's configuration, and their agents hear nothing of
     /// it, while their GitHub tokens still follow the tracker.
     pub tickets: Option<crate::tickets::TicketsSpec>,
+    /// What its agent reaches in Slack, and is told of it: the thread the
+    /// session started from, the channels it may read, whether it may post
+    /// (`fctl_domain::slack`). Absent where its workspace works in no Slack
+    /// workspace, for review agents, and from older control planes; older
+    /// hosts leave it out of the agent's configuration, and their agents
+    /// hear nothing of Slack.
+    pub slack: Option<crate::slack::SlackSpec>,
     /// For an autopilot's own session: the autopilot, whose agent reaches
     /// the API through fctl-agent (`AgentCall::Api`). Absent for other
     /// sessions and from older control planes; older hosts leave it out of

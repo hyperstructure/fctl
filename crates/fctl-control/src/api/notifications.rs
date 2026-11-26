@@ -67,10 +67,79 @@ async fn notifications(ctx: &Ctx) -> AppResult<Notifications> {
     .all()
     .await?;
     Ok(Notifications {
+        slack: slack_places(ctx, &user.id).await?,
         settings: notify::settings(&ctx.db, &user.id).await?,
         devices: rows.iter().map(|r| r.device(token_id(ctx))).collect(),
         public_key: push::public_key(&ctx.db, &ctx.cfg).await?,
     })
+}
+
+/// Where "Tell me in Slack" sends someone's notifications: the Slack
+/// workspaces their workspaces work in, their account in each, and whether
+/// those workspaces let notifications go there.
+async fn slack_places(
+    ctx: &Ctx,
+    user_id: &str,
+) -> AppResult<Vec<fctl_proto::slack::SlackNotifyPlace>> {
+    if ctx.cfg.slack.is_none() {
+        return Ok(Vec::new());
+    }
+    #[derive(serde::Deserialize)]
+    struct Row {
+        team_id: String,
+        team_name: String,
+        workspace_id: String,
+        slug: String,
+        workspace_name: String,
+        settings: String,
+        account_name: Option<String>,
+        slack_user_id: Option<String>,
+        avatar_url: Option<String>,
+    }
+    let rows: Vec<Row> = q(
+        &ctx.db,
+        "SELECT i.team_id, i.name AS team_name, w.id AS workspace_id, w.slug, w.name AS workspace_name, ws.settings, \
+         a.name AS account_name, a.slack_user_id, a.avatar_url FROM workspace_slack ws \
+         JOIN slack_installations i ON i.team_id = ws.team_id AND i.status = 'active' \
+         JOIN workspaces w ON w.id = ws.workspace_id \
+         JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = ?1 \
+         LEFT JOIN slack_accounts a ON a.team_id = ws.team_id AND a.user_id = ?1 \
+         WHERE ws.revoked_at IS NULL ORDER BY i.name, w.name",
+        &[s(user_id)],
+    )?
+    .all()
+    .await?;
+    let mut out: Vec<fctl_proto::slack::SlackNotifyPlace> = Vec::new();
+    for r in rows {
+        let allowed = serde_json::from_str::<fctl_proto::slack::SlackSettings>(&r.settings)
+            .unwrap_or_default()
+            .notifications;
+        let w = fctl_proto::slack::SlackWorkspaceRef {
+            id: fctl_proto::WorkspaceId(r.workspace_id),
+            slug: r.slug,
+            name: r.workspace_name,
+        };
+        match out.iter_mut().find(|p| p.team == r.team_id) {
+            Some(p) => {
+                p.workspaces.push(w);
+                p.allowed |= allowed;
+            }
+            None => out.push(fctl_proto::slack::SlackNotifyPlace {
+                team: r.team_id,
+                team_name: r.team_name,
+                workspaces: vec![w],
+                account: r.account_name.map(|name| fctl_proto::slack::SlackPerson {
+                    name,
+                    user: r.slack_user_id,
+                    handle: None,
+                    avatar_url: r.avatar_url,
+                    bot: false,
+                }),
+                allowed,
+            }),
+        }
+    }
+    Ok(out)
 }
 
 /// `GET /me/notifications`.
@@ -88,6 +157,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         (&mut settings.paused, body.paused),
         (&mut settings.failed, body.failed),
         (&mut settings.follow_started, body.follow_started),
+        (&mut settings.slack, body.slack),
     ] {
         if let Some(v) = value {
             *field = v;

@@ -760,6 +760,8 @@ async fn take_up(
         env,
         db,
         crate::starts::NewSession {
+            slack: None,
+            slack_message: None,
             project,
             title,
             branch: crate::starts::Branch::Ticket(&ticket.key),
@@ -1216,6 +1218,7 @@ async fn deliver(
             client_key,
             by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
+                slack: None,
                 id,
                 author: Some(author),
                 text,
@@ -1389,6 +1392,7 @@ pub async fn notice(
     ticket: TicketNotice,
 ) {
     let n = Notice {
+        slack: None,
         level: NoticeLevel::Info,
         code: code.to_owned(),
         message,

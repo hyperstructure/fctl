@@ -33,6 +33,7 @@ use fctl_proto::runner::RunnerDisk;
 use fctl_proto::session::{
     PullRequestRef, RepoRef, Session, SessionQuestion, SessionRole, SessionStatus, UserRef,
 };
+use fctl_proto::slack::SlackPlace;
 use fctl_proto::uplink::{
     AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SandboxPaused,
     SessionState, UplinkDown, UplinkUp,
@@ -185,6 +186,27 @@ pub struct SessionObject {
     env: Env,
     sql: SqlStorage,
     mem: RefCell<Mem>,
+    /// What goes to the session's Slack thread, in order: the agent's
+    /// words as they stream, then its turn's end (`slack_send`).
+    slack_queue: std::rc::Rc<RefCell<SlackQueue>>,
+}
+
+/// What waits to go to Slack, one item after another.
+#[derive(Default)]
+struct SlackQueue {
+    busy: bool,
+    items: std::collections::VecDeque<SlackItem>,
+}
+
+enum SlackItem {
+    /// Words of the agent's, streaming into a thread of someone's direct
+    /// messages.
+    Words(String),
+    /// Its turn ended, with its last message and the question it asks.
+    Ended {
+        text: String,
+        question: Option<SessionQuestion>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -409,6 +431,7 @@ impl DurableObject for SessionObject {
             env,
             sql,
             mem: RefCell::new(Mem::default()),
+            slack_queue: std::rc::Rc::new(RefCell::new(SlackQueue::default())),
         }
     }
 
@@ -474,6 +497,19 @@ impl DurableObject for SessionObject {
                 Ok(b) => self.pass_on_held(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
+            // What Slack's messages said, dropped from the transcript once
+            // the session ended, where its workspace asks for that
+            // (`crate::slack::drop_ended`).
+            (worker::Method::Post, "/slack-drop") => Ok(self.slack_drop().await),
+            // A session that started in Slack: its card again, at once
+            // (`crate::slack::inbound` as the session starts).
+            (worker::Method::Post, "/slack-card") => {
+                if let Some(s) = self.summary() {
+                    self.delete_meta("slack_card");
+                    self.slack_moved(&s);
+                }
+                Ok(serde_json::json!({ "ok": true }))
+            }
             (worker::Method::Post, "/notice") => {
                 match req.json::<fctl_proto::event::Notice>().await {
                     Ok(n) => Ok(self.control_notice(n)),
@@ -694,6 +730,7 @@ impl SessionObject {
         }
         self.mem.borrow_mut().summary = Some(s.clone());
         self.hooks_moved(s);
+        self.slack_moved(s);
     }
 
     /// On whose Claude subscription the session runs: who started it, until
@@ -1258,6 +1295,7 @@ impl SessionObject {
         if in_a_row >= b.rounds.max(1) {
             self.key(&key, "", now);
             let notice = fctl_proto::event::Notice {
+                slack: None,
                 ticket: None,
                 level: fctl_proto::event::NoticeLevel::Info,
                 code: "review_held".into(),
@@ -1334,6 +1372,7 @@ impl SessionObject {
                 client_key: Some(key),
                 by_autopilot: false,
                 event: EventBody::UserMessage(UserMessage {
+                    slack: None,
                     ticket: None,
                     autopilot: None,
                     wake: None,
@@ -1411,6 +1450,7 @@ impl SessionObject {
                 Some(vec![sv(&key)]),
             );
             let notice = fctl_proto::event::Notice {
+                slack: None,
                 ticket: None,
                 level: fctl_proto::event::NoticeLevel::Info,
                 code: "review_passed_on".into(),
@@ -1669,6 +1709,7 @@ impl SessionObject {
             return;
         };
         let notice = fctl_proto::event::Notice {
+            slack: None,
             ticket: None,
             level: fctl_proto::event::NoticeLevel::Info,
             code: "follow_up_own".into(),
@@ -1727,6 +1768,7 @@ impl SessionObject {
             if held {
                 if let Some(message) = follow_ups::held_back(&f, kind) {
                     let notice = fctl_proto::event::Notice {
+                        slack: None,
                         ticket: None,
                         level: fctl_proto::event::NoticeLevel::Info,
                         code: "follow_up_held".into(),
@@ -1783,6 +1825,7 @@ impl SessionObject {
                 client_key: None,
                 by_autopilot: false,
                 event: EventBody::UserMessage(UserMessage {
+                    slack: None,
                     ticket: None,
                     autopilot: None,
                     wake: None,
@@ -2017,6 +2060,7 @@ impl SessionObject {
             |r| format!("The runner {}", r.name),
         );
         let notice = fctl_proto::event::Notice {
+            slack: None,
             ticket: None,
             level: fctl_proto::event::NoticeLevel::Warn,
             code: "attachments_unsupported".into(),
@@ -2088,6 +2132,7 @@ impl SessionObject {
             |r| format!("The runner {}", r.name),
         );
         let notice = fctl_proto::event::Notice {
+            slack: None,
             ticket: None,
             level: fctl_proto::event::NoticeLevel::Warn,
             code: "settings_unsupported".into(),
@@ -2206,6 +2251,7 @@ impl SessionObject {
         }
         self.publish(&mut s, now).await;
         let notice = fctl_proto::event::Notice {
+            slack: None,
             ticket: None,
             level: fctl_proto::event::NoticeLevel::Info,
             code: "settings_changed".into(),
@@ -2709,6 +2755,7 @@ impl SessionObject {
             client_key: Some(format!("{}:{client_id}", author.id)),
             by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
+                slack: None,
                 ticket: None,
                 autopilot: None,
                 wake: None,
@@ -2980,6 +3027,7 @@ impl SessionObject {
                         turn_ended |= self.remember_reply(v, e.agent_seq, crew(s));
                         ran_merge |= follow_ups::merges_or_closes(v);
                         self.mirror_to_linear(s, v, now);
+                        self.mirror_to_slack(s, v);
                         plan::merge(&mut usage, plan::readings(v, now));
                         listed = plan::listed(v).or(listed);
                         claude_seen.note(v);
@@ -3177,6 +3225,7 @@ impl SessionObject {
                 }
                 if !ok {
                     let notice = fctl_proto::event::Notice {
+                        slack: None,
                         ticket: None,
                         level: fctl_proto::event::NoticeLevel::Warn,
                         code: "delivery_failed".into(),
@@ -4049,6 +4098,320 @@ impl SessionObject {
         }
     }
 
+    // ───────────────────────────── Slack ─────────────────────────────
+
+    /// Whether the session started in Slack, whose thread it answers in
+    /// (`crate::slack`).
+    fn answers_slack(s: &Session) -> bool {
+        s.slack.is_some() && s.review.is_none()
+    }
+
+    /// Keeps the session's card in its Slack thread current as its summary
+    /// changes, with the agent's step and plan (meta `slack_step`,
+    /// `slack_plan`): at once for anything else, every few seconds for a
+    /// step alone (`crate::slack::outbound::due`).
+    fn slack_moved(&self, s: &Session) {
+        if !Self::answers_slack(s) {
+            return;
+        }
+        let now = now_ms();
+        let plan: Vec<fctl_domain::slack::blocks::Task> = self
+            .meta("slack_plan")
+            .and_then(|p| serde_json::from_str(&p).ok())
+            .unwrap_or_default();
+        let url = format!("{}/s/{}", self.public_url(), s.id.0);
+        let card = crate::slack::outbound::card_of(s, &url, self.meta("slack_step"), plan);
+        let shown: Option<fctl_domain::slack::blocks::Card> = self
+            .meta("slack_card")
+            .and_then(|c| serde_json::from_str(&c).ok());
+        let at = self
+            .meta("slack_card_at")
+            .and_then(|a| a.parse::<i64>().ok())
+            .unwrap_or(0);
+        if !crate::slack::outbound::due(shown.as_ref(), at, &card, now) {
+            return;
+        }
+        let status_changed = shown.as_ref().is_none_or(|c| {
+            std::mem::discriminant(&c.status) != std::mem::discriminant(&card.status)
+        });
+        if let Ok(text) = serde_json::to_string(&card) {
+            self.set_meta("slack_card", &text);
+        }
+        self.set_meta("slack_card_at", &now.to_string());
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        self.state.wait_until(async move {
+            if let Err(e) = crate::slack::outbound::card(&env, &id, &card, status_changed).await {
+                worker::console_error!("the card of {id} in Slack: {}", e.0.message);
+            }
+        });
+    }
+
+    /// What the agent does, for its Slack thread: its step and plan on the
+    /// card, and in someone's direct messages its words as they come.
+    fn mirror_to_slack(&self, s: &Session, v: &serde_json::Value) {
+        if !Self::answers_slack(s) || ev::classify(v) != ClaudeKind::Assistant {
+            return;
+        }
+        let blocks = v
+            .pointer("/message/content")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut moved = false;
+        for b in &blocks {
+            match b.get("type").and_then(serde_json::Value::as_str) {
+                Some("tool_use") => {
+                    let name = b
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let input = b.get("input").cloned().unwrap_or_default();
+                    if name == "TodoWrite" {
+                        let tasks = fctl_domain::slack::blocks::plan(
+                            input.get("todos").unwrap_or(&serde_json::Value::Null),
+                        );
+                        if let Ok(text) = serde_json::to_string(&tasks) {
+                            self.set_meta("slack_plan", &text);
+                            moved = true;
+                        }
+                        continue;
+                    }
+                    if let Some((action, parameter)) = fctl_domain::linear::step(name, &input) {
+                        let step = if parameter.is_empty() {
+                            action
+                        } else {
+                            format!("{action} {parameter}")
+                        };
+                        self.set_meta("slack_step", &step);
+                        moved = true;
+                    }
+                }
+                Some("text") => {
+                    let words = b
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    if s.slack.as_ref().is_some_and(|t| t.place == SlackPlace::Dm)
+                        && !words.trim().is_empty()
+                    {
+                        self.slack_send(s, SlackItem::Words(words.to_owned()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if moved {
+            self.slack_moved(s);
+        }
+    }
+
+    /// Drops what Slack's messages said from the transcript: the messages
+    /// that came from Slack keep who wrote them where, and what `fctl
+    /// slack` read goes. The search index takes the transcript again, and
+    /// D1's copy of the first prompt goes too. Returns how many it changed.
+    async fn slack_drop(&self) -> serde_json::Value {
+        let mut changed = 0;
+        let update = |seq: f64, data: &str| {
+            self.sql.exec(
+                "UPDATE events SET data = ? WHERE seq = ?",
+                Some(vec![sv(data), iv(seq as i64)]),
+            )
+        };
+        let messages = self.load_events(
+            "SELECT seq, ts, kind, data FROM events WHERE kind = 'user_message' AND json_extract(data, '$.slack') IS NOT NULL",
+            vec![],
+        );
+        let mut first: Option<String> = None;
+        for r in messages {
+            let Ok(mut m) = serde_json::from_str::<fctl_proto::event::UserMessage>(&r.data) else {
+                continue;
+            };
+            let Some(slack) = m.slack.as_mut() else {
+                continue;
+            };
+            if slack.dropped {
+                continue;
+            }
+            m.text = fctl_domain::slack::task::dropped(slack);
+            slack.body = None;
+            slack.dropped = true;
+            first.get_or_insert_with(|| m.text.clone());
+            if let Ok(data) = serde_json::to_string(&m)
+                && update(r.seq, &data).is_ok()
+            {
+                changed += 1;
+            }
+        }
+        // What `fctl slack` read: the output of each call the agent made.
+        let mut calls: Vec<String> = Vec::new();
+        for r in self.load_events(
+            "SELECT seq, ts, kind, data FROM events WHERE kind = 'claude' AND json_extract(data, '$.type') = 'assistant' \
+             AND data LIKE '%fctl slack%'",
+            vec![],
+        ) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&r.data) else {
+                continue;
+            };
+            for b in v
+                .pointer("/message/content")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let command = b
+                    .pointer("/input/command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                if command.contains("fctl slack")
+                    && let Some(id) = b.get("id").and_then(serde_json::Value::as_str)
+                {
+                    calls.push(id.to_owned());
+                }
+            }
+        }
+        if !calls.is_empty() {
+            for r in self.load_events(
+                "SELECT seq, ts, kind, data FROM events WHERE kind = 'claude' AND json_extract(data, '$.type') = 'user' \
+                 AND data LIKE '%tool_result%'",
+                vec![],
+            ) {
+                let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&r.data) else {
+                    continue;
+                };
+                let mut hit = false;
+                if let Some(blocks) = v
+                    .pointer_mut("/message/content")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    for b in blocks.iter_mut() {
+                        let id = b
+                            .get("tool_use_id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        if calls.iter().any(|c| c == id) {
+                            b["content"] =
+                                serde_json::json!(fctl_domain::slack::task::DROPPED_READ);
+                            hit = true;
+                        }
+                    }
+                }
+                if hit {
+                    if let Some(tr) = v.get_mut("tool_use_result") {
+                        *tr = serde_json::json!(fctl_domain::slack::task::DROPPED_READ);
+                    }
+                    if update(r.seq, &v.to_string()).is_ok() {
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        // The search index takes the transcript again: what it indexed of
+        // those messages goes.
+        if changed > 0 {
+            self.set_meta("search_seq", "0");
+            self.mem.borrow_mut().search_due = true;
+            if let Some(s) = self.summary()
+                && let (Some(text), Ok(db)) = (first, self.env.d1("DB"))
+                && let Ok(q) = crate::db::q(
+                    &db,
+                    "UPDATE sessions SET prompt = ? WHERE id = ?",
+                    &[crate::db::s(&text), crate::db::s(s.id.as_str())],
+                )
+            {
+                let _ = q.run().await;
+            }
+        }
+        serde_json::json!({ "changed": changed })
+    }
+
+    /// Hands an item to the session's Slack queue, which sends one after
+    /// another, so that a stream's words and its end keep their order.
+    fn slack_send(&self, s: &Session, item: SlackItem) {
+        let queue = self.slack_queue.clone();
+        queue.borrow_mut().items.push_back(item);
+        if queue.borrow().busy {
+            return;
+        }
+        queue.borrow_mut().busy = true;
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        self.state.wait_until(async move {
+            loop {
+                let next = queue.borrow_mut().items.pop_front();
+                let Some(item) = next else { break };
+                let done = match item {
+                    SlackItem::Words(w) => crate::slack::outbound::stream(&env, &id, &w).await,
+                    SlackItem::Ended { text, question } => {
+                        crate::slack::outbound::turn_ended(&env, &id, &text, question.as_ref())
+                            .await
+                    }
+                };
+                if let Err(e) = done {
+                    worker::console_error!("Slack for {id}: {}", e.0.message);
+                }
+            }
+            queue.borrow_mut().busy = false;
+        });
+    }
+
+    /// Tells the session's Slack thread that a turn ended (with the agent's
+    /// last message, and its question), that the agent asked something
+    /// once it had, or that the session paused or failed.
+    fn report_to_slack(&self, s: &Session, kind: notify::Kind) {
+        if !Self::answers_slack(s) {
+            return;
+        }
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        match kind {
+            notify::Kind::Waiting => {
+                let (Some(text), Some(seq)) =
+                    (self.meta("last_result"), self.meta("last_result_seq"))
+                else {
+                    return;
+                };
+                // Once for each turn, whichever report of its end comes first.
+                if self.meta("slack_replied_seq").as_deref() == Some(seq.as_str()) {
+                    return;
+                }
+                self.set_meta("slack_replied_seq", &seq);
+                self.delete_meta("slack_step");
+                self.slack_send(
+                    s,
+                    SlackItem::Ended {
+                        text,
+                        question: s.question.clone(),
+                    },
+                );
+            }
+            notify::Kind::Asking => {
+                let Some(q) = s.question.clone() else { return };
+                self.state.wait_until(async move {
+                    if let Err(e) = crate::slack::outbound::asked(&env, &id, &q).await {
+                        worker::console_error!("asking in Slack for {id}: {}", e.0.message);
+                    }
+                });
+            }
+            notify::Kind::Autopilot
+            | notify::Kind::AutopilotPaused
+            | notify::Kind::AutopilotFailing => {}
+            notify::Kind::Paused | notify::Kind::Failed => {
+                let status = s.status;
+                let reason = s.status_reason.clone();
+                let until = s.resume_at;
+                self.state.wait_until(async move {
+                    if let Err(e) =
+                        crate::slack::outbound::halted(&env, &id, status, reason.as_deref(), until)
+                            .await
+                    {
+                        worker::console_error!("telling Slack about {id}: {}", e.0.message);
+                    }
+                });
+            }
+        }
+    }
+
     /// A notice the control plane adds to the transcript: what it did in
     /// the session's ticket tracker for it.
     fn control_notice(&self, n: fctl_proto::event::Notice) -> serde_json::Value {
@@ -4225,6 +4588,7 @@ impl SessionObject {
     /// except those who can see it now.
     fn notify(&self, s: &Session, kind: notify::Kind, now: i64) {
         self.report_to_linear(s, kind);
+        self.report_to_slack(s, kind);
         let mut except = self.watching();
         let asked = |q: &SessionQuestion| notify::question_detail(&q.text, &q.options);
         let (kind, detail) = match kind {

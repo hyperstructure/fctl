@@ -308,6 +308,24 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     if let Err(e) = crate::delegations::uninstall_unused(env, &db).await {
         worker::console_error!("giving up unused Linear workspaces: {}", e.0.message);
     }
+    // Requests in Slack that waited an hour for their person, and what
+    // agents did there more than an hour ago.
+    if let Err(e) = crate::slack::inbound::expire(&db, now).await {
+        worker::console_error!("forgetting Slack requests that waited: {}", e.0.message);
+    }
+    if let Err(e) = crate::slack::uninstall_unused(env, &db).await {
+        worker::console_error!("giving up unused Slack workspaces: {}", e.0.message);
+    }
+    // What workspaces drop from their sessions' transcripts once they end.
+    match crate::slack::drop_ended(env, &db, now).await {
+        Ok(0) => {}
+        Ok(n) => {
+            worker::console_log!("housekeeping: dropped Slack's messages from {n} transcripts")
+        }
+        Err(e) => worker::console_error!("dropping Slack's messages: {}", e.0.message),
+    }
+    // Socket Mode keeps itself going once kicked.
+    crate::slack::socket::kick(env).await;
     // A failed lookup leaves the rest to do.
     match crate::pull_requests::sweep(env, &db, now).await {
         Ok(0) => {}

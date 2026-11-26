@@ -123,7 +123,8 @@ const FOLLOWERS: &str = "SELECT f.user_id AS user_id, m.role AS member_role, \
       AND (sh.created_by IS NULL OR sh.created_by != sh.user_id) \
     LEFT JOIN notification_settings ns ON ns.user_id = f.user_id \
     WHERE f.session_id = ? AND u.status = 'active' \
-    AND EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.user_id = f.user_id)";
+    AND (EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.user_id = f.user_id) \
+      OR (json_extract(ns.settings, '$.slack') = 1 AND EXISTS (SELECT 1 FROM slack_accounts sa WHERE sa.user_id = f.user_id)))";
 
 impl FollowerRow {
     fn follower(self, instance: &InstanceSettings) -> Follower {
@@ -161,7 +162,8 @@ impl FollowerRow {
 
 /// Tells the NotifyObject of every follower who should hear about `event`:
 /// those who can still see the session, want this kind of news and have a
-/// browser for it, except the people in `except`.
+/// browser for it or a Slack account where they chose "Tell me in Slack",
+/// except the people in `except`.
 pub async fn session_changed(env: &Env, event: Event, except: Vec<String>) -> AppResult<()> {
     let db = env.d1("DB")?;
     let rows: Vec<FollowerRow> = q(&db, FOLLOWERS, &[s(event.session_id.as_str())])?

@@ -2700,6 +2700,118 @@ impl Api {
         self.url("/linear/link")
     }
 
+    /// The Slack workspaces a workspace works in, with what it lets people
+    /// and agents do there.
+    pub async fn workspace_slack(&self, id: &str) -> Result<fctl_proto::slack::WorkspaceSlack> {
+        self.get(&format!("/workspaces/{}/slack", enc(id))).await
+    }
+
+    /// The link to the Slack sign-in that installs fctl's app in a Slack
+    /// workspace and connects it to workspace `id` (its admins).
+    pub async fn connect_slack(&self, id: &str) -> Result<fctl_proto::slack::SlackLink> {
+        self.post(
+            &format!("/workspaces/{}/slack/connect", enc(id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// Changes what a workspace lets people and agents do in a Slack
+    /// workspace (its admins).
+    pub async fn update_slack(
+        &self,
+        id: &str,
+        team: &str,
+        req: &fctl_proto::slack::UpdateSlackRequest,
+    ) -> Result<fctl_proto::slack::WorkspaceSlack> {
+        self.patch(&format!("/workspaces/{}/slack/{}", enc(id), enc(team)), req)
+            .await
+    }
+
+    /// Stops working in a Slack workspace (its admins).
+    pub async fn disconnect_slack(
+        &self,
+        id: &str,
+        team: &str,
+    ) -> Result<fctl_proto::slack::WorkspaceSlack> {
+        self.delete(&format!("/workspaces/{}/slack/{}", enc(id), enc(team)))
+            .await
+    }
+
+    /// Public channels of a connected Slack workspace, for its admins to
+    /// choose.
+    pub async fn slack_channels(
+        &self,
+        id: &str,
+        team: &str,
+        query: Option<&str>,
+    ) -> Result<fctl_proto::slack::SlackChannelList> {
+        let q = query
+            .map(|q| format!("?query={}", enc(q)))
+            .unwrap_or_default();
+        self.get(&format!(
+            "/workspaces/{}/slack/{}/channels{q}",
+            enc(id),
+            enc(team)
+        ))
+        .await
+    }
+
+    /// Maps a channel to a project, or makes it readable (its admins).
+    pub async fn set_slack_channel(
+        &self,
+        id: &str,
+        team: &str,
+        channel: &str,
+        req: &fctl_proto::slack::SetSlackChannelRequest,
+    ) -> Result<fctl_proto::slack::WorkspaceSlack> {
+        self.put(
+            &format!(
+                "/workspaces/{}/slack/{}/channels/{}",
+                enc(id),
+                enc(team),
+                enc(channel)
+            ),
+            req,
+        )
+        .await
+    }
+
+    /// Your Slack accounts, which fctl knows you by.
+    pub async fn my_slack(&self) -> Result<fctl_proto::slack::MySlack> {
+        self.get("/me/slack").await
+    }
+
+    /// The link your browser links your Slack account with.
+    pub async fn link_slack(&self, team: Option<&str>) -> Result<fctl_proto::slack::SlackLink> {
+        let q = team
+            .map(|t| format!("?team={}", enc(t)))
+            .unwrap_or_default();
+        self.post(&format!("/me/slack/link{q}"), &serde_json::json!({}))
+            .await
+    }
+
+    /// Your choices in a Slack workspace: the project your direct messages
+    /// with fctl's app start sessions in.
+    pub async fn update_my_slack(
+        &self,
+        team: &str,
+        req: &fctl_proto::slack::UpdateMySlackRequest,
+    ) -> Result<fctl_proto::slack::MySlack> {
+        self.patch(&format!("/me/slack/{}", enc(team)), req).await
+    }
+
+    /// Forgets your Slack account in a Slack workspace.
+    pub async fn unlink_slack(&self, team: &str) -> Result<fctl_proto::slack::MySlack> {
+        self.delete(&format!("/me/slack/{}", enc(team))).await
+    }
+
+    /// The instance's Slack app, and the manifest that creates one
+    /// (instance admins).
+    pub async fn admin_slack(&self) -> Result<fctl_proto::slack::AdminSlack> {
+        self.get("/admin/slack").await
+    }
+
     /// A project's ticket tracker as it works now.
     pub async fn project_tickets(&self, project: &str) -> Result<ProjectTickets> {
         self.get(&format!("/projects/{}/tickets", enc(project)))

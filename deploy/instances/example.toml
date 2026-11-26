@@ -53,6 +53,13 @@ database_id = ""
 # [linear]
 # client_id = "..."
 
+# Optional: start and steer agents from Slack, through your own Slack app
+# (docs/self-hosting.md#connect-slack-optional; Admin → Slack gives its
+# manifest). Set SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET, or
+# SLACK_APP_TOKEN for Socket Mode, with `cargo xtask secrets <name> --set …`.
+# [slack]
+# client_id = "..."
+
 # Optional: send invites and password resets by email through Resend
 # (set RESEND_API_KEY with `cargo xtask secrets <name>`). Without it, admins
 # copy invite and reset links from the app.

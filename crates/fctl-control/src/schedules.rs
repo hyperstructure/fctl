@@ -1267,6 +1267,8 @@ pub async fn start_session(
         env,
         db,
         crate::starts::NewSession {
+            slack: None,
+            slack_message: None,
             project: st.project,
             title,
             branch: crate::starts::Branch::Titled,

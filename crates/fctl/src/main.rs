@@ -174,6 +174,19 @@ Examples:
   fctl ticket create --title \"Add a test for retries\" --parent ENG-123
   fctl ticket update ENG-123 --state \"In Review\" --add-label Bug")]
     Ticket(cmd::ticket::TicketArgs),
+    /// Read and post in Slack (agents, in the sandbox of a session that
+    /// started in Slack, or whose workspace makes channels readable): the
+    /// thread the session started from, readable channels, and a reply in
+    /// its own thread. fctl reaches Slack for them, and keeps them to it.
+    #[command(after_help = "Examples:
+  fctl slack                           # what this session reaches in Slack
+  fctl slack thread                    # what's new in its thread since you last read it
+  fctl slack thread --all
+  fctl slack history #deploys --since 2d
+  fctl slack read https://acme.slack.com/archives/C0123ABC/p1700000000000100
+  fctl slack search \"checkout 500\"
+  fctl slack reply \"Looking into it: the deploy log is at https://…\"")]
+    Slack(cmd::slack::SlackArgs),
     /// Delete published screenshots before they expire (people who manage
     /// their session).
     Unpublish {
@@ -664,6 +677,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Resolve(args) => cmd::resolve::resolve(args, json).await,
         Command::Ticket(args) => cmd::ticket::run(args, json).await,
+        Command::Slack(args) => cmd::slack::run(args, json).await,
         Command::SelfCmd(c) => cmd::selfcmd::run(c, json).await,
         Command::Completions {
             shell,

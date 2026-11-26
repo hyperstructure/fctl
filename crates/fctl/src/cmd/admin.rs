@@ -1466,6 +1466,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
+                    slack_match_email: None,
                     publish_screenshots,
                     require_two_factor,
                     two_factor_google,

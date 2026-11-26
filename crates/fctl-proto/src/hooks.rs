@@ -32,18 +32,22 @@ pub enum WebhookOrigin {
     /// program of the workspace's own, such as a portal where people start
     /// agents (`service_accounts::ServiceAccount`).
     ServiceAccount,
+    /// Someone in Slack: a mention of fctl's app, a direct message to it,
+    /// `/fctl` or its shortcut.
+    Slack,
     /// One a newer control plane knows, which this version doesn't.
     #[serde(other)]
     Other,
 }
 
 impl WebhookOrigin {
-    pub const ALL: [WebhookOrigin; 5] = [
+    pub const ALL: [WebhookOrigin; 6] = [
         Self::Person,
         Self::Schedule,
         Self::Autopilot,
         Self::Ticket,
         Self::ServiceAccount,
+        Self::Slack,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -53,6 +57,7 @@ impl WebhookOrigin {
             Self::Autopilot => "autopilot",
             Self::Ticket => "ticket",
             Self::ServiceAccount => "service_account",
+            Self::Slack => "slack",
             Self::Other => "other",
         }
     }

@@ -30,6 +30,7 @@ pub mod selfcmd;
 pub mod service_accounts;
 pub mod sessions;
 pub mod sign_in;
+pub mod slack;
 pub mod ticket;
 pub mod tokens;
 pub mod two_factor;

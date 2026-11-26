@@ -25,6 +25,11 @@
 //! | `LINEAR_CLIENT_SECRET` | secret | Its client secret |
 //! | `LINEAR_WEBHOOK_SECRET` | secret | Its webhook's signing secret: Linear tells the control plane when people delegate issues to fctl |
 //! | `LINEAR_API_URL`, `LINEAR_AUTHORIZE_URL` | var | Linear's API and sign-in page, for a stand-in in development |
+//! | `SLACK_CLIENT_ID` | var | fctl's Slack app (optional): its OAuth client, which installs it and signs people in with Slack |
+//! | `SLACK_CLIENT_SECRET` | secret | Its client secret |
+//! | `SLACK_SIGNING_SECRET` | secret | Its signing secret: Slack's events, interactions and commands over HTTP count only with its signature |
+//! | `SLACK_APP_TOKEN` | secret | An app-level token (`xapp-…`, `connections:write`): events come over Socket Mode instead, for an instance Slack can't reach |
+//! | `SLACK_URL` | var | Slack's address (`https://slack.com`), for a stand-in in development |
 //! | `GOOGLE_CLIENT_ID` | var | Google OAuth client (optional) |
 //! | `GOOGLE_CLIENT_SECRET` | secret | Its secret |
 //! | `RESEND_API_KEY` | secret | Transactional email (optional) |
@@ -78,6 +83,35 @@ pub struct LinearConfig {
     pub authorize_url: String,
 }
 
+/// fctl's Slack app (docs/architecture.md#slack): an OAuth client that
+/// workspaces install in their Slack workspaces, and that people sign in
+/// with (Sign in with Slack) to link their Slack accounts.
+#[derive(Clone)]
+pub struct SlackConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    /// The secret Slack signs what it sends over HTTP with: events,
+    /// interactions and commands.
+    pub signing_secret: Option<String>,
+    /// An app-level token, with which a Durable Object opens a Socket Mode
+    /// connection that brings Slack's events instead (`crate::slack::socket`).
+    pub app_token: Option<String>,
+    /// `https://slack.com`, or a stand-in's.
+    pub url: String,
+}
+
+impl SlackConfig {
+    /// Slack's Web API.
+    pub fn api(&self, method: &str) -> String {
+        format!("{}/api/{method}", self.url)
+    }
+
+    /// Whether Slack's events reach the instance at all.
+    pub fn events(&self) -> bool {
+        self.signing_secret.is_some() || self.app_token.is_some()
+    }
+}
+
 #[derive(Clone)]
 pub struct GoogleConfig {
     pub client_id: String,
@@ -126,6 +160,7 @@ pub struct Config {
     /// workspace connected through `github`'s app (`crate::reviews`).
     pub github_review: Option<GithubConfig>,
     pub linear: Option<LinearConfig>,
+    pub slack: Option<SlackConfig>,
     pub google: Option<GoogleConfig>,
     pub email: Option<EmailConfig>,
 }
@@ -217,6 +252,19 @@ impl Config {
             }),
             _ => None,
         };
+        let slack = match (var(env, "SLACK_CLIENT_ID"), var(env, "SLACK_CLIENT_SECRET")) {
+            (Some(client_id), Some(client_secret)) => Some(SlackConfig {
+                client_id,
+                client_secret,
+                signing_secret: var(env, "SLACK_SIGNING_SECRET"),
+                app_token: var(env, "SLACK_APP_TOKEN"),
+                url: var(env, "SLACK_URL")
+                    .unwrap_or_else(|| "https://slack.com".to_owned())
+                    .trim_end_matches('/')
+                    .to_owned(),
+            }),
+            _ => None,
+        };
         let google = match (
             var(env, "GOOGLE_CLIENT_ID"),
             var(env, "GOOGLE_CLIENT_SECRET"),
@@ -256,6 +304,7 @@ impl Config {
             github,
             github_review,
             linear,
+            slack,
             google,
             email,
         }

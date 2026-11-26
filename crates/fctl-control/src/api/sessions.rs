@@ -260,6 +260,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     let session = created.row.to_session(Some(created.role));
     let stub = internal::session_stub(&ctx.env, id.as_str())?;
     let prompt_msg = UserMessage {
+        slack: None,
         ticket: None,
         autopilot: autopilot.as_ref().map(|a| a.author()),
         wake: None,
@@ -736,6 +737,7 @@ pub async fn deliver_as(
             client_key,
             by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
+                slack: None,
                 ticket: None,
                 autopilot,
                 wake: None,

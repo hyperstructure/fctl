@@ -157,6 +157,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     if sent.get("id_tokens").is_none() {
         settings.id_tokens = stored.id_tokens;
     }
+    if sent.get("slack").is_none() {
+        settings.slack = stored.slack.clone();
+    }
     if sent.get("cloud_access").is_none() {
         settings.cloud_access = stored.cloud_access.clone();
     }

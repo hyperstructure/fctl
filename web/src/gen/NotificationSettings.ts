@@ -20,4 +20,10 @@ failed: boolean,
 /**
  * Starting or resuming a session follows it.
  */
-follow_started: boolean, };
+follow_started: boolean, 
+/**
+ * They hear of it from fctl's app in Slack too ("Tell me in Slack"),
+ * in the Slack workspace the session's workspace works in, where they
+ * linked their account and its admins let notifications go there.
+ */
+slack: boolean, };

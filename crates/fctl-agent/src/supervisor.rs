@@ -701,6 +701,7 @@ impl Supervisor {
 
     fn notice(&mut self, level: NoticeLevel, code: &str, message: &str, until: Option<i64>) {
         self.emit(EventBody::Notice(Notice {
+            slack: None,
             ticket: None,
             level,
             code: code.into(),
@@ -986,6 +987,11 @@ impl Supervisor {
             {
                 return Err(ApiError::forbidden(
                     "This project's agents reach no ticket tracker: its maintainers choose one in the project's settings, under Tickets.",
+                ));
+            }
+            AgentCall::Slack { .. } if spec.slack.as_ref().is_none_or(|s| !s.reaches()) => {
+                return Err(ApiError::forbidden(
+                    "This session reaches nothing in Slack: it didn't start there, and its workspace makes no channel readable for its agents.",
                 ));
             }
             // Where its project lets its agents; the control plane checks
@@ -1912,6 +1918,17 @@ impl Supervisor {
                 "This sandbox's fctl has no `fctl autopilot`, so the autopilot can't reach fctl from it. The default image, ghcr.io/hyperstructure/sandbox, has it; an image of your own needs a recent fctl on the PATH.",
             );
         }
+        // `fctl slack` reads and posts in Slack, where the sandbox's fctl
+        // has it; without it, the agent hears how its replies go back all
+        // the same.
+        let mut told = spec.clone();
+        if let Some(slack) = told.slack.as_mut() {
+            let can = self.session_socket.is_some() && fctl_can(&paths, "slack").await;
+            if !can {
+                slack.instructions = slack.without_cli.clone().unwrap_or_default();
+            }
+        }
+        let spec = &told;
         let system = match &spec.review {
             Some(review) => {
                 let previous_here = match review.previous_sha.as_deref() {
@@ -3524,6 +3541,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         format!("{days} days")
     };
     Notice {
+        slack: None,
         ticket: None,
         level: NoticeLevel::Info,
         code: "screenshot_published".into(),
@@ -3551,6 +3569,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
 /// `retrospective`.
 fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
     let notice = |code: &str, message: String| Notice {
+        slack: None,
         ticket: None,
         level: NoticeLevel::Info,
         code: code.into(),
@@ -3616,11 +3635,12 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
             summarized: Some(summarized.clone()),
             ..notice("pull_request_summarized", summarized_message(summarized))
         }],
-        // The control plane adds what fctl did in the tracker itself, and
-        // what an autopilot did.
-        AgentAnswer::Ticket { .. } | AgentAnswer::Api { .. } | AgentAnswer::ApiBytes { .. } => {
-            vec![]
-        }
+        // The control plane adds what fctl did in the tracker and in Slack
+        // itself, and what an autopilot did.
+        AgentAnswer::Ticket { .. }
+        | AgentAnswer::Slack { .. }
+        | AgentAnswer::Api { .. }
+        | AgentAnswer::ApiBytes { .. } => vec![],
         // What the agent asked people stays in the transcript, after the
         // question itself is answered.
         AgentAnswer::Asked { question: Some(q) } => vec![Notice {

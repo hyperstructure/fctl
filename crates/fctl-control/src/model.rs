@@ -871,6 +871,9 @@ pub struct SessionRow {
     /// The ticket it started from (JSON: `crate::delegations::TicketColumn`).
     #[serde(default)]
     pub ticket: Option<String>,
+    /// The Slack thread it started from (JSON: a `SessionSlack`).
+    #[serde(default)]
+    pub slack: Option<String>,
     /// Its agent's open question, as JSON (`SessionQuestion`).
     #[serde(default)]
     pub question: Option<String>,
@@ -1044,6 +1047,10 @@ impl SessionRow {
                 ticket: self.ticket.as_deref().and_then(|j| {
                     serde_json::from_str::<fctl_proto::session::SessionTicket>(j).ok()
                 }),
+                slack: self
+                    .slack
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str::<fctl_proto::slack::SessionSlack>(j).ok()),
                 question: self.question.as_deref().and_then(|j| {
                     serde_json::from_str::<fctl_proto::session::SessionQuestion>(j).ok()
                 }),
@@ -1077,7 +1084,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, s.messaged_at, s.requested_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
-    rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, s.question, \
+    rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, s.slack, s.question, \
     s.service_account_id, (SELECT x.name FROM service_accounts x WHERE x.id = s.service_account_id) AS service_account_name, \
     s.autopilot_id, s.autopilot_role, (SELECT ap.slug FROM projects ap WHERE ap.id = s.autopilot_id) AS autopilot_slug, \
     CASE WHEN s.autopilot_role = 'pilot' THEN (SELECT a.scope FROM autopilots a WHERE a.project_id = s.autopilot_id) END AS autopilot_scope, \

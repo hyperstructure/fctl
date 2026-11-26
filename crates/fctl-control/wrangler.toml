@@ -31,6 +31,7 @@ bindings = [
   { name = "SCHEDULES", class_name = "ScheduleObject" },
   { name = "SEARCH", class_name = "SearchObject" },
   { name = "HOOKS", class_name = "HooksObject" },
+  { name = "SLACK", class_name = "SlackObject" },
 ]
 
 [[migrations]]
@@ -56,6 +57,10 @@ new_sqlite_classes = ["SearchObject"]
 [[migrations]]
 tag = "v6"
 new_sqlite_classes = ["HooksObject"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["SlackObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"

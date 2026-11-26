@@ -21,6 +21,7 @@ pub struct Instance {
     pub d1: D1,
     pub github: Option<Github>,
     pub linear: Option<Linear>,
+    pub slack: Option<Slack>,
     pub email: Option<Email>,
     pub google: Option<Google>,
     /// The sign-in page lets people without an account ask for early
@@ -79,6 +80,15 @@ pub struct GithubReview {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Linear {
+    pub client_id: String,
+}
+
+/// fctl's Slack app: its OAuth client ID (`SLACK_CLIENT_SECRET`,
+/// `SLACK_SIGNING_SECRET` and, for Socket Mode, `SLACK_APP_TOKEN` are
+/// secrets).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Slack {
     pub client_id: String,
 }
 
@@ -151,6 +161,9 @@ impl Instance {
         if let Some(l) = &self.linear {
             vars.push(("LINEAR_CLIENT_ID", l.client_id.clone()));
         }
+        if let Some(sl) = &self.slack {
+            vars.push(("SLACK_CLIENT_ID", sl.client_id.clone()));
+        }
         if let Some(e) = &self.email {
             vars.push(("FCTL_EMAIL_FROM", e.from.clone()));
         }
@@ -217,6 +230,7 @@ bindings = [
   {{ name = "SCHEDULES", class_name = "ScheduleObject" }},
   {{ name = "SEARCH", class_name = "SearchObject" }},
   {{ name = "HOOKS", class_name = "HooksObject" }},
+  {{ name = "SLACK", class_name = "SlackObject" }},
 ]
 
 [[migrations]]
@@ -242,6 +256,10 @@ new_sqlite_classes = ["SearchObject"]
 [[migrations]]
 tag = "v6"
 new_sqlite_classes = ["HooksObject"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["SlackObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"
@@ -540,6 +558,14 @@ client_id = "lin_client"
         assert_eq!(
             doc["migrations"][5]["new_sqlite_classes"][0].as_str(),
             Some("HooksObject")
+        );
+        assert_eq!(
+            doc["durable_objects"]["bindings"][7]["class_name"].as_str(),
+            Some("SlackObject")
+        );
+        assert_eq!(
+            doc["migrations"][6]["new_sqlite_classes"][0].as_str(),
+            Some("SlackObject")
         );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
         assert!(doc["vars"].get("GITHUB_REVIEW_APP_ID").is_none());

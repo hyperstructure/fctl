@@ -424,6 +424,8 @@ pub fn origin(s: &Session) -> Option<WebhookOrigin> {
         WebhookOrigin::Schedule
     } else if s.ticket.is_some() {
         WebhookOrigin::Ticket
+    } else if s.slack.is_some() {
+        WebhookOrigin::Slack
     } else if s.service_account.is_some() {
         WebhookOrigin::ServiceAccount
     } else {
@@ -1859,6 +1861,7 @@ pub fn describe(
                 WebhookOrigin::Autopilot => Some("an autopilot"),
                 WebhookOrigin::Ticket => Some("tickets"),
                 WebhookOrigin::ServiceAccount => Some("service accounts"),
+                WebhookOrigin::Slack => Some("people in Slack"),
                 WebhookOrigin::Other => None,
             })
             .collect();
@@ -2121,6 +2124,7 @@ fn sample_session(kind: Kind, project: &HookPlace, repo: &str, now: i64) -> Sess
         "archived": false
     });
     serde_json::from_value(value).unwrap_or_else(|_| Session {
+        slack: None,
         id: SessionId("ses_01KSAMPLESESSION0000000000".into()),
         project_id: fctl_proto::ProjectId(project.id.clone()),
         project_slug: project.slug.clone(),

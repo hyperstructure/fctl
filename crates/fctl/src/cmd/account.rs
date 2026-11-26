@@ -33,6 +33,46 @@ pub enum LinearAccountCmd {
 }
 
 #[derive(Subcommand)]
+pub enum SlackAccountCmd {
+    /// Your Slack accounts (the default), and the Slack workspaces your
+    /// workspaces work in.
+    #[command(visible_alias = "ls")]
+    List,
+    /// Link your Slack account: opens Sign in with Slack in your browser,
+    /// where you're signed in to fctl. fctl reads who you are there and
+    /// forgets the sign-in.
+    #[command(visible_alias = "connect")]
+    Link {
+        /// The Slack workspace to sign in to: its name, its address
+        /// (<name>.slack.com) or its id (T…).
+        team: Option<String>,
+        /// Print the link without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// The project your direct messages with fctl's app start sessions in,
+    /// or `--ask` to choose each time.
+    DmProject {
+        /// The project (slug or id).
+        #[arg(required_unless_present = "ask")]
+        project: Option<String>,
+        /// The Slack workspace (default: the only one you linked).
+        #[arg(long)]
+        team: Option<String>,
+        /// Choose each time instead.
+        #[arg(long, conflicts_with = "project")]
+        ask: bool,
+    },
+    /// Forget your Slack account in a Slack workspace: what you ask fctl's
+    /// app there starts nothing until you link it again.
+    #[command(visible_alias = "disconnect")]
+    Unlink {
+        /// The Slack workspace: its name, its address or its id.
+        team: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AccountCmd {
     /// Change your profile: your picture, your Gravatar, what agents call
     /// you, and the address commits credit you with.
@@ -91,6 +131,16 @@ pub enum AccountCmd {
     Linear {
         #[command(subcommand)]
         cmd: Option<LinearAccountCmd>,
+    },
+    /// Your Slack accounts: who fctl knows you as in Slack workspaces, so
+    /// that what you ask fctl's app there runs as you, and your replies to
+    /// its agents there reach them.
+    #[command(
+        after_help = "Examples:\n  fctl account slack\n  fctl account slack link\n  fctl account slack dm-project web\n  fctl account slack unlink acme"
+    )]
+    Slack {
+        #[command(subcommand)]
+        cmd: Option<SlackAccountCmd>,
     },
     /// Two-factor sign-in: codes from an authenticator app after your
     /// password, and recovery codes.
@@ -271,6 +321,7 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
         AccountCmd::Linear { cmd } => {
             linear(&api, cmd.unwrap_or(LinearAccountCmd::List), json).await
         }
+        AccountCmd::Slack { cmd } => slack(&api, cmd.unwrap_or(SlackAccountCmd::List), json).await,
         AccountCmd::Passkeys(cmd) => super::passkeys::run(&api, cmd, json).await,
         AccountCmd::Set {
             preferred_name,
@@ -569,6 +620,184 @@ async fn linear(api: &fctl_client::Api, cmd: LinearAccountCmd, json: bool) -> Re
                 "{} fctl forgot your Linear account in {}",
                 style::accent("✓"),
                 a.organization_name
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The Slack workspace `named` names among `teams` (id, name, domain), or
+/// the only one.
+fn pick_team<'a>(
+    teams: &'a [(String, String, Option<String>)],
+    named: Option<&str>,
+) -> Result<&'a (String, String, Option<String>)> {
+    match named.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => {
+            let n = n.trim_end_matches(".slack.com");
+            teams
+                .iter()
+                .find(|(id, name, domain)| {
+                    id == n
+                        || name.eq_ignore_ascii_case(n)
+                        || domain.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(n))
+                })
+                .with_context(|| format!("None of your Slack workspaces is called {n}"))
+        }
+        None => match teams {
+            [only] => Ok(only),
+            [] => bail!("You have no Slack account linked: `fctl account slack link`"),
+            _ => bail!("You're in several Slack workspaces: name one"),
+        },
+    }
+}
+
+async fn slack(api: &fctl_client::Api, cmd: SlackAccountCmd, json: bool) -> Result<()> {
+    match cmd {
+        SlackAccountCmd::List => {
+            let mine = api.my_slack().await?;
+            if json {
+                return style::print_json(&mine);
+            }
+            if !mine.configured {
+                println!("This instance has no Slack app.");
+                return Ok(());
+            }
+            if mine.accounts.is_empty() {
+                println!(
+                    "fctl doesn't know your Slack account yet. Link it with `fctl account slack link`, so that what you ask fctl's app in Slack runs as you."
+                );
+            }
+            for a in &mine.accounts {
+                let via = match a.via {
+                    fctl_proto::slack::SlackVia::Linked => "linked",
+                    fctl_proto::slack::SlackVia::Email => "matched by your address",
+                };
+                println!(
+                    "{:<24} {:<28} {}",
+                    style::bold(&style::terminal_safe(&a.team_name)),
+                    style::dim(&style::terminal_safe(
+                        &a.team_domain
+                            .as_deref()
+                            .map(|d| format!("{d}.slack.com"))
+                            .unwrap_or_default()
+                    )),
+                    style::terminal_safe(&format!("{} · {via}", a.name))
+                );
+                if let Some(p) = &a.dm_project {
+                    println!(
+                        "  {} {}",
+                        style::dim("→"),
+                        style::terminal_safe(&format!(
+                            "your messages with fctl start sessions in {}",
+                            p.slug
+                        ))
+                    );
+                }
+            }
+            for t in mine
+                .teams
+                .iter()
+                .filter(|t| !mine.accounts.iter().any(|a| a.team == t.team))
+            {
+                println!(
+                    "{}",
+                    style::dim(&style::terminal_safe(&format!(
+                        "{} works in Slack's {} too: `fctl account slack link {}` links your account there.",
+                        t.workspaces
+                            .first()
+                            .map(|w| w.name.as_str())
+                            .unwrap_or("Your workspace"),
+                        t.name,
+                        t.domain.as_deref().unwrap_or(&t.team)
+                    )))
+                );
+            }
+        }
+        SlackAccountCmd::Link { team, no_browser } => {
+            let mine = api.my_slack().await?;
+            let teams: Vec<(String, String, Option<String>)> = mine
+                .teams
+                .iter()
+                .map(|t| (t.team.clone(), t.name.clone(), t.domain.clone()))
+                .collect();
+            let chosen = match team.as_deref() {
+                Some(n) => Some(pick_team(&teams, Some(n))?.0.clone()),
+                None => match teams.as_slice() {
+                    [only] => Some(only.0.clone()),
+                    _ => None,
+                },
+            };
+            let link = api.link_slack(chosen.as_deref()).await?;
+            if json {
+                return style::print_json(&link);
+            }
+            println!(
+                "Link your Slack account by signing in with Slack, in a browser where you're signed in to fctl:"
+            );
+            println!();
+            println!("  {}", style::terminal_safe(&link.url));
+            println!();
+            if !no_browser
+                && fctl_client::http::same_site(api.base(), &link.url)
+                && crate::cmd::auth::open_browser(&link.url)
+            {
+                println!("{}", style::dim("Opened it in your browser."));
+            }
+        }
+        SlackAccountCmd::DmProject { project, team, ask } => {
+            let mine = api.my_slack().await?;
+            let teams: Vec<(String, String, Option<String>)> = mine
+                .accounts
+                .iter()
+                .map(|a| (a.team.clone(), a.team_name.clone(), a.team_domain.clone()))
+                .collect();
+            let (id, name, _) = pick_team(&teams, team.as_deref())?;
+            let req = fctl_proto::slack::UpdateMySlackRequest {
+                dm_project: Some(if ask {
+                    String::new()
+                } else {
+                    project.unwrap_or_default()
+                }),
+            };
+            let mine = api.update_my_slack(id, &req).await?;
+            if json {
+                return style::print_json(&mine);
+            }
+            match mine
+                .accounts
+                .iter()
+                .find(|a| a.team == *id)
+                .and_then(|a| a.dm_project.as_ref())
+            {
+                Some(p) => println!(
+                    "{} Your messages with fctl in {} start sessions in {}",
+                    style::accent("✓"),
+                    style::terminal_safe(name),
+                    style::bold(&style::terminal_safe(&p.name))
+                ),
+                None => println!(
+                    "{} fctl asks which project each time, where you can start sessions in several",
+                    style::accent("✓")
+                ),
+            }
+        }
+        SlackAccountCmd::Unlink { team } => {
+            let mine = api.my_slack().await?;
+            let teams: Vec<(String, String, Option<String>)> = mine
+                .accounts
+                .iter()
+                .map(|a| (a.team.clone(), a.team_name.clone(), a.team_domain.clone()))
+                .collect();
+            let (id, name, _) = pick_team(&teams, Some(&team))?;
+            let mine = api.unlink_slack(id).await?;
+            if json {
+                return style::print_json(&mine);
+            }
+            println!(
+                "{} fctl forgot your Slack account in {}",
+                style::accent("✓"),
+                style::terminal_safe(name)
             );
         }
     }

@@ -55,4 +55,16 @@ admin_tokens?: boolean,
  * allowed them to ([`InstanceSettings::service_account_consent`]).
  * True from control planes before service accounts, which have none.
  */
-service_account_consent?: boolean, };
+service_account_consent?: boolean, 
+/**
+ * The instance has a Slack app (`SLACK_CLIENT_ID` and its secret):
+ * workspaces connect Slack workspaces, where people start and steer
+ * agents. Absent from control planes before it.
+ */
+slack?: boolean, 
+/**
+ * Slack's events reach it (`SLACK_SIGNING_SECRET`, or `SLACK_APP_TOKEN`
+ * for Socket Mode): what people ask fctl's app in Slack starts
+ * sessions.
+ */
+slack_events?: boolean, };

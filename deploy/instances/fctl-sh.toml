@@ -42,6 +42,13 @@ app_slug = "fctl-review"
 # [linear]
 # client_id = ""
 
+# fctl's Slack app, which workspaces install in their Slack workspaces
+# (SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET are Worker secrets: Slack
+# reaches app.fctl.sh, so it takes no SLACK_APP_TOKEN). Until its client ID
+# is here, SLACK_CLIENT_ID can be a secret too.
+# [slack]
+# client_id = ""
+
 # "Sign in with Google": the OAuth client in the fctl-sh Google Cloud project
 # (GOOGLE_CLIENT_SECRET is a Worker secret).
 [google]

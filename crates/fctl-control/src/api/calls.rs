@@ -267,6 +267,9 @@ pub async fn runner_call(
         AgentCall::Ticket { request } => AgentAnswer::Ticket {
             answer: crate::tickets::call(ctx, &session, request).await?,
         },
+        AgentCall::Slack { request } => AgentAnswer::Slack {
+            answer: crate::slack::calls::call(ctx, &session, request).await?,
+        },
         AgentCall::Ask { question, options } => AgentAnswer::Asked {
             question: ask(ctx, &session, &question, &options).await?,
         },

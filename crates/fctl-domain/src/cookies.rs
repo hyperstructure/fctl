@@ -34,6 +34,9 @@ pub enum Cookie {
     /// A Linear sign-in on its way, to install fctl's app in a Linear
     /// workspace or to link someone's Linear account: its signed state.
     LinearConnect,
+    /// A Slack sign-in on its way, to install fctl's app in a Slack
+    /// workspace or to link someone's Slack account: its signed state.
+    SlackConnect,
 }
 
 impl Cookie {
@@ -54,6 +57,8 @@ impl Cookie {
             (Self::GithubReviewInstall, false) => "fctl-github-review-install",
             (Self::LinearConnect, true) => "__Host-fctl-linear",
             (Self::LinearConnect, false) => "fctl-linear",
+            (Self::SlackConnect, true) => "__Host-fctl-slack",
+            (Self::SlackConnect, false) => "fctl-slack",
         }
     }
 }
@@ -127,6 +132,7 @@ mod tests {
             Cookie::GithubInstall,
             Cookie::GithubReviewInstall,
             Cookie::LinearConnect,
+            Cookie::SlackConnect,
         ] {
             let secure = cookie.name(true);
             let plain = cookie.name(false);

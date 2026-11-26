@@ -639,6 +639,7 @@ mod tests {
     fn events_with_words_are_searchable() {
         let message = |text: &str| {
             EventBody::UserMessage(UserMessage {
+                slack: None,
                 id: fctl_proto::DeliveryId("dlv_1".into()),
                 author: None,
                 text: text.into(),

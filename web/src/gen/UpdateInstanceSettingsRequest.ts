@@ -30,4 +30,4 @@ sign_in?: Array<SignInRule>, self_sign_up?: boolean, claude_oversight?: ClaudeOv
 /**
  * 1 to [`MAX_CLAUDE_REFUSALS`].
  */
-claude_refusals?: number, };
+claude_refusals?: number, slack_match_email?: boolean, };

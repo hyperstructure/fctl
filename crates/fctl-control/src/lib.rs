@@ -39,6 +39,7 @@ mod reviews;
 mod schedules;
 mod service_accounts;
 mod sign_in;
+mod slack;
 mod slugs;
 mod snapshots;
 mod spec;
@@ -60,6 +61,7 @@ pub use do_search::SearchObject;
 pub use do_session::SessionObject;
 use error::{AppError, AppResult};
 use fctl_proto::ApiError;
+pub use slack::socket::SlackObject;
 use worker::{Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent, event};
 
 #[event(fetch)]
@@ -278,6 +280,7 @@ async fn dispatch(
         // Admin
         (Get, ["admin", "users"]) => api::admin::users(ctx).await,
         (Get, ["admin", "claude"]) => api::admin::claude(ctx).await,
+        (Get, ["admin", "slack"]) => api::slack::admin(ctx).await,
         (Patch, ["admin", "users", id]) => {
             api::admin::update_user(ctx, req, &http::decode(id)).await
         }
@@ -423,6 +426,16 @@ async fn dispatch(
         (Delete, ["workspaces", id, "github", "offers", account]) => {
             api::github::dismiss(ctx, id, &http::decode(account)).await
         }
+        (Get, ["workspaces", id, "slack"]) => api::slack::workspace(ctx, id).await,
+        (Post, ["workspaces", id, "slack", "connect"]) => api::slack::connect(ctx, id).await,
+        (Patch, ["workspaces", id, "slack", team]) => api::slack::update(ctx, req, id, team).await,
+        (Delete, ["workspaces", id, "slack", team]) => api::slack::disconnect(ctx, id, team).await,
+        (Get, ["workspaces", id, "slack", team, "channels"]) => {
+            api::slack::channels(ctx, req, id, team).await
+        }
+        (Put, ["workspaces", id, "slack", team, "channels", channel]) => {
+            api::slack::set_channel(ctx, req, id, team, channel).await
+        }
         (Get, ["workspaces", id, "linear"]) => api::linear::workspace(ctx, id).await,
         (Post, ["workspaces", id, "linear", "connect"]) => api::linear::connect(ctx, req, id).await,
         (Delete, ["workspaces", id, "linear", organization]) => {
@@ -453,6 +466,13 @@ async fn dispatch(
         (Get, ["github-review", "installed"]) => api::review_app::installed(ctx, req).await,
         // GitHub's webhook: signed with its secret, not by a person.
         (Post, ["github", "webhook"]) => api::webhooks::receive(ctx, req).await,
+        (Post, ["slack", "events"]) => api::slack::events(ctx, req).await,
+        (Post, ["slack", "interactivity"]) => api::slack::interactivity(ctx, req).await,
+        (Post, ["slack", "commands"]) => api::slack::commands(ctx, req).await,
+        (Get, ["slack", "connect"]) => api::slack::connect_link(ctx, req).await,
+        (Get, ["slack", "installed"]) => api::slack::installed(ctx, req).await,
+        (Get, ["slack", "link"]) => api::slack::link(ctx, req).await,
+        (Get, ["slack", "linked"]) => api::slack::linked(ctx, req).await,
         (Get, ["linear", "connect"]) => api::linear::connect_link(ctx, req).await,
         (Get, ["linear", "link"]) => api::linear::link(ctx, req).await,
         (Get, ["linear", "installed"]) => api::linear::installed(ctx, req).await,
@@ -672,6 +692,10 @@ async fn dispatch(
         }
         (Post, ["me", "claude", id, "default"]) => api::claude::set_default(ctx, id).await,
         // Linear accounts
+        (Get, ["me", "slack"]) => api::slack::mine(ctx).await,
+        (Post, ["me", "slack", "link"]) => api::slack::link_for(ctx, req).await,
+        (Patch, ["me", "slack", team]) => api::slack::update_mine(ctx, req, team).await,
+        (Delete, ["me", "slack", team]) => api::slack::unlink(ctx, team).await,
         (Get, ["me", "linear"]) => api::linear::mine(ctx).await,
         (Delete, ["me", "linear", organization]) => api::linear::unlink(ctx, organization).await,
         (Delete, ["me", "claude", id]) => api::claude::remove(ctx, id).await,

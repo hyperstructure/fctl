@@ -670,6 +670,15 @@ pub fn system_prompt(
         }
         None => s.push_str(tracker.as_deref().unwrap_or_default()),
     }
+    // The control plane says what the session reaches in Slack, and how
+    // its replies go back there (`SessionSpec::slack`).
+    if let Some(slack) = spec
+        .slack
+        .as_ref()
+        .filter(|s| !s.instructions.trim().is_empty())
+    {
+        s.push_str(&slack.instructions);
+    }
     if let Some(extra) = spec
         .project
         .settings
@@ -1239,6 +1248,7 @@ mod tests {
 
     fn spec() -> SessionSpec {
         SessionSpec {
+            slack: None,
             session_id: SessionId("ses_1".into()),
             number: 1,
             title: "Build it".into(),
