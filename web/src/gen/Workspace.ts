@@ -76,9 +76,10 @@ sign_in?: SignInRule,
 /**
  * It's closed to you because of `sign_in`: you're in it as an address
  * it covers, and this sign-in of yours was made another way. Signing
- * in again with its provider opens it.
+ * in again with its provider opens it. Absent from control planes
+ * before it.
  */
-sign_in_blocked: boolean, 
+sign_in_blocked?: boolean, 
 /**
  * The Claude connection your sessions in it run on. Absent: your
  * default one.

@@ -2119,8 +2119,10 @@ pub struct Workspace {
     pub sign_in: Option<SignInRule>,
     /// It's closed to you because of `sign_in`: you're in it as an address
     /// it covers, and this sign-in of yours was made another way. Signing
-    /// in again with its provider opens it.
+    /// in again with its provider opens it. Absent from control planes
+    /// before it.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub sign_in_blocked: bool,
     /// The Claude connection your sessions in it run on. Absent: your
     /// default one.
