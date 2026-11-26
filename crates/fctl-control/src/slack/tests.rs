@@ -465,6 +465,9 @@ async fn an_address_match_counts_while_it_is_allowed() -> AppResult<()> {
     .await?;
     let known = super::who(&db, &slack, "U_GRACE", NOW).await?;
     assert_eq!(known.map(|u| u.id).as_deref(), Some("usr_grace"));
+    // A match moves with her address, as when she comes back as a new
+    // Slack user.
+    assert!(super::may_match(&db, "usr_grace", "T1").await?);
     // Acme turns it off: fctl forgets her, and asks her to link instead.
     q(
         &db,
@@ -490,7 +493,7 @@ async fn an_address_match_counts_while_it_is_allowed() -> AppResult<()> {
     let linked = super::who(&db, &slack, "U_GRACE", NOW).await?;
     assert_eq!(linked.map(|u| u.id).as_deref(), Some("usr_grace"));
     // Nor does another Slack user with her address take it over: an address
-    // matches only people fctl doesn't know there yet.
+    // matches only people who linked no account there.
     assert!(!super::may_match(&db, "usr_grace", "T1").await?);
     assert!(super::may_match(&db, "usr_grace", "T2").await?);
     assert!(super::may_match(&db, "usr_ada", "T1").await?);

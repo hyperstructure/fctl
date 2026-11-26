@@ -1121,13 +1121,14 @@ pub async fn match_email(
 }
 
 /// Whether an address may make fctl account `user` someone in Slack
-/// workspace `team`: not where fctl knows them there already, as another
-/// Slack user. An address never takes over an account they linked, or
-/// one an earlier match found.
+/// workspace `team`: not where they linked a Slack account there, which no
+/// address takes over. One an earlier match found moves with the address,
+/// as when someone comes back as a new Slack user: Slack gives an address
+/// to one member of a Slack workspace at a time.
 pub(crate) async fn may_match(db: &D1Database, user: &str, team: &str) -> AppResult<bool> {
     let known: Option<crate::db::Count> = q(
         db,
-        "SELECT COUNT(*) AS n FROM slack_accounts WHERE user_id = ? AND team_id = ?",
+        "SELECT COUNT(*) AS n FROM slack_accounts WHERE user_id = ? AND team_id = ? AND via = 'linked'",
         &[s(user), s(team)],
     )?
     .first()
