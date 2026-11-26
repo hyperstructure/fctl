@@ -552,7 +552,12 @@ pub(crate) fn smoke(token: &str, children: &mut Children) -> Result<String> {
     }
     // The session knows its thread.
     let auth = Auth::Bearer(token.to_owned());
-    let sessions = call("GET", "/projects/playground/sessions", Some(&auth), None)?;
+    let sessions = call(
+        "GET",
+        "/sessions?project=playground&limit=50",
+        Some(&auth),
+        None,
+    )?;
     ok("listing playground's sessions", &sessions)?;
     let from_slack = sessions.1["sessions"]
         .as_array()
