@@ -317,8 +317,12 @@ impl WorkspaceRow {
 pub struct WorkspaceAccess {
     pub row: WorkspaceRow,
     pub role: Option<WorkspaceRole>,
-    /// It requires two-factor sign-in, which the caller hasn't set up.
+    /// It's closed to the caller: it requires two-factor sign-in, which
+    /// they haven't set up, or its own sign-in requirement covers them and
+    /// this request's sign-in doesn't meet it.
     pub blocked: bool,
+    /// Its own sign-in requirement is what closes it.
+    pub sign_in_blocked: bool,
 }
 
 impl WorkspaceAccess {
@@ -330,12 +334,17 @@ impl WorkspaceAccess {
     pub fn require_open(&self) -> AppResult<WorkspaceRole> {
         let role = self.role.ok_or_else(|| not_found("Workspace"))?;
         if self.blocked {
+            let sign_in = self.row.sign_in_covers.as_deref();
             return Err(AppError(ApiError::new(
                 ErrorCode::Forbidden,
-                format!(
-                    "{} requires two-factor sign-in. Set it up in Settings → Security to open it.",
-                    self.row.name
-                ),
+                if self.sign_in_blocked {
+                    sign_in_refusal(&self.row.name, sign_in, "open it")
+                } else {
+                    format!(
+                        "{} requires two-factor sign-in. Set it up in Settings → Security to open it.",
+                        self.row.name
+                    )
+                },
             )));
         }
         Ok(role)
@@ -390,7 +399,13 @@ pub async fn load(ctx: &Ctx, id_or_slug: &str) -> AppResult<WorkspaceAccess> {
         return Err(not_found("Workspace"));
     }
     let blocked = row.closed_to(user, &ctx.settings());
-    Ok(WorkspaceAccess { row, role, blocked })
+    let sign_in_blocked = user.sign_in_blocked(row.sign_in_covers.as_deref());
+    Ok(WorkspaceAccess {
+        row,
+        role,
+        blocked,
+        sign_in_blocked,
+    })
 }
 
 /// The workspaces a caller held to places reaches (a limited token, an

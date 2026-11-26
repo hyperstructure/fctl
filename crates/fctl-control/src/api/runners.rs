@@ -514,6 +514,13 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if let Some(closed) = served.iter().find(|w| {
         crate::workspaces::blocked_for(ctx, user, w.require_two_factor, w.sign_in.as_deref())
     }) {
+        if user.sign_in_blocked(closed.sign_in.as_deref()) {
+            return Err(forbidden(&crate::workspaces::sign_in_refusal(
+                &closed.name,
+                closed.sign_in.as_deref(),
+                "replace the runner's token, as it runs its sessions",
+            )));
+        }
         return Err(forbidden(&format!(
             "This runner runs the sessions of {}, which requires two-factor sign-in: set it up in Settings before you replace the runner's token.",
             closed.name

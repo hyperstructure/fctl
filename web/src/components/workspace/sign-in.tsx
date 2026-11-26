@@ -23,6 +23,15 @@ export function covered(
   });
 }
 
+/**
+ * Where saving the requirement was refused because it would close the workspace to the admin (`409`), the way out:
+ * signing in with Google as their address there, which shows it works for them, back to its settings.
+ */
+export function wayOut(error: unknown, w: G.Workspace, google?: G.SignInProvider): string | undefined {
+  if (!google || (error as { code?: string } | null)?.code !== "conflict") return undefined;
+  return startHref(google, { next: `/w/${w.slug}?tab=settings`, hint: w.email });
+}
+
 /** What requiring Google at `domains` does to the workspace's members, in sentences. */
 export function coverage(
   name: string,
@@ -34,7 +43,7 @@ export function coverage(
   const lines = [
     them.length === 0
       ? `No member is in ${name} as an address at ${domainsWords(domains, "or")} yet: those who join as one open it once they've signed in with Google as that address.`
-      : `${people(them.length)} ${them.length === 1 ? "is" : "are"} in ${name} as an address at ${domainsWords(domains, "or")}: ${them.length === 1 ? "it opens" : "it opens to them"} once they've signed in with Google as that address, their other workspaces as before.`,
+      : `${people(them.length)} ${them.length === 1 ? "is" : "are"} in ${name} as an address at ${domainsWords(domains, "or")}: it opens to them only once they've signed in with Google as that address. Their other workspaces don't change.`,
   ];
   if (others > 0)
     lines.push(`${people(others)} in it as other addresses ${others === 1 ? "signs" : "sign"} in as before.`);
@@ -143,7 +152,17 @@ export function WorkspaceSignIn({
               ))}
             </ul>
           )}
-          {save.error && <Banner tone="error">{save.error.message}</Banner>}
+          {save.error && (
+            <Banner tone="error">
+              {save.error.message}{" "}
+              {/* It would close the workspace to the admin: the way out, which shows Google works for them. */}
+              {wayOut(save.error, w, google) && (
+                <a href={wayOut(save.error, w, google)} className="font-medium underline underline-offset-2">
+                  Sign in with Google as {w.email}
+                </a>
+              )}
+            </Banner>
+          )}
           <div className="flex justify-end gap-2">
             <Button
               type="button"

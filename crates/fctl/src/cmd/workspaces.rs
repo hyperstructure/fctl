@@ -778,9 +778,10 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             if w.sign_in_blocked {
                 println!(
                     "          {}",
-                    style::dim(
-                        "closed to you: sign in again with Google as your address there (fctl login, then continue with Google)"
-                    )
+                    style::amber(&format!(
+                        "closed to you: you're in it as {}, and signed in another way. Sign in again with Google as that address (fctl login, then continue with Google).",
+                        w.email
+                    ))
                 );
             }
             println!(
@@ -811,7 +812,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             if let Some(c) = &w.claude_oversight {
                 println!("claude:   {}", super::claude_overview::settings_line(c));
             }
-            if w.blocked {
+            if w.blocked && !w.sign_in_blocked {
                 println!(
                     "{}",
                     style::amber(
