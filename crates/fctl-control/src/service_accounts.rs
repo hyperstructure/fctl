@@ -443,7 +443,7 @@ async fn act_for(ctx: &Ctx, caller: &ServiceCaller, named: &Named) -> AppResult<
     let settings = ctx.settings();
     let needs_two_factor =
         fctl_domain::two_factor::setup_required(&settings, person.has_password(), person.factors())
-            || person.blocked_by(&settings, found.require_two_factor);
+            || person.blocked_by(&settings, found.require_two_factor, None);
     let state = Person {
         member: found.member,
         active: person.is_active(),
@@ -500,7 +500,7 @@ pub async fn people(
                 &settings,
                 r.user.has_password(),
                 r.user.factors(),
-            ) || r.user.blocked_by(&settings, require_two_factor);
+            ) || r.user.blocked_by(&settings, require_two_factor, None);
             let why = policy::may_act_for(
                 consent,
                 Person {

@@ -21,6 +21,13 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct UserRow {
+    /// How the sign-in of the request it came with was made, where it's a
+    /// person's own (a browser's, a CLI's or an access token's): what a
+    /// workspace's own sign-in requirement checks ([`Self::blocked_by`]).
+    /// `None` read from D1, and for service accounts' and autopilots'
+    /// requests, which no such requirement holds.
+    #[serde(skip)]
+    pub request_sign_in: Option<fctl_domain::sign_in::SignedIn>,
     pub id: String,
     pub email: String,
     pub name: String,
@@ -163,21 +170,36 @@ impl UserRow {
         fctl_domain::two_factor::with_workspaces(settings, self.two_factor_workspaces > 0)
     }
 
-    /// Whether a workspace that requires two-factor sign-in is closed to
-    /// them (they haven't set it up). `require_two_factor` is its admins'
+    /// Whether a workspace is closed to them: it requires two-factor
+    /// sign-in, which they haven't set up, or its own sign-in requirement
+    /// covers them and the sign-in of this request doesn't meet it
+    /// ([`Self::sign_in_blocked`]). `require_two_factor` is its admins'
     /// choice: the instance's requirement closes their whole account
     /// instead (`fctl_domain::two_factor::workspace_requires`).
+    /// `sign_in`: its requirement as [`workspace_sign_in!`] reads it, where
+    /// it covers them.
     pub fn blocked_by(
         &self,
         settings: &fctl_proto::api::InstanceSettings,
         require_two_factor: bool,
+        sign_in: Option<&str>,
     ) -> bool {
-        require_two_factor
+        (require_two_factor
             && fctl_domain::two_factor::workspace_blocked(
                 settings,
                 self.has_password(),
                 self.factors(),
-            )
+            ))
+            || self.sign_in_blocked(sign_in)
+    }
+
+    /// Whether a workspace's own sign-in requirement, which covers them
+    /// (`sign_in`, as [`workspace_sign_in!`] reads it), closes it to the
+    /// request they come with.
+    pub fn sign_in_blocked(&self, sign_in: Option<&str>) -> bool {
+        let rule =
+            sign_in.and_then(|j| serde_json::from_str::<fctl_proto::api::SignInRule>(j).ok());
+        fctl_domain::sign_in::workspace_closed(rule.as_ref(), self.request_sign_in.as_ref())
     }
 
     /// Their other email addresses.
@@ -387,6 +409,10 @@ pub struct WorkspaceCols {
     pub workspace_base_role: Option<String>,
     #[serde(deserialize_with = "int_bool", default)]
     pub workspace_two_factor: bool,
+    /// Its own sign-in requirement, where it covers the caller
+    /// ([`workspace_sign_in!`]).
+    #[serde(default)]
+    pub workspace_sign_in: Option<String>,
     /// The caller's role in it.
     #[serde(default)]
     pub workspace_role: Option<String>,
@@ -417,7 +443,11 @@ impl WorkspaceCols {
                 .as_deref()
                 .and_then(fctl_proto::api::BaseRole::parse)
                 .unwrap_or_default(),
-            blocked: user.blocked_by(settings, self.workspace_two_factor),
+            blocked: user.blocked_by(
+                settings,
+                self.workspace_two_factor,
+                self.workspace_sign_in.as_deref(),
+            ),
         })
     }
 }
@@ -684,7 +714,8 @@ impl RepoRow {
 /// repositories. Bind: `?1` = caller user id. The counts leave out the
 /// sessions the lists do: review agents', and those of schedules that hide
 /// theirs.
-pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.icon, p.repo_owner, p.repo_name, \
+pub const PROJECT_SELECT: &str = concat!(
+    "SELECT p.id, p.slug, p.name, p.description, p.icon, p.repo_owner, p.repo_name, \
     p.default_branch, p.settings, p.session_counter, p.created_by, cu.name AS creator_name, \
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping') \
@@ -703,7 +734,9 @@ pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.
     (SELECT r.owner FROM project_repos r WHERE r.project_id = p.id AND r.name = '*' LIMIT 1) AS all_repos_of, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
-    w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role, \
+    w.require_two_factor AS workspace_two_factor, ",
+    crate::workspace_sign_in!(),
+    " AS workspace_sign_in, wm.role AS workspace_role, \
     c.model AS last_model, c.effort AS last_effort, \
     w.autopilots AS workspace_autopilots, ap.state AS autopilot_state, ap.scope AS autopilot_scope, \
     CASE WHEN ap.scope = 'workspace' AND COALESCE(wm.role, '') NOT IN ('owner', 'admin') THEN 0 \
@@ -721,7 +754,8 @@ pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.
     LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
     LEFT JOIN project_choices c ON c.project_id = p.id AND c.user_id = ?1 \
     LEFT JOIN autopilots ap ON ap.project_id = p.id \
-    LEFT JOIN sessions aps ON aps.id = ap.session_id";
+    LEFT JOIN sessions aps ON aps.id = ap.session_id"
+);
 
 /// What lets the caller see a project, for `WHERE` clauses with
 /// [`PROJECT_SELECT`] (or [`SESSION_SELECT`]): they are in its workspace,
@@ -736,6 +770,32 @@ pub const PROJECT_VISIBLE: &str = "wm.user_id IS NOT NULL AND (wm.role IN ('owne
 macro_rules! workspace_order {
     () => {
         "wm.position IS NULL, wm.position, wm.created_at, w.name, w.id"
+    };
+}
+
+/// A workspace's own sign-in requirement (`w.sign_in`, JSON) where it
+/// covers its member whose address there is `$email` (`wm.email` unless
+/// given): one of its domains is that address's. NULL elsewhere. For
+/// [`UserRow::blocked_by`].
+#[macro_export]
+macro_rules! workspace_sign_in {
+    () => {
+        $crate::workspace_sign_in!("w", "wm.email")
+    };
+    ($w:literal, $email:literal) => {
+        concat!(
+            "CASE WHEN ",
+            $w,
+            ".sign_in IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(",
+            $w,
+            ".sign_in, '$.domains') d WHERE d.value = lower(substr(",
+            $email,
+            ", instr(",
+            $email,
+            ", '@') + 1))) THEN ",
+            $w,
+            ".sign_in END"
+        )
     };
 }
 
@@ -1068,7 +1128,8 @@ impl SessionRow {
 /// project and share roles, and whether they follow it. Bind: `?1` =
 /// caller user id. A share someone gave themselves (as an owner, before
 /// they were demoted) counts for nothing.
-pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
+pub const SESSION_SELECT: &str = concat!(
+    "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, CASE WHEN cc.user_id = ?1 THEN s.credential_id END AS my_credential_id, cc.user_id AS claude_user_id, ccu.name AS claude_user_name, ccu.avatar_url AS claude_user_avatar, \
     s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
@@ -1083,7 +1144,9 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     CASE WHEN s.autopilot_role = 'pilot' THEN (SELECT a.scope FROM autopilots a WHERE a.project_id = s.autopilot_id) END AS autopilot_scope, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
-    w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \
+    w.require_two_factor AS workspace_two_factor, ",
+    crate::workspace_sign_in!(),
+    " AS workspace_sign_in, wm.role AS workspace_role \
     FROM sessions s \
     JOIN projects p ON p.id = s.project_id \
     LEFT JOIN reviews rv ON rv.session_id = s.id \
@@ -1097,7 +1160,8 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = ?1 \
     LEFT JOIN session_shares sh ON sh.session_id = s.id AND sh.user_id = ?1 \
       AND (sh.created_by IS NULL OR sh.created_by != sh.user_id) \
-    LEFT JOIN session_followers f ON f.session_id = s.id AND f.user_id = ?1";
+    LEFT JOIN session_followers f ON f.session_id = s.id AND f.user_id = ?1"
+);
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RunnerRow {

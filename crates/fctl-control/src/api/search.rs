@@ -60,11 +60,12 @@ pub async fn search(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let mut scopes: BTreeMap<String, Scope> = BTreeMap::new();
     let mut sql = format!(
         "SELECT p.id, m.role AS member_role, w.id AS workspace_id, w.base_role AS workspace_base_role, \
-         w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \
+         w.require_two_factor AS workspace_two_factor, {} AS workspace_sign_in, wm.role AS workspace_role \
          FROM projects p JOIN workspaces w ON w.id = p.workspace_id \
          LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
          LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
-         WHERE {PROJECT_VISIBLE}"
+         WHERE {PROJECT_VISIBLE}",
+        crate::workspace_sign_in!()
     );
     let mut params = vec![s(&user.id)];
     if let Some(w) = &workspace {

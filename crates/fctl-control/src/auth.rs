@@ -431,8 +431,11 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     );
     // However it comes: in a cookie, a limited token stays limited.
     let limits = Limits::parse(found.scope.as_deref());
+    // A person's own sign-in: what workspaces' own requirements check.
+    let mut user = found.user;
+    user.request_sign_in = Some(how.clone());
     ctx.auth = Some(Authed {
-        user: found.user,
+        user,
         token_id: found.token_id,
         kind,
         via_cookie,

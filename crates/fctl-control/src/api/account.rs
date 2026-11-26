@@ -669,7 +669,7 @@ async fn start(ctx: &Ctx, user: &UserRow, slot: Slot) -> AppResult<Export> {
     let open: Vec<String> = crate::workspaces::mine(&ctx.db, &user.id)
         .await?
         .into_iter()
-        .filter(|w| !user.blocked_by(&settings, w.require_two_factor))
+        .filter(|w| !w.closed_to(user, &settings))
         .map(|w| w.id)
         .collect();
     let mine_open =

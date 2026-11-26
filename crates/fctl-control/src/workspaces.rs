@@ -49,7 +49,9 @@ fn yes() -> bool {
 /// show of them. Bind: `?1` = caller user id.
 pub const WORKSPACE_SELECT: &str = concat!(
     "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at, w.base_role, \
-    w.require_two_factor, w.skip_invites, w.created_at, wm.role AS role, wm.email AS email, wm.credential_id AS credential_id, wm.own_runners AS own_runners, \
+    w.require_two_factor, w.sign_in AS sign_in, ",
+    crate::workspace_sign_in!(),
+    " AS sign_in_covers, w.skip_invites, w.created_at, wm.role AS role, wm.email AS email, wm.credential_id AS credential_id, wm.own_runners AS own_runners, \
     (SELECT COUNT(*) FROM workspace_members x WHERE x.workspace_id = w.id) AS members, \
     (SELECT COUNT(*) FROM projects p WHERE p.workspace_id = w.id AND p.archived_at IS NULL) AS projects, \
     (SELECT json_group_array(rw.runner_id) FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
@@ -87,6 +89,12 @@ pub struct WorkspaceRow {
     pub base_role: String,
     #[serde(deserialize_with = "int_bool")]
     pub require_two_factor: bool,
+    /// Its own sign-in requirement (JSON, `fctl_proto::api::SignInRule`).
+    #[serde(default)]
+    pub sign_in: Option<String>,
+    /// The same, where it covers the caller ([`crate::workspace_sign_in!`]).
+    #[serde(default)]
+    pub sign_in_covers: Option<String>,
     #[serde(deserialize_with = "int_bool")]
     pub skip_invites: bool,
     #[serde(deserialize_with = "int")]
@@ -195,14 +203,33 @@ impl WorkspaceRow {
         fctl_domain::two_factor::workspace_requires(settings, self.require_two_factor)
     }
 
-    /// The workspace as its member, the caller, sees it; `online`: the
-    /// runners online now.
+    /// Its own sign-in requirement.
+    pub fn sign_in_rule(&self) -> Option<fctl_proto::api::SignInRule> {
+        self.sign_in
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
+    }
+
+    /// Whether it's closed to `user`, the caller, as [`UserRow::blocked_by`]
+    /// says.
+    pub fn closed_to(&self, user: &UserRow, settings: &InstanceSettings) -> bool {
+        user.blocked_by(
+            settings,
+            self.require_two_factor,
+            self.sign_in_covers.as_deref(),
+        )
+    }
+
+    /// The workspace as its member, `user`, the caller, sees it; `online`:
+    /// the runners online now.
     pub fn to_workspace(
         &self,
         settings: &InstanceSettings,
-        blocked: bool,
+        user: &UserRow,
         online: &[String],
     ) -> Workspace {
+        let blocked = self.closed_to(user, settings);
+        let sign_in_blocked = user.sign_in_blocked(self.sign_in_covers.as_deref());
         let runners = self.runner_ids();
         let (color, hex) = fctl_domain::workspace::color(self.color.as_deref());
         Workspace {
@@ -218,6 +245,8 @@ impl WorkspaceRow {
             require_two_factor: self.requires_two_factor(settings),
             instance_requires_two_factor: settings.require_two_factor,
             blocked,
+            sign_in: self.sign_in_rule(),
+            sign_in_blocked,
             claude: self.credential_id.clone().map(CredentialId),
             primary: self.primary(),
             members: self.members.max(0) as u32,
@@ -330,10 +359,17 @@ impl WorkspaceAccess {
     }
 }
 
-/// Whether a workspace that requires two-factor sign-in is closed to the
-/// caller.
-pub fn blocked_for(ctx: &Ctx, user: &UserRow, require_two_factor: bool) -> bool {
-    user.blocked_by(&ctx.settings(), require_two_factor)
+/// Whether a workspace is closed to the caller: it requires two-factor
+/// sign-in they haven't set up, or its own sign-in requirement covers them
+/// (`sign_in`, [`crate::workspace_sign_in!`]) and this request's sign-in
+/// doesn't meet it.
+pub fn blocked_for(
+    ctx: &Ctx,
+    user: &UserRow,
+    require_two_factor: bool,
+    sign_in: Option<&str>,
+) -> bool {
+    user.blocked_by(&ctx.settings(), require_two_factor, sign_in)
 }
 
 /// A workspace by id or slug, with the caller's membership. People who
@@ -353,7 +389,7 @@ pub async fn load(ctx: &Ctx, id_or_slug: &str) -> AppResult<WorkspaceAccess> {
     {
         return Err(not_found("Workspace"));
     }
-    let blocked = blocked_for(ctx, user, row.require_two_factor);
+    let blocked = row.closed_to(user, &ctx.settings());
     Ok(WorkspaceAccess { row, role, blocked })
 }
 
@@ -487,6 +523,8 @@ pub const INVITATION_SELECT: &str = concat!(
     "SELECT i.id, i.workspace_id, i.email, i.role, i.invited_by, \
     iu.name AS inviter_name, iu.avatar_url AS inviter_avatar, i.created_at, i.expires_at, \
     w.slug, w.name, w.color, w.avatar_updated_at, w.require_two_factor, ",
+    crate::workspace_sign_in!("w", "i.email"),
+    " AS sign_in_covers, ",
     crate::service_account_refs!(),
     " AS service_accounts \
     FROM workspace_invitations i JOIN workspaces w ON w.id = i.workspace_id \
@@ -522,6 +560,10 @@ pub struct InvitationRow {
     pub avatar_updated_at: Option<i64>,
     #[serde(deserialize_with = "int_bool")]
     pub require_two_factor: bool,
+    /// Its workspace's sign-in requirement where it covers the invited
+    /// address ([`crate::workspace_sign_in!`]).
+    #[serde(default)]
+    pub sign_in_covers: Option<String>,
     /// Its workspace's service accounts (JSON,
     /// `crate::service_accounts::refs`).
     #[serde(default)]
@@ -633,7 +675,17 @@ pub async fn join(
     }
     let limit = policy::workspace_limit(user.role(), settings);
     policy::check_limit(membership_count(db, &user.id).await?, limit)?;
-    if user.blocked_by(settings, invitation.require_two_factor) {
+    if user.sign_in_blocked(invitation.sign_in_covers.as_deref()) {
+        return Err(AppError(ApiError::new(
+            ErrorCode::Forbidden,
+            sign_in_refusal(
+                &invitation.name,
+                invitation.sign_in_covers.as_deref(),
+                "join",
+            ),
+        )));
+    }
+    if user.blocked_by(settings, invitation.require_two_factor, None) {
         return Err(AppError(ApiError::new(
             ErrorCode::Forbidden,
             format!(
@@ -923,7 +975,7 @@ pub async fn feed_identity(
     let workspaces = mine(db, &user.id).await?;
     let open: Vec<&WorkspaceRow> = workspaces
         .iter()
-        .filter(|w| !user.blocked_by(settings, w.require_two_factor))
+        .filter(|w| !w.closed_to(user, settings))
         .collect();
     #[derive(Deserialize)]
     struct P {
@@ -1002,4 +1054,105 @@ pub async fn member_ids(db: &D1Database, workspace_id: &str) -> AppResult<Vec<St
     .all()
     .await?;
     Ok(rows.into_iter().map(|m| m.user_id).collect())
+}
+
+/// What a request a workspace's own sign-in requirement closes it to
+/// answers: `{name} requires …: sign in again with Google as your acme.com
+/// address, then {then}`. `rule`: the requirement, as
+/// [`crate::workspace_sign_in!`] reads it.
+pub fn sign_in_refusal(name: &str, rule: Option<&str>, then: &str) -> String {
+    let rule: Option<fctl_proto::api::SignInRule> = rule.and_then(|j| serde_json::from_str(j).ok());
+    let (provider, domains) = rule.map_or_else(
+        || ("its provider".to_owned(), String::new()),
+        |r| {
+            (
+                crate::sign_in::provider_name(&r.provider).to_owned(),
+                fctl_domain::sign_in::domains_words(&r.domains).replace(" and ", " or "),
+            )
+        },
+    );
+    format!(
+        "{name} requires its members to sign in with {provider} as their {domains} address: sign out, sign in again with {provider} as yours, then {then}."
+    )
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod d1_tests {
+    use super::*;
+    use crate::model::{PROJECT_SELECT, ProjectRow, user_columns};
+    use crate::testing;
+    use fctl_domain::sign_in::SignedIn;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    async fn user(db: &D1Database, id: &str, how: Option<SignedIn>) -> AppResult<UserRow> {
+        let row: Option<UserRow> = q(
+            db,
+            &format!("SELECT {} FROM users u WHERE u.id = ?", user_columns("u")),
+            &[s(id)],
+        )?
+        .first()
+        .await?;
+        let mut row = row.ok_or_else(|| crate::error::internal("no user"))?;
+        row.request_sign_in = how;
+        Ok(row)
+    }
+
+    async fn sees_web(db: &D1Database, who: &UserRow) -> AppResult<bool> {
+        let row: Option<ProjectRow> = q(
+            db,
+            &format!("{PROJECT_SELECT} WHERE p.id = ?2"),
+            &[s(&who.id), s("prj_web")],
+        )?
+        .first()
+        .await?;
+        let settings = InstanceSettings::default();
+        Ok(row
+            .and_then(|r| crate::access::project_role(who, &settings, None, &r))
+            .is_some())
+    }
+
+    /// A workspace's own requirement closes it, its projects with it, to
+    /// the members it covers whose sign-in doesn't meet it, and only them.
+    #[wasm_bindgen_test]
+    async fn a_workspaces_requirement_closes_it_to_sign_ins_made_another_way() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, role, status, created_at, updated_at) VALUES \
+             ('usr_ada', 'ada@acme.com', 'Ada', 'member', 'active', 0, 0), \
+             ('usr_cy', 'cy@contractor.io', 'Cy', 'member', 'active', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, base_role, sign_in, created_at, updated_at) VALUES \
+             ('wsp_acme', 'acme', 'Acme', 'editor', '{\"domains\":[\"acme.com\"],\"provider\":\"google\",\"passkeys\":false}', 0, 0)",
+            "INSERT INTO workspace_members (workspace_id, user_id, email, role, created_at) VALUES \
+             ('wsp_acme', 'usr_ada', 'Ada@ACME.com', 'member', 0), ('wsp_acme', 'usr_cy', 'cy@contractor.io', 'member', 0)",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at, workspace_id) VALUES \
+             ('prj_web', 'web', 'Web', 'usr_ada', 0, 0, 'wsp_acme')",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        let google = |a: &str| Some(SignedIn::provider("google", Some(a)));
+        // Ada is in it as an acme.com address: only Google as one opens it.
+        let ada = user(&db, "usr_ada", Some(SignedIn::password())).await?;
+        assert!(!sees_web(&db, &ada).await?);
+        let ada_gmail = user(&db, "usr_ada", google("ada@gmail.com")).await?;
+        assert!(!sees_web(&db, &ada_gmail).await?);
+        let ada_google = user(&db, "usr_ada", google("ada@acme.com")).await?;
+        assert!(sees_web(&db, &ada_google).await?);
+        // Read without a sign-in of hers (a notification, a service
+        // account's request): no requirement holds.
+        let ada_nobody = user(&db, "usr_ada", None).await?;
+        assert!(sees_web(&db, &ada_nobody).await?);
+        // The workspace says so, and why.
+        let settings = InstanceSettings::default();
+        let rows = mine(&db, "usr_ada").await?;
+        let acme = rows.first().ok_or_else(|| crate::error::internal("no workspace"))?;
+        assert!(acme.closed_to(&ada, &settings));
+        let seen = acme.to_workspace(&settings, &ada, &[]);
+        assert!(seen.blocked && seen.sign_in_blocked);
+        assert_eq!(seen.sign_in.map(|r| r.domains), Some(vec!["acme.com".to_owned()]));
+        assert!(!acme.closed_to(&ada_google, &settings));
+        // Cy, a contractor in it as his own address, signs in as he likes.
+        let cy = user(&db, "usr_cy", Some(SignedIn::password())).await?;
+        assert!(sees_web(&db, &cy).await?);
+        Ok(())
+    }
 }

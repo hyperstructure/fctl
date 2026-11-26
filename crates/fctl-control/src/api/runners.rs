@@ -493,22 +493,27 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         name: String,
         #[serde(deserialize_with = "crate::db::int_bool")]
         require_two_factor: bool,
+        #[serde(default)]
+        sign_in: Option<String>,
     }
     let served: Vec<Served> = q(
         &ctx.db,
-        "SELECT w.name AS name, w.require_two_factor AS require_two_factor FROM runner_workspaces rw \
+        concat!(
+            "SELECT w.name AS name, w.require_two_factor AS require_two_factor, ",
+            crate::workspace_sign_in!("w", "m.email"),
+            " AS sign_in FROM runner_workspaces rw \
          JOIN workspaces w ON w.id = rw.workspace_id \
          JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ? \
-         WHERE rw.runner_id = ?",
+         WHERE rw.runner_id = ?"
+        ),
         &[s(&user_id), s(id)],
     )?
     .all()
     .await?;
     let user = ctx.user()?;
-    if let Some(closed) = served
-        .iter()
-        .find(|w| crate::workspaces::blocked_for(ctx, user, w.require_two_factor))
-    {
+    if let Some(closed) = served.iter().find(|w| {
+        crate::workspaces::blocked_for(ctx, user, w.require_two_factor, w.sign_in.as_deref())
+    }) {
         return Err(forbidden(&format!(
             "This runner runs the sessions of {}, which requires two-factor sign-in: set it up in Settings before you replace the runner's token.",
             closed.name

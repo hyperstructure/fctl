@@ -334,6 +334,35 @@ pub fn admits(
     }
 }
 
+/// A workspace's own requirement as its admins save it
+/// (`workspaces.sign_in`, ADR 0103): checked as the instance's rules are,
+/// with a provider the instance has set up. No domains: none, the
+/// workspace's members sign in as the instance lets them.
+pub fn check_workspace_rule(
+    rule: &SignInRule,
+    providers: &[&str],
+) -> Result<Option<SignInRule>, ApiError> {
+    if rule.domains.iter().all(|d| d.trim().is_empty()) {
+        return Ok(None);
+    }
+    Ok(check_rules(std::slice::from_ref(rule), providers)?
+        .into_iter()
+        .next())
+}
+
+/// Whether a workspace's own requirement closes it to a request made with
+/// a sign-in `how`: the rule covers its member (`covering`, the rule where
+/// the address the workspace knows them by is at one of its domains) and
+/// `how` doesn't meet it. Without a sign-in of a person's (`None`: a
+/// service account's request, or nobody's, as notifications go out), it
+/// closes nothing: the rule is about how people sign in.
+pub fn workspace_closed(covering: Option<&SignInRule>, how: Option<&SignedIn>) -> bool {
+    match (covering, how) {
+        (Some(rule), Some(how)) => !meets(rule, how),
+        _ => false,
+    }
+}
+
 /// Whether an instance admin whose role is `actor` may unlink the provider
 /// accounts of someone whose role is `target` (`own`: their own). Their own
 /// they unlink in Settings, where they keep another way in; nobody the
@@ -655,6 +684,35 @@ mod tests {
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         assert!(check_rules(&[rule(&many, false)], &[GOOGLE]).is_err());
         assert_eq!(check_rules(&[], &[]).ok(), Some(vec![]));
+    }
+
+    #[test]
+    fn a_workspace_requires_its_provider_of_the_members_it_covers() {
+        // Saved as the instance's rules are; no domains is none.
+        assert_eq!(
+            check_workspace_rule(&rule(&["ACME.com", "*@acme.dev"], false), &[GOOGLE])
+                .ok()
+                .flatten(),
+            Some(rule(&["acme.com", "acme.dev"], false))
+        );
+        assert_eq!(
+            check_workspace_rule(&rule(&[], false), &[GOOGLE]).ok(),
+            Some(None)
+        );
+        assert!(check_workspace_rule(&rule(&["acme.com"], false), &[]).is_err());
+        assert!(check_workspace_rule(&rule(&["acme"], false), &[GOOGLE]).is_err());
+        // Closed to a covered member's sign-in made another way, open to
+        // one with Google as an address there, and to nobody's sign-in.
+        let r = rule(&["acme.com"], false);
+        assert!(workspace_closed(Some(&r), Some(&SignedIn::password())));
+        assert!(workspace_closed(Some(&r), Some(&google("ada@gmail.com"))));
+        assert!(workspace_closed(Some(&r), Some(&SignedIn::default())));
+        assert!(!workspace_closed(Some(&r), Some(&google("ada@acme.com"))));
+        assert!(!workspace_closed(Some(&r), None));
+        assert!(!workspace_closed(None, Some(&SignedIn::password())));
+        // Passkeys, where it lets them in.
+        let keys = rule(&["acme.com"], true);
+        assert!(!workspace_closed(Some(&keys), Some(&SignedIn::passkey())));
     }
 
     #[test]
