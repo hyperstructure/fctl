@@ -698,18 +698,29 @@ const SHARED: &str =
 /// Why fctl starts nothing from a conversation it can't see.
 const UNSEEN: &str = "fctl can't see this conversation, so it can't tell whether it's shared with another organization: invite fctl to it (/invite @fctl), or ask it in your messages with it.";
 
+/// Why fctl starts nothing when Slack doesn't say what a conversation is
+/// (it asks fctl to wait, or doesn't answer).
+const UNCHECKED: &str = "Slack didn't say what this conversation is just now, so fctl took nothing from it: try again in a minute.";
+
+/// Why fctl takes nothing from a conversation whose lookup failed: Slack
+/// says fctl can't see it, or it couldn't tell just now.
+fn unknown(e: &super::Failure) -> &'static str {
+    worker::console_error!("Slack's conversations.info: {e:?}");
+    match e.code() {
+        Some("channel_not_found" | "not_in_channel") => UNSEEN,
+        _ => UNCHECKED,
+    }
+}
+
 /// Why fctl may take nothing from `channel` (a channel, or a conversation
 /// other than someone's direct messages with fctl): it's shared with
-/// another organization, or fctl can't see it, so can't tell. `None`
-/// where it may.
+/// another organization, fctl can't see it, so can't tell, or Slack didn't
+/// say just now. `None` where it may.
 async fn closed(slack: &Slack, channel: &str) -> Option<&'static str> {
     match slack.conversation(channel).await {
         Ok(c) if c.shared => Some(SHARED),
         Ok(_) => None,
-        Err(e) => {
-            worker::console_error!("Slack's conversations.info: {e:?}");
-            Some(UNSEEN)
-        }
+        Err(e) => Some(unknown(&e)),
     }
 }
 
@@ -774,10 +785,10 @@ async fn take_up(
                 return refuse(SHARED.into()).await;
             }
             // A conversation fctl can't see may be shared with another
-            // organization: fctl takes nothing from it.
+            // organization: fctl takes nothing from it, nor from one Slack
+            // didn't describe just now.
             Err(e) => {
-                worker::console_error!("Slack's conversations.info: {e:?}");
-                return refuse(UNSEEN.into()).await;
+                return refuse(unknown(&e).into()).await;
             }
             Ok(c) => {
                 ask.place = if c.place == SlackPlace::Dm {
