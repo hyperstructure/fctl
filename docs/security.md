@@ -560,7 +560,11 @@ its VM, and nothing outside it except through these channels:
   only reads on GitHub, write them, where an agent that triages only
   labels them and comments on them (`fctl ticket`); and where the agent
   may comment on GitHub, resolve review threads of its repositories' pull
-  requests (`fctl resolve`); and nothing else. The control plane checks
+  requests (`fctl resolve`); and in projects that let their agents mint
+  identity tokens (Identity OIDC, on by default), outside review agents'
+  sessions, mint them for any audience (`fctl id-token`,
+  [Identity tokens](identity-tokens.md#what-a-token-proves)); and nothing
+  else. The control plane checks
   the values and the settings again. Turn publishing
   on only where anything the agents see may be shown to anyone with a
   link: text in a repository or on a web page can ask an agent to publish
