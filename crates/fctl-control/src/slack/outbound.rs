@@ -456,12 +456,13 @@ impl Posted {
 const POST_TRIES: u32 = 3;
 
 /// Posts `what` (the agent's reply, its question) in the session's thread,
-/// trying again while Slack asks fctl to wait or doesn't answer, a few
-/// seconds apart. Where the thread takes nothing (fctl left the channel,
-/// it was archived), it goes to the direct messages of the person who
-/// asked, under a line that says why, so that it still reaches someone
-/// who can act on it. Slack's refusal of the blocks themselves comes back
-/// as it is, for the caller to post simpler ones.
+/// trying again while Slack asks fctl to wait, which means it posted
+/// nothing; never after Slack didn't answer, which may mean it posted it.
+/// Where the thread takes nothing any more (fctl left the channel, it was
+/// archived), it goes to the direct messages of the person who asked,
+/// under a line that says why, so that it still reaches someone who can
+/// act on it. Other refusals come back as they are: of the blocks, for the
+/// caller to post simpler ones.
 async fn post_in_thread(
     a: &Answering,
     fallback: &str,
@@ -491,13 +492,13 @@ async fn post_in_thread(
                 )))
                 .await;
             }
-            Err(super::Failure::Down(_)) if tries < POST_TRIES => {
-                worker::Delay::from(std::time::Duration::from_secs(u64::from(2 * tries))).await;
-            }
             Err(e) => break e,
         }
     };
-    let gone = matches!(&failed, super::Failure::Slack(c) if !c.starts_with("invalid_blocks"));
+    let gone = matches!(
+        failed.code(),
+        Some("channel_not_found" | "not_in_channel" | "is_archived" | "thread_not_found")
+    );
     let Some(person) = t
         .slack_user_id
         .as_deref()
