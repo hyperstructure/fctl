@@ -19,7 +19,7 @@ const VERSION = 1;
 /** A workspace as the sidebar shows it. */
 export type SidebarWorkspace = Pick<
   G.Workspace,
-  "id" | "slug" | "name" | "color" | "hex" | "avatar_url" | "role" | "blocked"
+  "id" | "slug" | "name" | "color" | "hex" | "avatar_url" | "role" | "blocked" | "sign_in_blocked"
 >;
 /** A project as the sidebar shows it, under its workspace, with what picks its icon. */
 export type SidebarProject = Pick<
@@ -69,7 +69,12 @@ export function keepSidebar(user: string, workspaces: G.WorkspaceList, projects:
     version: VERSION,
     user,
     workspaces: {
-      workspaces: workspaces.workspaces.map((w) => ({ ...ref(w), role: w.role, blocked: w.blocked })),
+      workspaces: workspaces.workspaces.map((w) => ({
+        ...ref(w),
+        role: w.role,
+        blocked: w.blocked,
+        ...(w.sign_in_blocked ? { sign_in_blocked: true } : {}),
+      })),
       invitations: workspaces.invitations.map((i) => ({ id: i.id, workspace: ref(i.workspace) })),
       limit: workspaces.limit,
       unlimited: workspaces.unlimited,
@@ -126,7 +131,13 @@ function readRef(v: unknown): G.WorkspaceRef | undefined {
 function readWorkspace(v: unknown): SidebarWorkspace | undefined {
   const r = readRef(v);
   if (!r || !isObject(v) || !isText(v.role) || typeof v.blocked !== "boolean") return;
-  return { ...r, role: v.role as G.WorkspaceRole, blocked: v.blocked };
+  // Kept before it said why it's closed: as closed by two-factor sign-in.
+  return {
+    ...r,
+    role: v.role as G.WorkspaceRole,
+    blocked: v.blocked,
+    ...(v.sign_in_blocked === true ? { sign_in_blocked: true } : {}),
+  };
 }
 
 function readInvitation(v: unknown): SidebarInvitation | undefined {

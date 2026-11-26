@@ -78,14 +78,10 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
             .collect(),
         invitations: invitations
             .iter()
-            .map(|i| {
-                i.to_invitation(ws::blocked_for(
-                    ctx,
-                    user,
-                    i.require_two_factor,
-                    i.sign_in_covers.as_deref(),
-                ))
-            })
+            // Its two-factor requirement alone, which the invitation names:
+            // accepting it refuses, saying so, where its sign-in requirement
+            // closes it to this sign-in.
+            .map(|i| i.to_invitation(ws::blocked_for(ctx, user, i.require_two_factor, None)))
             .collect(),
         limit: settings.max_workspaces,
         unlimited: policy::workspace_limit(user.role(), &settings).is_none(),
