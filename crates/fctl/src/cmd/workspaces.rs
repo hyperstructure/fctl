@@ -144,6 +144,11 @@ pub enum SlackCmd {
     /// Install fctl's app in a Slack workspace and connect it (admins).
     /// Opens Slack in your browser.
     Connect {
+        /// The Slack workspace to install it in, as when you connect one
+        /// again: its name, its address (<name>.slack.com) or its id
+        /// (T…). Slack's sign-in then offers it alone.
+        #[arg(long)]
+        team: Option<String>,
         /// Print the link without opening a browser.
         #[arg(long)]
         no_browser: bool,
@@ -1722,7 +1727,7 @@ async fn invitation(api: &Api, which: &str) -> Result<WorkspaceInvitation> {
 
 /// The Slack workspace of `connections` that `named` names (by name,
 /// address or id), or the only one.
-fn pick_slack<'a>(
+pub(crate) fn pick_slack<'a>(
     connections: &'a [fctl_proto::slack::SlackConnection],
     named: Option<&str>,
     workspace: &str,
@@ -1770,7 +1775,7 @@ async fn slack_channel(
         return Ok((ch.id.clone(), ch.name.clone()));
     }
     let list = api
-        .slack_channels(w.id.as_str(), &c.team, Some(name))
+        .slack_channels(w.id.as_str(), &c.team, Some(name), None)
         .await?;
     list.channels
         .iter()
@@ -1874,8 +1879,16 @@ async fn slack(api: &Api, w: &Workspace, cmd: SlackCmd, json: bool) -> Result<()
                 );
             }
         }
-        SlackCmd::Connect { no_browser } => {
-            let link = api.connect_slack(w.id.as_str()).await?;
+        SlackCmd::Connect { team, no_browser } => {
+            let team = match team {
+                Some(t) if fctl_domain::slack::is_id(&t) && t.starts_with('T') => Some(t),
+                Some(t) => {
+                    let l = api.workspace_slack(w.id.as_str()).await?;
+                    Some(pick_slack(&l.connections, Some(&t), &w.name)?.team.clone())
+                }
+                None => None,
+            };
+            let link = api.connect_slack(w.id.as_str(), team.as_deref()).await?;
             if json {
                 return style::print_json(&link);
             }
@@ -1947,7 +1960,7 @@ async fn slack(api: &Api, w: &Workspace, cmd: SlackCmd, json: bool) -> Result<()
             let l = api.workspace_slack(w.id.as_str()).await?;
             let c = pick_slack(&l.connections, team.as_deref(), &w.name)?;
             let list = api
-                .slack_channels(w.id.as_str(), &c.team, query.as_deref())
+                .slack_channels(w.id.as_str(), &c.team, query.as_deref(), None)
                 .await?;
             if json {
                 return style::print_json(&list);

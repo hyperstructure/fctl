@@ -368,6 +368,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         slack::SlackConnection,
         slack::WorkspaceSlack,
         slack::SlackLink,
+        slack::ConnectSlackRequest,
         slack::SlackChannelChoice,
         slack::SlackChannelList,
         slack::SetSlackChannelRequest,

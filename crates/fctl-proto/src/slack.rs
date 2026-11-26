@@ -563,6 +563,17 @@ pub struct WorkspaceSlack {
     pub linked_teams: Vec<String>,
 }
 
+/// `POST /api/v1/workspaces/{id}/slack/connect`: the Slack workspace to
+/// install fctl's app in, when the admin knows it, as when they connect
+/// one again after fctl lost its access there.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ConnectSlackRequest {
+    /// The Slack workspace's id (`T…`): Slack's sign-in offers it alone.
+    pub team: Option<String>,
+}
+
 /// A link that signs in to Slack, for the browser to open: to install
 /// fctl's app in a Slack workspace, or to link your Slack account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

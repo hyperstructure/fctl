@@ -27,10 +27,11 @@ use fctl_domain::cookies::Cookie;
 use fctl_domain::slack::{self as sl, manifest, task};
 use fctl_domain::verify::Sensitive;
 use fctl_proto::slack::{
-    AdminSlack, AdminSlackTeam, MySlack, SetSlackChannelRequest, SlackAccount, SlackChannel,
-    SlackChannelChoice, SlackChannelList, SlackChannelRef, SlackConnection, SlackLink,
-    SlackProject, SlackProjectRef, SlackProjectUse, SlackSettings, SlackStatus, SlackTeamRef,
-    SlackVia, SlackWorkspaceRef, UpdateMySlackRequest, UpdateSlackRequest, WorkspaceSlack,
+    AdminSlack, AdminSlackTeam, ConnectSlackRequest, MySlack, SetSlackChannelRequest, SlackAccount,
+    SlackChannel, SlackChannelChoice, SlackChannelList, SlackChannelRef, SlackConnection,
+    SlackLink, SlackProject, SlackProjectRef, SlackProjectUse, SlackSettings, SlackStatus,
+    SlackTeamRef, SlackVia, SlackWorkspaceRef, UpdateMySlackRequest, UpdateSlackRequest,
+    WorkspaceSlack,
 };
 use fctl_proto::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
@@ -156,6 +157,9 @@ struct ConnectTicket {
     purpose: String,
     workspace: String,
     user: String,
+    /// The Slack workspace the admin asked to install fctl's app in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    team: Option<String>,
     exp: i64,
 }
 
@@ -261,15 +265,35 @@ fn returned(ctx: &mut Ctx, req: &Request, keys: &Keys, user: &str) -> Option<Sig
 /// `POST /api/v1/workspaces/{id}/slack/connect` (admins): the link to the
 /// Slack sign-in that installs fctl's app in a Slack workspace and
 /// connects it.
-pub async fn connect(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+pub async fn connect(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
+    let body: ConnectSlackRequest = if http::header(req, "Content-Type").is_some() {
+        http::body(req).await?
+    } else {
+        ConnectSlackRequest::default()
+    };
     let a = ws::load(ctx, id).await?;
     a.require_admin()?;
+    let team = match body
+        .team
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        Some(t) if sl::is_id(t) && t.starts_with('T') => Some(t.to_owned()),
+        Some(_) => {
+            return Err(AppError(ApiError::bad_request(
+                "team is a Slack workspace's id, as T0123ABCD",
+            )));
+        }
+        None => None,
+    };
     let keys = keys_for(ctx)?;
     let expires_at = ctx.now + CONNECT_TTL_MS;
     let ticket = keys.sign(&serde_json::to_vec(&ConnectTicket {
         purpose: CONNECT.into(),
         workspace: a.row.id.clone(),
         user: ctx.user()?.id.clone(),
+        team,
         exp: expires_at,
     })?);
     let encoded: String = url::form_urlencoded::byte_serialize(ticket.as_bytes()).collect();
@@ -322,7 +346,7 @@ pub async fn connect_link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
             purpose: String::new(),
             user: user.id,
             workspace: Some(a.row.id.clone()),
-            team: None,
+            team: ticket.team,
             thread: None,
             state: String::new(),
             nonce: String::new(),
@@ -362,7 +386,11 @@ pub async fn installed(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         return http::redirect(&back_to_workspace(&slug, "failed"));
     };
     match install(ctx, &keys, &workspace, &code).await {
-        Ok(()) => http::redirect(&back_to_workspace(&slug, "connected")),
+        Ok(team) => http::redirect(&format!(
+            "{}&team={}",
+            back_to_workspace(&slug, "connected"),
+            url::form_urlencoded::byte_serialize(team.as_bytes()).collect::<String>()
+        )),
         Err(e) => {
             worker::console_error!("a Slack install: {}", e.0.message);
             let outcome = if e.0.message.contains("org-wide") {
@@ -377,7 +405,8 @@ pub async fn installed(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
 
 /// Keeps fctl's app's token for the Slack workspace an admin installed it
 /// in, and connects it to their fctl workspace.
-async fn install(ctx: &mut Ctx, keys: &Keys, workspace: &str, code: &str) -> AppResult<()> {
+/// Answers the Slack workspace's id.
+async fn install(ctx: &mut Ctx, keys: &Keys, workspace: &str, code: &str) -> AppResult<String> {
     let a = ws::load(ctx, workspace).await?;
     a.require_admin()?;
     let cfg = slack::config(&ctx.cfg)?.clone();
@@ -468,7 +497,7 @@ async fn install(ctx: &mut Ctx, keys: &Keys, workspace: &str, code: &str) -> App
         Some(&team.id),
         Some(json!({ "name": team.name, "domain": team.domain })),
     );
-    Ok(())
+    Ok(team.id)
 }
 
 /// `GET /api/v1/slack/link[?team=…][&thread=…]`: links the signed-in
@@ -823,6 +852,13 @@ async fn connection(
 ) -> AppResult<(ws::WorkspaceAccess, SlackSettings)> {
     let a = ws::load(ctx, id).await?;
     a.require_admin()?;
+    let st = settings_in(ctx, a.id(), team).await?;
+    Ok((a, st))
+}
+
+/// What workspace `workspace` lets people and agents do in Slack
+/// workspace `team`, where it works there.
+async fn settings_in(ctx: &Ctx, workspace: &str, team: &str) -> AppResult<SlackSettings> {
     #[derive(Deserialize)]
     struct Row {
         settings: String,
@@ -830,12 +866,12 @@ async fn connection(
     let row: Option<Row> = q(
         &ctx.db,
         "SELECT settings FROM workspace_slack WHERE workspace_id = ? AND team_id = ?",
-        &[s(a.id()), s(team)],
+        &[s(workspace), s(team)],
     )?
     .first()
     .await?;
     let row = row.ok_or_else(|| not_found("Slack workspace"))?;
-    Ok((a, serde_json::from_str(&row.settings).unwrap_or_default()))
+    Ok(serde_json::from_str(&row.settings).unwrap_or_default())
 }
 
 /// `PATCH /api/v1/workspaces/{id}/slack/{team}` (admins): what the
@@ -927,10 +963,30 @@ pub async fn disconnect(ctx: &mut Ctx, id: &str, team: &str) -> AppResult<Respon
     http::ok(&respond(ctx, a.id()).await?)
 }
 
-/// `GET /api/v1/workspaces/{id}/slack/{team}/channels[?query=…]` (admins):
-/// public channels there, for mapping and making readable.
+/// `GET /api/v1/workspaces/{id}/slack/{team}/channels[?query=…][&project=…]`:
+/// public channels there, for its admins to map and make readable, and for
+/// the maintainers of `project`, one of the workspace's, to post its events
+/// in where the workspace lets projects do that.
 pub async fn channels(ctx: &Ctx, req: &Request, id: &str, team: &str) -> AppResult<Response> {
-    connection(ctx, id, team).await?;
+    let a = ws::load(ctx, id).await?;
+    let st = settings_in(ctx, a.id(), team).await?;
+    if a.require_admin().is_err() {
+        let Some(project) = http::query(req, "project") else {
+            return Err(forbidden(
+                "Only the workspace's admins list its Slack channels, and projects' maintainers to choose where events go",
+            ));
+        };
+        let p = crate::access::project(ctx, &project).await?;
+        if p.workspace_id() != a.id() {
+            return Err(not_found("project"));
+        }
+        p.require_maintainer()?;
+        if !st.project_events {
+            return Err(forbidden(
+                "The workspace's admins keep projects' events out of Slack: they turn it on under Integrations → Slack",
+            ));
+        }
+    }
     let keys = ctx.keys()?;
     let client = slack::client(&ctx.db, &ctx.cfg, &keys, team).await?;
     let query = http::query(req, "query")

@@ -65,6 +65,10 @@ Slack accounts ([below](#link-your-slack-account)), you too.
   disconnect acme`) stops everything there from reaching the workspace's
   sessions, and forgets its channels. Once no workspace works in a Slack
   workspace, fctl uninstalls its app there.
+- **Connecting again**, after Slack took fctl's access away (**Connect
+  again**, `fctl workspaces slack connect --team acme`), installs the app
+  in that Slack workspace again and keeps the workspace's settings and
+  channels.
 
 Org-wide installs in Enterprise Grid, Slack Connect channels and guests
 aren't supported yet ([below](#not-supported-yet)).
@@ -254,17 +258,25 @@ channels' names without it, or quote them (`'#web-team'`).
 ### What a project does
 
 A project's owners and maintainers choose, in its settings under
-**Slack**:
+**Slack** or with `fctl projects slack`:
 
-- **Read the readable channels**: on by default, since the workspace's
+- **Agents read the readable channels**: on by default, since the workspace's
   admins chose those channels for agents to read. Off, its agents read
-  their own thread alone.
+  their own thread alone (`--read-channels off`).
 - **Post events to a channel**: a channel of a Slack workspace the
   project's workspace works in, and the events, among those webhooks get:
   pull requests ready for review (`session.ready_for_review`) and failures
   (`session.failed`) unless you choose others. Each comes as a line, with
-  the session's title and **Open in fctl**. fctl joins a public channel; a
-  private one's members invite fctl first.
+  the session's title and **Open in fctl**. fctl joins a public channel,
+  found by its name; a private one's members invite fctl first, and you
+  give its ID. Only where the workspace's admins let projects post events
+  in Slack.
+
+```sh
+fctl projects slack -p web --events web-alerts
+fctl projects slack -p web --events web-alerts --kinds session.failed,session.question
+fctl projects slack -p web --events none
+```
 
 ### Yours
 

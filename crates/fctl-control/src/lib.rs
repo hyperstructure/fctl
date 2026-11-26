@@ -427,7 +427,7 @@ async fn dispatch(
             api::github::dismiss(ctx, id, &http::decode(account)).await
         }
         (Get, ["workspaces", id, "slack"]) => api::slack::workspace(ctx, id).await,
-        (Post, ["workspaces", id, "slack", "connect"]) => api::slack::connect(ctx, id).await,
+        (Post, ["workspaces", id, "slack", "connect"]) => api::slack::connect(ctx, req, id).await,
         (Patch, ["workspaces", id, "slack", team]) => api::slack::update(ctx, req, id, team).await,
         (Delete, ["workspaces", id, "slack", team]) => api::slack::disconnect(ctx, id, team).await,
         (Get, ["workspaces", id, "slack", team, "channels"]) => {

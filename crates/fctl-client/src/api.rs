@@ -2708,10 +2708,17 @@ impl Api {
 
     /// The link to the Slack sign-in that installs fctl's app in a Slack
     /// workspace and connects it to workspace `id` (its admins).
-    pub async fn connect_slack(&self, id: &str) -> Result<fctl_proto::slack::SlackLink> {
+    /// `team` (`T…`) has Slack's sign-in offer that Slack workspace alone.
+    pub async fn connect_slack(
+        &self,
+        id: &str,
+        team: Option<&str>,
+    ) -> Result<fctl_proto::slack::SlackLink> {
         self.post(
             &format!("/workspaces/{}/slack/connect", enc(id)),
-            &serde_json::json!({}),
+            &fctl_proto::slack::ConnectSlackRequest {
+                team: team.map(str::to_owned),
+            },
         )
         .await
     }
@@ -2739,16 +2746,20 @@ impl Api {
     }
 
     /// Public channels of a connected Slack workspace, for its admins to
-    /// choose.
+    /// choose, and for `project`'s maintainers to post its events in.
     pub async fn slack_channels(
         &self,
         id: &str,
         team: &str,
         query: Option<&str>,
+        project: Option<&str>,
     ) -> Result<fctl_proto::slack::SlackChannelList> {
-        let q = query
-            .map(|q| format!("?query={}", enc(q)))
-            .unwrap_or_default();
+        let q = [("query", query), ("project", project)]
+            .iter()
+            .filter_map(|(k, v)| v.map(|v| format!("{k}={}", enc(v))))
+            .collect::<Vec<_>>()
+            .join("&");
+        let q = if q.is_empty() { q } else { format!("?{q}") };
         self.get(&format!(
             "/workspaces/{}/slack/{}/channels{q}",
             enc(id),

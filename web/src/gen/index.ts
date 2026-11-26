@@ -99,6 +99,7 @@ export type { ConfirmAuthenticatorRequest } from "./ConfirmAuthenticatorRequest"
 export type { ConnectGithubLink } from "./ConnectGithubLink";
 export type { ConnectGithubRequest } from "./ConnectGithubRequest";
 export type { ConnectLinearRequest } from "./ConnectLinearRequest";
+export type { ConnectSlackRequest } from "./ConnectSlackRequest";
 export type { CreateAdminTokenRequest } from "./CreateAdminTokenRequest";
 export type { CreateAllowRequest } from "./CreateAllowRequest";
 export type { CreateAutopilotAskRequest } from "./CreateAutopilotAskRequest";
