@@ -14,7 +14,7 @@ fctl's Slack app works on app.fctl.sh and on instances people host
 themselves alike ([Self-hosting](self-hosting.md#connect-slack-optional)).
 This page is for the people who use it and the admins who connect it;
 [Architecture](architecture.md#slack) says how it works, and
-[ADR 0102](adr/0102-workspaces-start-and-steer-agents-from-slack-through-fctls-app.md)
+[ADR 0103](adr/0103-workspaces-start-and-steer-agents-from-slack-through-fctls-app.md)
 why it works that way.
 
 ```text

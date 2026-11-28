@@ -151,4 +151,48 @@ claude_refusals: number,
  * Off by default: an address in Slack says nothing an fctl account
  * has to agree with.
  */
-slack_match_email: boolean, };
+slack_match_email: boolean, 
+/**
+ * A browser stays signed in at most this many hours after its sign-in,
+ * however much it's used; then its person signs in again, through
+ * their domain's provider where one is required, which checks they
+ * may. 0 (the default): as long as it's used. At most
+ * [`MAX_BROWSER_MAX_HOURS`].
+ */
+browser_max_hours: number, 
+/**
+ * A browser unused this many minutes is signed out: no request with
+ * its sign-in, a tab that shows something live keeping it in use.
+ * [`DEFAULT_BROWSER_IDLE_MINUTES`] (30 days) by default, at least
+ * [`MIN_BROWSER_IDLE_MINUTES`].
+ */
+browser_idle_minutes: number, 
+/**
+ * A CLI stays signed in at most this many days after its sign-in;
+ * then it signs in again with `fctl login`. 0 (the default): as long
+ * as it's used, until 180 days unused. At most [`MAX_CLI_MAX_DAYS`].
+ */
+cli_max_days: number, 
+/**
+ * An access token lasts at most this many days after it's made: new
+ * ones can't be made to last longer, and older ones end then. 0 (the
+ * default): as long as their maker chose, for ever included. At most
+ * [`MAX_ACCESS_TOKEN_DAYS`].
+ */
+access_token_max_days: number, 
+/**
+ * Members make access tokens. Off, only instance admins and the
+ * primary instance owner make them, and members' stop working: they
+ * use the CLI, signed in as themselves. On by default.
+ */
+member_access_tokens: boolean, 
+/**
+ * The networks people sign in and send requests from, as CIDR ranges
+ * (`203.0.113.0/24`, `2001:db8::/32`): an office's, a VPN's. Browsers,
+ * CLIs, access tokens, admin tokens and service accounts outside them
+ * are refused; runners, webhooks and published links aren't held to
+ * them, and the primary instance owner signs in from anywhere, in a
+ * browser or the CLI. None (the default): anywhere. At most
+ * `fctl_domain::networks::MAX_NETWORKS`.
+ */
+networks: Array<string>, };

@@ -5,6 +5,7 @@ import type { DataExport } from "./DataExport";
 import type { EmailAddress } from "./EmailAddress";
 import type { Identity } from "./Identity";
 import type { Passkey } from "./Passkey";
+import type { SessionPolicy } from "./SessionPolicy";
 import type { SignInRequirement } from "./SignInRequirement";
 import type { TokenInfo } from "./TokenInfo";
 import type { TwoFactor } from "./TwoFactor";
@@ -72,4 +73,10 @@ export?: DataExport,
  * of the people at a domain of one of your addresses
  * ([`InstanceSettings::sign_in`]). Absent where none does.
  */
-sign_in?: SignInRequirement, };
+sign_in?: SignInRequirement, 
+/**
+ * How long your sign-ins last and whether you make access tokens, as
+ * the instance's admins set them. Absent for limited tokens, and from
+ * control planes before it.
+ */
+sessions?: SessionPolicy, };

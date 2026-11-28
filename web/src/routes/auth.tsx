@@ -282,6 +282,12 @@ export function LoginPage() {
           {external}
         </Banner>
       )}
+      {instance?.sign_in?.outside && !external && (
+        <Banner tone="warn" className="mb-4">
+          {instance.name} takes sign-ins only from its organization's networks, and this browser is outside
+          them. Connect to one (your VPN, say), then sign in.
+        </Banner>
+      )}
       {(buttons.length > 0 || passkey.supported) && (
         <>
           <div className="flex flex-col gap-2.5">

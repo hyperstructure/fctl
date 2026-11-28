@@ -1,4 +1,4 @@
-# 0102: Workspaces start and steer agents from Slack through fctl's app
+# 0103: Workspaces start and steer agents from Slack through fctl's app
 
 2026-11-26 · accepted
 

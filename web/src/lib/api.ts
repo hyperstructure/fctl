@@ -635,6 +635,9 @@ export const api = {
   /** What saving `rules` as the instance's sign-in rules would do, before anything changes (admins). */
   signInPreview: (rules: G.SignInRule[]) =>
     request<G.SignInPreview>("POST", "/admin/sign-in/preview", { rules } satisfies G.SignInPreviewRequest),
+  /** What saving `policy` as the instance's session policy would end at once, before anything changes (admins). */
+  sessionPolicyPreview: (policy: G.SessionPolicy) =>
+    request<G.SessionPolicyPreview>("POST", "/admin/sign-in/sessions/preview", policy),
   updateInstanceSettings: (b: G.UpdateInstanceSettingsRequest) =>
     request<G.InstanceSettings>("PATCH", "/admin/settings", b),
 };

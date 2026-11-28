@@ -86,6 +86,7 @@ import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { fetchMe, keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { forgetLeft } from "@/lib/reopen";
+import { devicesNote } from "@/lib/session-policy";
 import {
   askedTab,
   claudeGist,
@@ -1874,6 +1875,8 @@ function signedInWith(method?: string): string | undefined {
 
 function Devices() {
   const list = useQuery({ queryKey: keys.tokens, queryFn: api.tokens });
+  const { data: me } = useMe();
+  const limits = devicesNote(me?.sessions);
   const revoke = useMutation({
     mutationFn: (id: string) => api.deleteToken(id),
     onSuccess: () => list.refetch(),
@@ -1882,7 +1885,7 @@ function Devices() {
   return (
     <Section
       title="Devices"
-      description="Everywhere you are signed in. Revoking signs that device out at once."
+      description={`Everywhere you are signed in. Revoking signs that device out at once.${limits ? ` ${limits}` : ""}`}
     >
       <div className="flex flex-col gap-5">
         <ul className="divide-y divide-line border-y border-line">

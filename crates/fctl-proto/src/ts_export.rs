@@ -151,6 +151,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::SignInOverview,
         api::SignInPreviewRequest,
         api::SignInPreview,
+        api::SessionPolicy,
+        api::SessionPolicyPreview,
         api::BaseRole,
         api::Workspace,
         api::WorkspaceList,

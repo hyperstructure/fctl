@@ -4,13 +4,13 @@
 //! accounts a change to the rules concerns.
 
 use crate::config::Config;
-use crate::db::{q, s};
+use crate::db::{b, n, q, s};
 use crate::error::AppResult;
 use crate::model::UserRow;
 use fctl_domain::sign_in::{GOOGLE, Person, Required, SignedIn, domains_words};
 use fctl_proto::api::{
-    InstanceSettings, SignInInfo, SignInProvider, SignInProviderStatus, SignInRequirement,
-    SignInRule, TokenKind,
+    InstanceSettings, SessionPolicy, SignInInfo, SignInProvider, SignInProviderStatus,
+    SignInRequirement, SignInRule, TokenKind,
 };
 use fctl_proto::{ApiError, ErrorCode};
 use serde::Deserialize;
@@ -70,8 +70,9 @@ pub fn statuses(cfg: &Config, people: &[Person]) -> Vec<SignInProviderStatus> {
         .collect()
 }
 
-/// What the sign-in page needs ([`fctl_proto::api::InstanceInfo::sign_in`]).
-pub fn info(cfg: &Config, settings: &InstanceSettings) -> SignInInfo {
+/// What the sign-in page needs ([`fctl_proto::api::InstanceInfo::sign_in`]),
+/// for a request from `ip`.
+pub fn info(cfg: &Config, settings: &InstanceSettings, ip: Option<&str>) -> SignInInfo {
     SignInInfo {
         providers: PROVIDERS
             .iter()
@@ -84,7 +85,26 @@ pub fn info(cfg: &Config, settings: &InstanceSettings) -> SignInInfo {
             .collect(),
         rules: settings.sign_in.clone(),
         self_sign_up: settings.self_sign_up,
+        outside: !fctl_domain::networks::admits(&settings.networks, ip),
     }
+}
+
+/// Whether the instance's networks refuse `user`'s request from `ip`
+/// (`fctl_domain::networks`). `signing_in`: it's a browser's or a CLI's
+/// sign-in, or a request with one, which the primary instance owner makes
+/// from anywhere; their access tokens and admin tokens are held to them.
+pub fn outside(
+    settings: &InstanceSettings,
+    ip: Option<&str>,
+    user: &UserRow,
+    signing_in: bool,
+) -> bool {
+    !fctl_domain::networks::admits(&settings.networks, ip) && !(signing_in && user.is_owner())
+}
+
+/// The refusal of a request from outside the instance's networks.
+pub fn outside_refused(ip: Option<&str>) -> ApiError {
+    ApiError::forbidden(fctl_domain::networks::refusal(ip))
 }
 
 /// What a rule requires, as refusals begin: "acme.com signs in with
@@ -377,6 +397,70 @@ pub fn revoke_unmet(db: &D1Database, rules: &[SignInRule]) -> AppResult<Vec<crat
     Ok(statements)
 }
 
+/// The live browser and CLI sign-ins and access tokens that `policy`
+/// ends at `now`, as a condition on `tokens` and its parameters
+/// (`fctl_domain::session_policy::ended`, which every request checks).
+fn ended_by(policy: &SessionPolicy, now: i64) -> (&'static str, Vec<wasm_bindgen::JsValue>) {
+    use fctl_domain::session_policy::{idle_ms, max_age_ms};
+    let max = |kind| n(max_age_ms(policy, kind).unwrap_or(0));
+    (
+        "(expires_at IS NULL OR expires_at > ?1) AND (            (kind = 'web' AND ((?2 > 0 AND created_at + ?2 <= ?1) OR COALESCE(last_used_at, created_at) + ?3 <= ?1))            OR (kind = 'cli' AND ?4 > 0 AND created_at + ?4 <= ?1)            OR (kind = 'pat' AND ((?5 > 0 AND created_at + ?5 <= ?1)              OR (?6 AND user_id IN (SELECT id FROM users WHERE role = 'member')))))",
+        vec![
+            n(now),
+            max(TokenKind::Web),
+            n(idle_ms(policy, TokenKind::Web).unwrap_or(i64::MAX / 2)),
+            max(TokenKind::Cli),
+            max(TokenKind::Pat),
+            b(!policy.member_access_tokens),
+        ],
+    )
+}
+
+/// What saving `policy` ends at once: browser and CLI sign-ins older than
+/// it lets them be, browsers unused longer, and access tokens older than
+/// it lets them be, or members' where members make none. Counted by kind
+/// and by whether a member of the instance holds it.
+pub async fn ended_by_policy(
+    db: &D1Database,
+    policy: &SessionPolicy,
+    now: i64,
+) -> AppResult<Vec<(TokenKind, bool, u32)>> {
+    #[derive(Deserialize)]
+    struct Row {
+        kind: String,
+        #[serde(deserialize_with = "crate::db::int")]
+        member: i64,
+        #[serde(deserialize_with = "crate::db::int")]
+        n: i64,
+    }
+    let (ended, params) = ended_by(policy, now);
+    let rows: Vec<Row> = q(
+        db,
+        &format!(
+            "SELECT kind, (user_id IN (SELECT id FROM users WHERE role = 'member')) AS member, COUNT(*) AS n              FROM tokens WHERE {ended} GROUP BY kind, member"
+        ),
+        &params,
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| Some((TokenKind::parse(&r.kind)?, r.member != 0, r.n as u32)))
+        .collect())
+}
+
+/// What deletes, once `policy` is saved, the sign-ins and access tokens it
+/// ends ([`ended_by_policy`]): they no longer let anyone in, and none
+/// comes back when the policy is relaxed.
+pub fn revoke_ended(
+    db: &D1Database,
+    policy: &SessionPolicy,
+    now: i64,
+) -> AppResult<crate::db::Query> {
+    let (ended, params) = ended_by(policy, now);
+    q(db, &format!("DELETE FROM tokens WHERE {ended}"), &params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +618,165 @@ mod d1_tests {
         // No rule: nothing more goes.
         batch(&db, revoke_unmet(&db, &[])?).await?;
         assert_eq!(left(&db, "tokens").await?.len(), 3);
+        Ok(())
+    }
+
+    /// What saving a session policy ends is what every request refuses
+    /// under it (`fctl_domain::session_policy::ended`).
+    #[wasm_bindgen_test]
+    async fn saving_a_session_policy_ends_what_it_doesnt_let_last() -> AppResult<()> {
+        use fctl_domain::session_policy::{self as sp, DAY_MS, HOUR_MS};
+        let db = testing::database();
+        let now = 100 * DAY_MS;
+        q(
+            &db,
+            "INSERT INTO users (id, email, name, role, status, created_at, updated_at) VALUES              ('usr_ada', 'ada@acme.dev', 'Ada', 'owner', 'active', 0, 0),              ('usr_bob', 'bob@acme.dev', 'Bob', 'member', 'active', 0, 0)",
+            &[],
+        )?
+        .run()
+        .await?;
+        // id, kind, user, created, last used, expires.
+        type Row<'a> = (&'a str, TokenKind, &'a str, i64, Option<i64>, Option<i64>);
+        let tokens: [Row; 9] = [
+            // A browser signed in 13 hours ago, used a minute ago.
+            (
+                "tok_web_old",
+                TokenKind::Web,
+                "usr_ada",
+                now - 13 * HOUR_MS,
+                Some(now - 60_000),
+                Some(now + DAY_MS),
+            ),
+            // One signed in an hour ago, unused for 50 minutes.
+            (
+                "tok_web_idle",
+                TokenKind::Web,
+                "usr_bob",
+                now - HOUR_MS,
+                Some(now - 50 * 60_000),
+                Some(now + DAY_MS),
+            ),
+            (
+                "tok_web_new",
+                TokenKind::Web,
+                "usr_bob",
+                now - HOUR_MS,
+                Some(now - 60_000),
+                Some(now + DAY_MS),
+            ),
+            (
+                "tok_cli_old",
+                TokenKind::Cli,
+                "usr_ada",
+                now - 40 * DAY_MS,
+                Some(now),
+                Some(now + DAY_MS),
+            ),
+            (
+                "tok_cli_new",
+                TokenKind::Cli,
+                "usr_bob",
+                now - 20 * DAY_MS,
+                Some(now),
+                Some(now + DAY_MS),
+            ),
+            // Access tokens: an admin's for ever, 100 days old; a member's.
+            ("tok_pat_ada", TokenKind::Pat, "usr_ada", 0, None, None),
+            (
+                "tok_pat_ada_new",
+                TokenKind::Pat,
+                "usr_ada",
+                now - DAY_MS,
+                None,
+                None,
+            ),
+            (
+                "tok_pat_bob",
+                TokenKind::Pat,
+                "usr_bob",
+                now - DAY_MS,
+                None,
+                None,
+            ),
+            // Expired already: no change counts it.
+            (
+                "tok_gone",
+                TokenKind::Web,
+                "usr_bob",
+                0,
+                Some(0),
+                Some(now - 1),
+            ),
+        ];
+        for (id, kind, user, created, used, expires) in tokens {
+            q(
+                &db,
+                "INSERT INTO tokens (id, hash, kind, user_id, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                &[s(id), s(id), s(kind.as_str()), s(user), n(created), crate::db::on(used), crate::db::on(expires)],
+            )?
+            .run()
+            .await?;
+        }
+        let policy = SessionPolicy {
+            browser_max_hours: 12,
+            browser_idle_minutes: 30,
+            cli_max_days: 30,
+            access_token_max_days: 90,
+            member_access_tokens: false,
+        };
+        // As each request would read them.
+        let refused: Vec<&str> = tokens
+            .iter()
+            .filter(|(_, kind, user, created, used, expires)| {
+                expires.is_none_or(|e| e > now)
+                    && sp::ended(
+                        &policy,
+                        &sp::Token {
+                            kind: *kind,
+                            created_at: *created,
+                            last_used_at: *used,
+                            expires_at: *expires,
+                            member: *user == "usr_bob",
+                        },
+                        now,
+                    )
+                    .is_some()
+            })
+            .map(|t| t.0)
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                "tok_web_old",
+                "tok_web_idle",
+                "tok_cli_old",
+                "tok_pat_ada",
+                "tok_pat_bob"
+            ]
+        );
+        let mut counted = ended_by_policy(&db, &policy, now).await?;
+        counted.sort_by_key(|(kind, member, _)| (kind.as_str(), *member));
+        assert_eq!(
+            counted,
+            [
+                (TokenKind::Cli, false, 1),
+                (TokenKind::Pat, false, 1),
+                (TokenKind::Pat, true, 1),
+                (TokenKind::Web, false, 1),
+                (TokenKind::Web, true, 1),
+            ]
+        );
+        revoke_ended(&db, &policy, now)?.run().await?;
+        assert_eq!(
+            left(&db, "tokens").await?,
+            ["tok_cli_new", "tok_gone", "tok_pat_ada_new", "tok_web_new"]
+        );
+        // The defaults end nothing more.
+        assert!(
+            ended_by_policy(&db, &SessionPolicy::default(), now)
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 }

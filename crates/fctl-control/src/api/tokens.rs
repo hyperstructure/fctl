@@ -10,10 +10,11 @@ use crate::error::{AppError, AppResult, not_found, validation};
 use crate::http;
 use crate::model::PROJECT_VISIBLE;
 use fctl_domain::limits::{Limits, MAX_PLACES, Places};
+use fctl_domain::session_policy;
 use fctl_domain::validate;
 use fctl_domain::verify::Sensitive;
-use fctl_proto::TokenId;
 use fctl_proto::api::*;
+use fctl_proto::{ApiError, TokenId};
 use serde::Deserialize;
 use std::collections::HashMap;
 use worker::{Request, Response};
@@ -134,8 +135,27 @@ impl TokenRow {
         Limits::parse(self.scope.as_deref())
     }
 
-    fn info(self, current: &str, named: &Named) -> TokenInfo {
+    /// It as the instance's session policy reads it (`member`: its person
+    /// is a member of the instance, not an admin).
+    fn token(&self, member: bool) -> session_policy::Token {
+        session_policy::Token {
+            kind: TokenKind::parse(&self.kind).unwrap_or(TokenKind::Pat),
+            created_at: self.created_at,
+            last_used_at: self.last_used_at,
+            expires_at: self.expires_at,
+            member,
+        }
+    }
+
+    /// Whether `policy` still lets it sign its person in at `now`.
+    fn live(&self, policy: &SessionPolicy, member: bool, now: i64) -> bool {
+        session_policy::ended(policy, &self.token(member), now).is_none()
+    }
+
+    /// What people see of it, as `policy` lets it last.
+    fn info(self, current: &str, named: &Named, policy: &SessionPolicy) -> TokenInfo {
         let scope = self.limits().map(|l| named.scope(&l));
+        let expires_at = session_policy::ends_at(policy, &self.token(false));
         TokenInfo {
             current: self.id == current,
             id: TokenId(self.id),
@@ -143,7 +163,7 @@ impl TokenRow {
             name: self.name,
             created_at: self.created_at,
             last_used_at: self.last_used_at,
-            expires_at: self.expires_at,
+            expires_at,
             user_agent: self.user_agent,
             scope,
             method: self.auth_method,
@@ -170,10 +190,20 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     )?
     .all()
     .await?;
+    // Those the instance's session policy ended are gone.
+    let policy = ctx.settings().session_policy();
+    let member = user.role() == fctl_proto::session::InstanceRole::Member;
+    let rows: Vec<TokenRow> = rows
+        .into_iter()
+        .filter(|r| r.live(&policy, member, ctx.now))
+        .collect();
     let limits: Vec<Limits> = rows.iter().filter_map(TokenRow::limits).collect();
     let named = Named::of(ctx, &user.id, &limits.iter().collect::<Vec<_>>()).await?;
     http::ok(&TokenList {
-        tokens: rows.into_iter().map(|r| r.info(&current, &named)).collect(),
+        tokens: rows
+            .into_iter()
+            .map(|r| r.info(&current, &named, &policy))
+            .collect(),
     })
 }
 
@@ -195,7 +225,11 @@ pub async fn current(ctx: &Ctx) -> AppResult<Option<TokenInfo>> {
     };
     let limits = row.limits();
     let named = Named::of(ctx, &a.user.id, &limits.iter().collect::<Vec<_>>()).await?;
-    Ok(Some(row.info(&a.token_id, &named)))
+    Ok(Some(row.info(
+        &a.token_id,
+        &named,
+        &a.settings.session_policy(),
+    )))
 }
 
 /// The places a new token names: workspaces the caller is a member of and
@@ -266,12 +300,21 @@ async fn places(
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateTokenRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
+    let settings = ctx.settings();
+    let policy = settings.session_policy();
+    // Where members make none, they use the CLI signed in as themselves.
+    if !policy.member_access_tokens && user.role() == fctl_proto::session::InstanceRole::Member {
+        return Err(AppError(ApiError::forbidden(
+            "Only this instance's admins make access tokens: use the CLI signed in as you (fctl login), or ask an admin.",
+        )));
+    }
     let name = validate::name("name", &body.name)?;
-    let expires_at = match body.expires_in_days {
-        Some(0) | None => None,
-        Some(d) if d <= 3650 => Some(ctx.now + d as i64 * DAY_MS),
-        Some(_) => return Err(validation("expires_in_days", "Use at most 3650 days")),
-    };
+    let days = body.expires_in_days.filter(|d| *d > 0);
+    if days.is_some_and(|d| d > fctl_proto::api::MAX_ACCESS_TOKEN_DAYS) {
+        return Err(validation("expires_in_days", "Use at most 3650 days"));
+    }
+    session_policy::check_token_days(&policy, days).map_err(AppError)?;
+    let expires_at = days.map(|d| ctx.now + i64::from(d) * DAY_MS);
     let access = body.access.unwrap_or_default();
     fctl_domain::limits::check(access, body.github_access).map_err(AppError)?;
     let places = places(ctx, &body.workspaces, &body.projects).await?;
@@ -295,6 +338,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             limits: limits.as_ref(),
             verified_at: None,
             how,
+            settings: Some(&settings),
         },
     )
     .await?;
@@ -375,5 +419,6 @@ pub fn limited_me(user: &crate::model::UserRow, token: Option<TokenInfo>) -> Me 
         claude_stand_in: false,
         export: None,
         sign_in: None,
+        sessions: None,
     }
 }

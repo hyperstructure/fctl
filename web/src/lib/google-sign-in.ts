@@ -26,6 +26,9 @@ const GOOGLE_ERRORS: Record<string, string> = {
   sign_up_closed:
     "Your organization makes the accounts here, and there's none for this address yet. Ask an admin of this instance for one.",
   disabled: "Your account is disabled. Ask an admin for access.",
+  // From outside the instance's networks (InstanceSettings.networks).
+  network:
+    "This instance takes sign-ins only from its organization's networks, and this browser is outside them. Connect to one (your VPN, say), then sign in.",
 };
 
 /**

@@ -91,6 +91,15 @@ function open(info: G.InstanceInfo) {
 describe("the sign-in page where a domain signs in with a provider", () => {
   const acme = instance([{ domains: ["acme.com", "acme.dev"], provider: "google", passkeys: false }]);
 
+  it("says when the browser is outside the networks the instance takes sign-ins from", () => {
+    const outside = instance([]);
+    if (outside.sign_in) outside.sign_in.outside = true;
+    expect(open(outside).container.textContent).toContain(
+      "Acme factory takes sign-ins only from its organization's networks, and this browser is outside them.",
+    );
+    expect(open(instance([])).container.textContent).not.toContain("organization's networks");
+  });
+
   it("says which domains sign in with it, under its button", () => {
     const page = open(acme);
     expect(page.container.textContent).toContain("acme.com and acme.dev sign in with Google.");

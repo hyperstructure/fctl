@@ -1165,6 +1165,33 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.slack_match_email {
         settings.slack_match_email = on;
     }
+    // Where people sign in from: never so that the admin who saves it is
+    // outside, unless they're the primary instance owner, who signs in
+    // from anywhere.
+    if let Some(networks) = &body.networks {
+        let networks = fctl_domain::networks::check(networks).map_err(crate::error::AppError)?;
+        if !fctl_domain::networks::admits(&networks, ctx.ip.as_deref())
+            && actor.role() != InstanceRole::Owner
+        {
+            return Err(conflict(&format!(
+                "Your own address, {}, isn't in these networks: saving them would shut you out. Add it, or save them from inside one.",
+                ctx.ip.as_deref().unwrap_or("unknown")
+            )));
+        }
+        settings.networks = networks;
+    }
+    // How long sign-ins last: what it doesn't let last ends once it's
+    // saved.
+    let policy = verify::session_policy(&settings, &body);
+    let policy_changed = policy != settings.session_policy();
+    if policy_changed {
+        fctl_domain::session_policy::check(&policy).map_err(crate::error::AppError)?;
+        settings.browser_max_hours = policy.browser_max_hours;
+        settings.browser_idle_minutes = policy.browser_idle_minutes;
+        settings.cli_max_days = policy.cli_max_days;
+        settings.access_token_max_days = policy.access_token_max_days;
+        settings.member_access_tokens = policy.member_access_tokens;
+    }
     // No admin signs themselves out who might not sign in again: they
     // sign in with the provider first, which shows it works.
     let mut change = None;
@@ -1184,6 +1211,11 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         )
         .await?;
         crate::api::sign_in::tell(ctx, change, &settings.sign_in);
+    }
+    if policy_changed {
+        crate::sign_in::revoke_ended(&ctx.db, &policy, ctx.now)?
+            .run()
+            .await?;
     }
     if gravatar_off {
         // The copies go, and turned on again, it looks for everyone anew.

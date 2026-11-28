@@ -655,6 +655,36 @@ out everywhere, as a password reset does. Each token in `GET
 `passkey` or `google`), and `GET /api/v1/auth/me` the rule that covers you
 (`sign_in`).
 
+How long sign-ins last ([How long people stay signed
+in](self-hosting.md#how-long-people-stay-signed-in)) is five fields of the
+same settings: `browser_max_hours` (0: while it's used),
+`browser_idle_minutes` (5 to 43200, 30 days by default), `cli_max_days`
+(0: while it's used), `access_token_max_days` (0: as its maker chooses)
+and `member_access_tokens`. `GET /api/v1/admin/sign-in` has them as
+`sessions`, and `POST /api/v1/admin/sign-in/sessions/preview` with them
+says what saving them would end at once, changing nothing: `{"browsers",
+"clis", "access_tokens", "member_tokens", "you"}`. Saving them with `PATCH
+/api/v1/admin/settings` ends those, and asks the caller to confirm it's
+them (`verification_required`) where it lets anything last longer. A CLI's
+or an access token's request past what they let it last answers `401`
+(`unauthorized`), saying why; `POST /api/v1/auth/tokens` refuses an access
+token that would last longer (`validation`, `expires_in_days`), and
+a member's where only admins make them (`403`, `forbidden`). `GET /api/v1/auth/me` has
+them as `sessions`, and each token's `expires_at` in `GET
+/api/v1/auth/tokens` says when it ends under them.
+
+`networks` in the same settings, a list of CIDR ranges (`[]` for
+anywhere), keeps sign-ins and requests to them ([Signing in only from your
+networks](self-hosting.md#signing-in-only-from-your-networks)): a request
+from elsewhere with a CLI's sign-in, an access token, an admin token or a
+service account's secret answers `403` (`forbidden`), and a sign-in from
+elsewhere is refused the same way, but the primary instance owner's in a
+browser or the CLI. Saving ranges the caller's own address is outside of
+answers `409` (`conflict`), unless they're the primary instance owner. `GET
+/api/v1/admin/sign-in` has them as `networks`, with the caller's
+`address`, and `GET /api/v1/instance` says whether the request comes from
+outside them (`sign_in.outside`).
+
 ## Runner pools
 
 What a pool (an enrollment token's runners) needs now, for whatever scales
