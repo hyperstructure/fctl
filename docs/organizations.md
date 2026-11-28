@@ -134,6 +134,30 @@ come only from those: `fctl admin sign-in policies --networks
 203.0.113.0/24,2001:db8::/32` ([Signing in only from your
 networks](self-hosting.md#signing-in-only-from-your-networks)).
 
+### A workspace of your organization's
+
+On an instance that people of several organizations share (app.fctl.sh,
+or yours with contractors' workspaces), a workspace's own admins require
+Google of its members at their domains, without an instance admin: in
+the workspace's **Settings → Access → Members at your domains sign in
+with Google**, or
+
+```sh
+fctl workspaces set -w acme --require-google acme.com,acme.dev
+```
+
+Members who are in the workspace as an address at those domains open it,
+its projects and sessions only once they've signed in with Google as
+that address: a password's sign-in, or a personal Google account's,
+finds it closed, and its page says how to open it. Their other
+workspaces are as before, and members in it as other addresses
+(contractors) sign in as they like. Closing someone's Google account
+stops their next sign-in, not the sign-ins they have: remove them from
+the workspace too. Its primary admin can stop requiring it whatever their
+own sign-in, for when nobody can meet it. It closes only this workspace, so it
+needs no proof that the domains are yours; requiring Google of everyone
+at a domain, for the whole instance, is its admins' ([above](#signing-in-with-your-google-workspace)).
+
 ## People from your directory
 
 On an instance of yours, your identity provider, your HR system or a

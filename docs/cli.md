@@ -315,6 +315,7 @@ fctl workspaces set --color '#2a9d8f'     # its avatar's color, of its own (quot
 fctl workspaces set --slug side            # its address in URLs (create takes --slug too); old links stop working
 fctl workspaces set --base-role editor     # every member starts sessions in every project
 fctl workspaces set --require-two-factor on   # closed to members without a second factor
+fctl workspaces set --require-google acme.com,acme.dev   # members there open it only signed in with Google as such an address (--google-passkeys: a passkey too; off to stop)
 fctl workspaces set --skip-invites on      # a workspace for one: its setup stops asking for people
 fctl workspaces set --snapshot-days 7      # keep each session's snapshot a week after it stops (30 by default)
 fctl workspaces set --snapshots off        # sessions keep no snapshots: one that resumes elsewhere starts its conversation again
@@ -358,7 +359,11 @@ set --max-workspaces`), and the primary instance owner in any number
 and `"unlimited": true` to whoever it doesn't hold). While the instance
 requires two-factor sign-in (`fctl admin set --require-two-factor on`),
 every workspace does, and `fctl workspaces set --require-two-factor off`
-fails.
+fails. `--require-google` holds the members who are in the workspace as
+an address at its domains to Google sign-ins as such an address; save it
+once you've signed in with Google as yours, as it would close the
+workspace to you otherwise ([A workspace of your
+organization's](organizations.md#a-workspace-of-your-organizations)).
 
 `fctl workspaces members --claude` shows a workspace's admins what each
 member's sessions there run on, as much of it as they see, never a token,

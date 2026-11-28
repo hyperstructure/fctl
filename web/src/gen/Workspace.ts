@@ -3,6 +3,7 @@ import type { BaseRole } from "./BaseRole";
 import type { ClaudeOversightSettings } from "./ClaudeOversightSettings";
 import type { CredentialId } from "./CredentialId";
 import type { ServiceAccount } from "./ServiceAccount";
+import type { SignInRule } from "./SignInRule";
 import type { UserRef } from "./UserRef";
 import type { WorkspaceAutopilot } from "./WorkspaceAutopilot";
 import type { WorkspaceColor } from "./WorkspaceColor";
@@ -58,10 +59,27 @@ require_two_factor: boolean,
  */
 instance_requires_two_factor: boolean, 
 /**
- * It requires two-factor sign-in, which you haven't set up: until you
- * do, its projects and sessions are closed to you.
+ * It requires two-factor sign-in, which you haven't set up, or its
+ * own sign-in requirement covers you and your sign-in doesn't meet it
+ * (`sign_in_blocked`): until then, its projects and sessions are
+ * closed to you.
  */
 blocked: boolean, 
+/**
+ * Its own sign-in requirement: its members who are in it as an
+ * address at one of `domains` open it only with a sign-in made with
+ * `provider` as such an address (a passkey alone too, where
+ * `passkeys`). Members in it as other addresses sign in as the
+ * instance lets them. Absent: none ([`UpdateWorkspaceRequest::sign_in`]).
+ */
+sign_in?: SignInRule, 
+/**
+ * It's closed to you because of `sign_in`: you're in it as an address
+ * it covers, and this sign-in of yours was made another way. Signing
+ * in again with its provider opens it. Absent from control planes
+ * before it.
+ */
+sign_in_blocked?: boolean, 
 /**
  * The Claude connection your sessions in it run on. Absent: your
  * default one.

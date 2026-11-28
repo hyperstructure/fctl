@@ -33,6 +33,7 @@ import { ExperimentalPill, TokenHungry } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
 import { ServiceAccountsPanel } from "@/components/service-accounts/panel";
 import { SessionRow } from "@/components/session/row";
+import { ProviderMark } from "@/components/sign-in/provider";
 import {
   AutopilotIcon,
   Avatar,
@@ -71,6 +72,7 @@ import { LinearTab } from "@/components/workspace/linear";
 import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
 import { RunnerRow } from "@/components/workspace/runner-row";
 import { EnrollmentTokens, WaitingRunners } from "@/components/workspace/runners";
+import { SignInBlocked, WorkspaceSignIn } from "@/components/workspace/sign-in";
 import { SnapshotSettings, SnapshotsSection } from "@/components/workspace/snapshots";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
@@ -94,6 +96,7 @@ import {
   useWorkspace,
 } from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
+import { domainsWords } from "@/lib/sign-in";
 import { BASE_ROLES, claudeOptions, createsProjects, roleLabel } from "@/lib/workspaces";
 
 export type WorkspaceTab =
@@ -231,6 +234,12 @@ export function WorkspacePage() {
                   <ShieldCheck className="size-3.5 text-accent" /> Two-factor required
                 </span>
               )}
+              {w.sign_in && (
+                <span className="inline-flex items-center gap-1 text-ink-3">
+                  <ProviderMark id="google" className="size-3.5" /> Google at{" "}
+                  {domainsWords(w.sign_in.domains)}
+                </span>
+              )}
             </div>
           </div>
           {admin && !w.blocked && (
@@ -256,14 +265,18 @@ export function WorkspacePage() {
       )}
       {w?.blocked ? (
         <div className="mt-8 flex flex-col items-start gap-4">
-          <Banner tone="warn" className="self-stretch">
-            {w.name} requires two-factor sign-in of its members, and you haven't set it up. Until you do, its
-            projects and sessions are closed to you.{" "}
-            <Link to="/settings" search={{ tab: "security" }} className="underline underline-offset-2">
-              Set it up in Settings
-            </Link>
-            .
-          </Banner>
+          {w.sign_in_blocked ? (
+            <SignInBlocked w={w} onChanged={refresh} />
+          ) : (
+            <Banner tone="warn" className="self-stretch">
+              {w.name} requires two-factor sign-in of its members, and you haven't set it up. Until you do,
+              its projects and sessions are closed to you.{" "}
+              <Link to="/settings" search={{ tab: "security" }} className="underline underline-offset-2">
+                Set it up in Settings
+              </Link>
+              .
+            </Banner>
+          )}
           <Leave w={w} />
         </div>
       ) : (
@@ -2272,7 +2285,10 @@ function Autopilots({ w }: { w: G.Workspace }) {
   );
 }
 
-/** Who sees which projects, and two-factor sign-in, which stays on while the instance requires it. */
+/**
+ * Who sees which projects, two-factor sign-in, which stays on while the instance requires it, and whether the
+ * members at its domains sign in with Google.
+ */
 function Access({ w }: { w: G.Workspace }) {
   const { data: me } = useMe();
   const members = useQuery({
@@ -2359,6 +2375,7 @@ function Access({ w }: { w: G.Workspace }) {
             two-factor sign-in
           </div>
         )}
+        <WorkspaceSignIn w={w} members={members.data?.members} onSaved={refresh} />
       </div>
       <Dialog
         open={confirm}

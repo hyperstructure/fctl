@@ -682,6 +682,15 @@ answers `409` (`conflict`), unless they're the primary instance owner. `GET
 `address`, and `GET /api/v1/instance` says whether the request comes from
 outside them (`sign_in.outside`).
 
+A workspace's admins require Google of its members at some domains with
+`PATCH /api/v1/workspaces/{id}` and `{"sign_in": {"domains":
+["acme.com"], "provider": "google", "passkeys": false}}` (no domains to
+stop), which answers `409` where it would close the workspace to the
+caller's own sign-in, and asks them to confirm it's them where it lets
+anyone in another way. Each workspace says its `sign_in`, and
+`sign_in_blocked` where it's closed to the caller for that reason
+(`blocked` too).
+
 ## Runner pools
 
 What a pool (an enrollment token's runners) needs now, for whatever scales

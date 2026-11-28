@@ -2248,9 +2248,24 @@ pub struct Workspace {
     /// ([`InstanceSettings::require_two_factor`]).
     #[serde(default)]
     pub instance_requires_two_factor: bool,
-    /// It requires two-factor sign-in, which you haven't set up: until you
-    /// do, its projects and sessions are closed to you.
+    /// It requires two-factor sign-in, which you haven't set up, or its
+    /// own sign-in requirement covers you and your sign-in doesn't meet it
+    /// (`sign_in_blocked`): until then, its projects and sessions are
+    /// closed to you.
     pub blocked: bool,
+    /// Its own sign-in requirement: its members who are in it as an
+    /// address at one of `domains` open it only with a sign-in made with
+    /// `provider` as such an address (a passkey alone too, where
+    /// `passkeys`). Members in it as other addresses sign in as the
+    /// instance lets them. Absent: none ([`UpdateWorkspaceRequest::sign_in`]).
+    pub sign_in: Option<SignInRule>,
+    /// It's closed to you because of `sign_in`: you're in it as an address
+    /// it covers, and this sign-in of yours was made another way. Signing
+    /// in again with its provider opens it. Absent from control planes
+    /// before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub sign_in_blocked: bool,
     /// The Claude connection your sessions in it run on. Absent: your
     /// default one.
     pub claude: Option<CredentialId>,
@@ -2398,6 +2413,12 @@ pub struct UpdateWorkspaceRequest {
     /// Members need two-factor sign-in. Not `false` while the instance
     /// requires it: every workspace does then.
     pub require_two_factor: Option<bool>,
+    /// Its own sign-in requirement ([`Workspace::sign_in`]): no `domains`
+    /// stops requiring one. A provider the instance has set up (`google`).
+    /// Refused (`409`) where it would close the workspace to the admin who
+    /// saves it: they sign in with the provider first. Requiring less
+    /// takes confirming it's you, where the instance asks for that.
+    pub sign_in: Option<SignInRule>,
     /// Leave inviting people out of the app's setup checklist, or (`false`)
     /// ask for it again.
     pub skip_invites: Option<bool>,

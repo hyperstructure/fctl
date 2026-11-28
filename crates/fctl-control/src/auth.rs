@@ -364,9 +364,13 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
             f.user.has_password(),
             f.user.factors(),
         );
+        // The token's own sign-in, which workspaces' own requirements
+        // check, as `authenticate` gives a request.
+        let mut user = f.user;
+        user.request_sign_in = Some(how);
         (!setup_required).then(|| Holder {
             limits: Limits::parse(f.scope.as_deref()),
-            user: f.user,
+            user,
             settings,
         })
     }))
@@ -558,8 +562,11 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     );
     // However it comes: in a cookie, a limited token stays limited.
     let limits = Limits::parse(found.scope.as_deref());
+    // A person's own sign-in: what workspaces' own requirements check.
+    let mut user = found.user;
+    user.request_sign_in = Some(how.clone());
     ctx.auth = Some(Authed {
-        user: found.user,
+        user,
         token_id: found.token_id,
         kind,
         via_cookie,

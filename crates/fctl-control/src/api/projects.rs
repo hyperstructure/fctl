@@ -1212,7 +1212,7 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
     let open: Vec<String> = ws::mine(&ctx.db, &user.id)
         .await?
         .into_iter()
-        .filter(|w| !ws::blocked_for(ctx, user, w.require_two_factor))
+        .filter(|w| !w.closed_to(user, &ctx.settings()))
         .filter(|w| reached.as_ref().is_none_or(|r| r.contains(&w.id)))
         .map(|w| w.id)
         .collect();

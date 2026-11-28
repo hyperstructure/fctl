@@ -159,6 +159,18 @@ owner and purpose), so a value copied between rows does not decrypt.
   can't save ranges their own address is outside of; and letting people in
   from more places is a sensitive action. The address is the one
   Cloudflare, or a self-hosted server's trusted proxies, saw.
+- **A workspace's own requirement.** A workspace's admins can require
+  Google of its members who are in it as an address at some domains
+  (`fctl workspaces set --require-google acme.com`): such a member's
+  request with a sign-in made another way, a password's or a personal
+  Google account's, finds the workspace, its projects and sessions
+  closed, as its two-factor requirement closes it, open sockets
+  included. It closes nothing else, so it needs no proof of the domains.
+  An admin can't save one that would close it to their own sign-in, its
+  primary admin can lift it whatever their sign-in, and requiring less
+  is a sensitive action. Closing someone's Google account stops their
+  next sign-in, not the sign-ins they have: remove them from the
+  workspace too.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin

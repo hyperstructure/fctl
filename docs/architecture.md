@@ -463,6 +463,23 @@ by its id, `google` ([ADR 0099](adr/0099-domains-require-signing-in-with-their-p
   The primary instance owner's browser and CLI are exempt
   (`sign_in::outside`); runners, webhooks and published links never reach
   these checks.
+- **A workspace's own requirement** (`workspaces.sign_in`, a
+  `SignInRule`; the workspace's Settings → Access, `fctl workspaces set
+  --require-google acme.com`;
+  [ADR 0103](adr/0103-workspaces-require-their-members-to-sign-in-with-google.md)):
+  its members who are in it as an address at the rule's domains
+  (`workspace_members.email`) open it only with a sign-in that meets the
+  rule. `workspace_sign_in!` hands each query that reads a workspace with
+  its member the rule where it covers them, and `UserRow::blocked_by`
+  closes the workspace, as its two-factor requirement does, when the
+  request's own sign-in (`UserRow::request_sign_in`, which
+  `auth::authenticate` sets from the token) doesn't meet it
+  (`fctl_domain::sign_in::workspace_closed`). Requests without a person's
+  sign-in (service accounts, autopilots, notifications) aren't held to it.
+  An admin can't save a rule that would close the workspace to their own
+  sign-in, and letting anyone in another way is a sensitive action
+  (`Sensitive::RelaxWorkspaceSignIn`). It needs no proof of the domains:
+  it closes only its own workspace.
 - **Accounts only from the directory.** With `InstanceSettings::self_sign_up`
   off, a provider's sign-in makes an account only for an address with an
   allowlist entry of its own (an invitation's, or one an admin allowed):

@@ -101,8 +101,10 @@ impl Authed {
         verified_at: Option<i64>,
         how: SignedIn,
     ) -> Self {
+        let mut user = user.clone();
+        user.request_sign_in = Some(how.clone());
         Self {
-            user: user.clone(),
+            user,
             token_id,
             kind: TokenKind::Web,
             via_cookie: true,

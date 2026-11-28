@@ -47,6 +47,10 @@ pub enum Sensitive {
     StopVerifying,
     /// No longer requiring two-factor sign-in in a workspace.
     StopWorkspaceTwoFactor,
+    /// Letting a workspace's members open it with a sign-in its own
+    /// requirement didn't take: no longer requiring its provider at a
+    /// domain, letting passkeys in, or another provider.
+    RelaxWorkspaceSignIn,
     /// Adding a runner someone registered to a workspace, or letting it
     /// run everyone's sessions there.
     AddRunner,
@@ -146,6 +150,9 @@ impl Sensitive {
             StopGoogleCodes => "stop asking for codes on Google sign-in",
             StopVerifying => "stop asking people to confirm sensitive actions",
             StopWorkspaceTwoFactor => "stop requiring two-factor sign-in in a workspace",
+            RelaxWorkspaceSignIn => {
+                "let a workspace's members open it without signing in with its provider"
+            }
             AddRunner => "add a runner to a workspace",
             NewEnrollmentToken => "make an enrollment token",
             ApproveRunner => "approve a runner",
@@ -274,6 +281,17 @@ pub fn instance_settings_change(
     } else {
         None
     }
+}
+
+/// Whether a workspace's requirement `next` lets its members open it with
+/// a sign-in `current` didn't take: as [`relaxes`] reads the instance's
+/// rules.
+pub fn workspace_sign_in_relaxed(
+    current: Option<&fctl_proto::api::SignInRule>,
+    next: Option<&fctl_proto::api::SignInRule>,
+) -> bool {
+    let list = |r: Option<&fctl_proto::api::SignInRule>| r.into_iter().cloned().collect::<Vec<_>>();
+    relaxes(&list(current), &list(next))
 }
 
 /// The session policy `update` leaves the instance with, from `current`.
@@ -607,6 +625,29 @@ mod tests {
             instance_settings_change(&current, &UpdateInstanceSettingsRequest::default()),
             None
         );
+    }
+
+    #[test]
+    fn letting_a_workspaces_members_past_its_provider_is_sensitive() {
+        use fctl_proto::api::SignInRule;
+        let rule = |domains: &[&str], passkeys: bool| SignInRule {
+            domains: domains.iter().map(|d| (*d).to_owned()).collect(),
+            provider: "google".to_owned(),
+            passkeys,
+        };
+        let acme = rule(&["acme.com", "acme.dev"], false);
+        assert!(workspace_sign_in_relaxed(Some(&acme), None));
+        assert!(workspace_sign_in_relaxed(
+            Some(&acme),
+            Some(&rule(&["acme.com"], false))
+        ));
+        assert!(workspace_sign_in_relaxed(
+            Some(&acme),
+            Some(&rule(&["acme.com", "acme.dev"], true))
+        ));
+        assert!(!workspace_sign_in_relaxed(Some(&acme), Some(&acme)));
+        assert!(!workspace_sign_in_relaxed(None, Some(&acme)));
+        assert!(!workspace_sign_in_relaxed(None, None));
     }
 
     #[test]

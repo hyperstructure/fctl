@@ -627,7 +627,7 @@ async fn login_runners(ctx: &Ctx, user: &UserRow) -> AppResult<Vec<String>> {
     let open: Vec<String> = crate::workspaces::mine(&ctx.db, &user.id)
         .await?
         .into_iter()
-        .filter(|w| !crate::workspaces::blocked_for(ctx, user, w.require_two_factor))
+        .filter(|w| !w.closed_to(user, &ctx.settings()))
         .map(|w| w.id)
         .collect();
     let mine = |r: &R| r.owner.as_deref() == Some(user.id.as_str());

@@ -37,7 +37,8 @@ async fn live(ctx: &Ctx) -> LiveRunners {
 async fn respond(ctx: &Ctx, id: &str) -> AppResult<Workspace> {
     let a = ws::load(ctx, id).await?;
     let live = live(ctx).await;
-    Ok(a.row.to_workspace(&ctx.settings(), a.blocked, &live.online))
+    Ok(a.row
+        .to_workspace(&ctx.settings(), ctx.user()?, &live.online))
 }
 
 /// `GET /api/v1/workspaces`.
@@ -62,11 +63,7 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
         workspaces: rows
             .iter()
             .map(|r| {
-                let mut w = r.to_workspace(
-                    &settings,
-                    ws::blocked_for(ctx, user, r.require_two_factor),
-                    &live.online,
-                );
+                let mut w = r.to_workspace(&settings, user, &live.online);
                 // A limited token reaches projects and sessions alone: not
                 // the workspace's people, GitHub accounts or its person's
                 // Claude connections (`fctl_domain::limits`).
@@ -81,7 +78,10 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
             .collect(),
         invitations: invitations
             .iter()
-            .map(|i| i.to_invitation(ws::blocked_for(ctx, user, i.require_two_factor)))
+            // Its two-factor requirement alone, which the invitation names:
+            // accepting it refuses, saying so, where its sign-in requirement
+            // closes it to this sign-in.
+            .map(|i| i.to_invitation(ws::blocked_for(ctx, user, i.require_two_factor, None)))
             .collect(),
         limit: settings.max_workspaces,
         unlimited: policy::workspace_limit(user.role(), &settings).is_none(),
@@ -218,7 +218,25 @@ pub async fn get(ctx: &Ctx, id: &str) -> AppResult<Response> {
 pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateWorkspaceRequest = http::body(req).await?;
     let a = ws::load(ctx, id).await?;
-    a.require_admin()?;
+    // Its primary admin may lift or change its sign-in requirement while it
+    // closes the workspace to them, and only that: where nobody can meet
+    // it any more (Google sign-in no longer set up, their Google accounts
+    // closed), the workspace would stay closed to everyone otherwise.
+    // Requiring less still takes confirming it's them, below.
+    let lifting = a.sign_in_blocked
+        && a.role == Some(WorkspaceRole::Owner)
+        && body.sign_in.is_some()
+        && body
+            == UpdateWorkspaceRequest {
+                sign_in: body.sign_in.clone(),
+                ..UpdateWorkspaceRequest::default()
+            }
+        && !ctx
+            .user()?
+            .blocked_by(&ctx.settings(), a.row.require_two_factor, None);
+    if !lifting {
+        a.require_admin()?;
+    }
     let user = ctx.user()?.clone();
     let name = body.name.as_deref().map(policy::name).transpose()?;
     let slug = match body.slug.as_deref() {
@@ -262,12 +280,50 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     }
     if body.require_two_factor == Some(true)
         && !a.row.require_two_factor
-        && user.blocked_by(&ctx.settings(), true)
+        && user.blocked_by(&ctx.settings(), true, None)
     {
         return Err(AppError(ApiError::new(
             ErrorCode::Conflict,
             "Set up two-factor sign-in yourself first (Settings → Security): the workspace would close to you too.",
         )));
+    }
+    // Its own sign-in requirement: none that would close it to the admin
+    // who saves it (they sign in with the provider first, which shows it
+    // works for them), and letting anyone in another way is sensitive.
+    let sign_in = match &body.sign_in {
+        Some(rule) => Some(
+            fctl_domain::sign_in::check_workspace_rule(rule, &crate::sign_in::providers(&ctx.cfg))
+                .map_err(AppError)?,
+        ),
+        None => None,
+    };
+    if let Some(next) = &sign_in {
+        if fctl_domain::verify::workspace_sign_in_relaxed(
+            a.row.sign_in_rule().as_ref(),
+            next.as_ref(),
+        ) {
+            ctx.verified(Sensitive::RelaxWorkspaceSignIn)?;
+        }
+        if let Some(rule) = next {
+            let mine = fctl_domain::sign_in::domain_of(a.row.email.as_deref().unwrap_or_default());
+            let covers = mine.is_some_and(|d| rule.domains.contains(&d));
+            if covers
+                && user
+                    .request_sign_in
+                    .as_ref()
+                    .is_some_and(|how| !fctl_domain::sign_in::meets(rule, how))
+            {
+                return Err(AppError(ApiError::new(
+                    ErrorCode::Conflict,
+                    format!(
+                        "This would close {} to you: you're in it as {}, and signed in another way. Sign in with {} as that address first, which shows it works for you, then require it.",
+                        a.row.name,
+                        a.row.email.as_deref().unwrap_or_default(),
+                        crate::sign_in::provider_name(&rule.provider)
+                    ),
+                )));
+            }
+        }
     }
     let updated = q(
         &ctx.db,
@@ -301,6 +357,18 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     if updated.is_ok() && body.autopilots == Some(false) {
         crate::autopilots::pause_workspace(&ctx.db, a.id(), &user.id, ctx.now).await?;
     }
+    if updated.is_ok()
+        && let Some(next) = &sign_in
+    {
+        let json = next.as_ref().map(serde_json::to_string).transpose()?;
+        q(
+            &ctx.db,
+            "UPDATE workspaces SET sign_in = ? WHERE id = ?",
+            &[os(json.as_deref()), s(a.id())],
+        )?
+        .run()
+        .await?;
+    }
     if let Err(e) = updated {
         if let Some(sl) = &slug
             && slugs::taken(&ctx.db, Of::Workspace, sl, Some(a.id())).await?
@@ -318,7 +386,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         Some(a.id()),
         Some(serde_json::to_value(&body)?),
     );
-    // Who sees what changes with the base role and two-factor.
+    // Who sees what changes with the base role, two-factor and its sign-in
+    // requirement.
     ws::changed(ctx, ws::member_ids(&ctx.db, a.id()).await?);
     http::ok(&respond(ctx, a.id()).await?)
 }
@@ -1315,7 +1384,7 @@ impl Viewer {
         let open: Vec<ws::WorkspaceRow> = ws::mine(&ctx.db, &user.id)
             .await?
             .into_iter()
-            .filter(|w| !ws::blocked_for(ctx, user, w.require_two_factor))
+            .filter(|w| !w.closed_to(user, &ctx.settings()))
             .collect();
         Ok(Self {
             user_id: user.id.clone(),

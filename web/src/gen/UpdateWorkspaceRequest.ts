@@ -2,6 +2,7 @@
 import type { BaseRole } from "./BaseRole";
 import type { ClaudeAdminEmail } from "./ClaudeAdminEmail";
 import type { ClaudeOversight } from "./ClaudeOversight";
+import type { SignInRule } from "./SignInRule";
 import type { WorkspaceColor } from "./WorkspaceColor";
 
 /**
@@ -23,6 +24,14 @@ hex?: string, base_role?: BaseRole,
  * requires it: every workspace does then.
  */
 require_two_factor?: boolean, 
+/**
+ * Its own sign-in requirement ([`Workspace::sign_in`]): no `domains`
+ * stops requiring one. A provider the instance has set up (`google`).
+ * Refused (`409`) where it would close the workspace to the admin who
+ * saves it: they sign in with the provider first. Requiring less
+ * takes confirming it's you, where the instance asks for that.
+ */
+sign_in?: SignInRule, 
 /**
  * Leave inviting people out of the app's setup checklist, or (`false`)
  * ask for it again.

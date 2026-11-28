@@ -32,6 +32,7 @@ import {
 } from "@/lib/queries";
 import { asksOf } from "@/lib/service-accounts";
 import { ACTIVE } from "@/lib/sessions";
+import { domainsWords } from "@/lib/sign-in";
 import { waitsForYou } from "@/lib/status";
 import { isUltra } from "@/lib/usage";
 import { freshest, mayCreate, useWorkspaceIndex } from "@/lib/workspaces";
@@ -568,15 +569,29 @@ export function Home() {
               className="flex items-center gap-3 rounded-xl border border-amber/25 bg-amber-soft px-4 py-3 text-[13.5px] text-ink-2"
             >
               <WorkspaceAvatar workspace={w} size={24} />
-              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                {w.name} requires two-factor sign-in. Until you set it up, its projects and sessions are
-                closed to you.
-              </span>
-              <Link to="/settings" search={{ tab: "security" }}>
-                <Button size="sm" icon={<ShieldCheck className="size-3.5" />}>
-                  Set it up
-                </Button>
-              </Link>
+              {w.sign_in_blocked ? (
+                <>
+                  <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                    {w.name} requires its members at {domainsWords(w.sign_in?.domains ?? [])} to sign in with
+                    Google as that address. Until you do, its projects and sessions are closed to you.
+                  </span>
+                  <Link to="/w/$slug" params={{ slug: w.slug }}>
+                    <Button size="sm">Open it</Button>
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                    {w.name} requires two-factor sign-in. Until you set it up, its projects and sessions are
+                    closed to you.
+                  </span>
+                  <Link to="/settings" search={{ tab: "security" }}>
+                    <Button size="sm" icon={<ShieldCheck className="size-3.5" />}>
+                      Set it up
+                    </Button>
+                  </Link>
+                </>
+              )}
             </div>
           ))}
           {me && <YourClaude claude={me.claude} />}

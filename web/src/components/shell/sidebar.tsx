@@ -797,7 +797,11 @@ function WorkspaceGroup({
           {workspace.blocked ? (
             <Lock
               className="size-3 shrink-0 text-amber"
-              aria-label="Closed until you set up two-factor sign-in"
+              aria-label={
+                workspace.sign_in_blocked
+                  ? "Closed until you sign in with Google"
+                  : "Closed until you set up two-factor sign-in"
+              }
             />
           ) : (
             folded && (
@@ -837,7 +841,17 @@ function WorkspaceGroup({
       </div>
       {!folded && (
         <div className="mt-0.5 flex flex-col gap-px">
-          {workspace.blocked ? (
+          {workspace.blocked && workspace.sign_in_blocked ? (
+            // Its page says why, with the link that signs in with Google.
+            <Link
+              to="/w/$slug"
+              params={{ slug: workspace.slug }}
+              onClick={onNavigate}
+              className="rounded-md px-2.5 py-1.5 pl-[38px] text-[12.5px] leading-snug text-ink-3 hover:text-ink"
+            >
+              Sign in with Google to open it
+            </Link>
+          ) : workspace.blocked ? (
             <Link
               to="/settings"
               search={{ tab: "security" }}
