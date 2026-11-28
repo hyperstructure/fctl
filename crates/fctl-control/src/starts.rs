@@ -1,6 +1,6 @@
 //! Sessions that start without a person at fctl's door: a schedule's runs
-//! (`crate::schedules`) and tickets delegated to fctl in a tracker
-//! (`crate::delegations`). Each is a session of its project, as one a
+//! (`crate::schedules`), tickets delegated to fctl in a tracker
+//! (`crate::delegations`) and requests in Slack (`crate::slack`). Each is a session of its project, as one a
 //! person starts there, on the Claude subscription of the person it runs
 //! for, whom it names as its starter.
 
@@ -48,6 +48,10 @@ pub struct NewSession<'a> {
     pub schedule_id: Option<&'a str>,
     /// The ticket it starts from (`sessions.ticket`, JSON).
     pub ticket: Option<Value>,
+    /// The Slack thread it starts from (`sessions.slack`), and what the
+    /// first message's transcript shows of it.
+    pub slack: Option<fctl_proto::slack::SessionSlack>,
+    pub slack_message: Option<fctl_proto::slack::SlackMessage>,
     /// The autopilot it belongs to (`sessions.autopilot_id`).
     pub autopilot: Option<AutopilotStart<'a>>,
     /// Its person follows it, as starting a session does.
@@ -92,12 +96,13 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
         Branch::Ticket(key) => fctl_domain::tickets::branch(number, key, &st.title),
     };
     let ticket = st.ticket.as_ref().map(Value::to_string);
+    let slack = st.slack.as_ref().map(serde_json::to_string).transpose()?;
     q(
         db,
         "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, branch, base_branch, \
          model, effort, claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, schedule_id, ticket, \
-         autopilot_id, autopilot_role, service_account_id) \
-         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         autopilot_id, autopilot_role, service_account_id, slack) \
+         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&st.project.id),
@@ -120,10 +125,16 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
             os(st.autopilot.as_ref().map(|a| a.project_id)),
             os(st.autopilot.as_ref().map(|a| a.role.as_str())),
             os(st.service_account),
+            os(slack.as_deref()),
         ],
     )?
     .run()
     .await?;
+    // A session from Slack: its thread names it before a runner asks what
+    // its agent reaches there, which takes the thread only once it does.
+    if let Some(thread) = &st.slack {
+        crate::slack::inbound::mark_started(db, thread, id.as_str(), st.now).await?;
+    }
     if st.follow
         && let Err(e) = crate::notify::follow_own(db, id.as_str(), &st.user.id, st.now).await
     {
@@ -139,6 +150,7 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
         &InitSession {
             session,
             prompt: UserMessage {
+                slack: st.slack_message,
                 id: fctl_domain::ids::delivery_id(st.now),
                 author: st.author,
                 text: st.prompt,

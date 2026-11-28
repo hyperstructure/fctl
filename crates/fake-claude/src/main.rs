@@ -34,6 +34,8 @@
 //! | a line that starts with `ask <question>` | asks the people who follow the session `<question>` (to the end of its line) with `fctl ask`, offering the answers after each ` / ` in it to click (`ask Ship it today? / Yes / Not yet`), and ends its turn, as agents do when they need a person's input |
 //! | a line that starts with `fctl ticket` | runs it, as agents read and write their project's tickets (`fctl ticket view ENG-1`, `fctl ticket comment ENG-1 "On it"`) |
 //! | a line that starts with `fctl id-token` | runs it, as agents prove who they are to a service (`fctl id-token -a https://api.acme.dev --claims`) |
+//! | a line that starts with `fctl slack` | runs it, as agents read and post in Slack (`fctl slack thread`, `fctl slack reply "On it"`) |
+//! | a line quoted with `> ` | reads as it would unquoted, as what someone asked in Slack comes quoted |
 //! | `clouds` | shows the variables fctl-agent set for the project's clouds (`AWS_…`, `GOOGLE_…`, `CLOUDSDK_…`, `AZURE_…`) and the token files they name, as an agent that checks its cloud access does |
 //! | `printenv` | shows the `CLAUDE_CODE_…` variables it got, its Claude token among them, in a `Bash` call, as an agent that looks at its environment does, then says the token back in pieces of five characters, as Claude streams what it writes (the host keeps the token out of both) |
 //! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work: completed, or `partial` or `blocked` when the message says so |
@@ -1296,6 +1298,10 @@ impl Session {
     fn turn(&mut self, text: &str, images: usize, input: &mpsc::Receiver<Value>) {
         INTERRUPTED.store(false, Ordering::SeqCst);
         let started = Instant::now();
+        // What someone asked in Slack comes quoted (`> write notes.md`):
+        // its lines read as if they were written here.
+        let unquoted = unquote(text);
+        let text = unquoted.as_str();
         if let Some(turn) = self.replay_turn(text) {
             // The message is what its first call reads anew.
             self.unread += text.len() as u64 / 4;
@@ -1593,6 +1599,14 @@ impl Session {
             .filter(|l| l.starts_with("fctl ticket"))
         {
             self.bash(line, "Work with the project's tickets");
+        }
+        // And `fctl slack` commands, as agents read and post in Slack.
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("fctl slack"))
+        {
+            self.bash(line, "Read the Slack thread");
         }
         // So do `fctl id-token` commands, as agents prove who they are.
         for line in text
@@ -2426,6 +2440,20 @@ fn main() {
             _ => {}
         }
     }
+}
+
+/// `text` with each line's quote marker (`> `) gone, as a message from
+/// Slack quotes what its person asked.
+fn unquote(text: &str) -> String {
+    text.lines()
+        .map(|l| {
+            let t = l.trim_start();
+            t.strip_prefix("> ")
+                .or_else(|| t.strip_prefix('>'))
+                .unwrap_or(l)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

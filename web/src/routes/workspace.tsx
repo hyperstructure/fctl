@@ -16,6 +16,7 @@ import {
   LogOut,
   MailPlus,
   Pencil,
+  Plug,
   Plus,
   Settings,
   ShieldCheck,
@@ -33,6 +34,7 @@ import { ExperimentalPill, TokenHungry } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
 import { ServiceAccountsPanel } from "@/components/service-accounts/panel";
 import { SessionRow } from "@/components/session/row";
+import { SlackTab } from "@/components/slack/workspace";
 import {
   AutopilotIcon,
   Avatar,
@@ -45,7 +47,6 @@ import {
   Field,
   GithubIcon,
   Input,
-  LinearIcon,
   Section,
   Select,
   type SelectOption,
@@ -67,6 +68,7 @@ import {
   useClaudeOverview,
 } from "@/components/workspace/claude-people";
 import { WorkspaceColorField } from "@/components/workspace/color-field";
+import { Integrations } from "@/components/workspace/integrations";
 import { LinearTab } from "@/components/workspace/linear";
 import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
 import { RunnerRow } from "@/components/workspace/runner-row";
@@ -94,12 +96,20 @@ import {
   useWorkspace,
 } from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
+import { INTEGRATIONS, type Integration, integrationOf, type SlackOutcome } from "@/lib/slack";
+import type { LinearOutcome } from "@/lib/tickets";
 import { BASE_ROLES, claudeOptions, createsProjects, roleLabel } from "@/lib/workspaces";
 
+/**
+ * Its tabs, as addresses name them. GitHub and Linear were tabs of their own before Integrations held
+ * them with Slack: their addresses (`?tab=github`, which the control plane still sends people back
+ * to) open them there.
+ */
 export type WorkspaceTab =
   | "projects"
   | "people"
   | "runners"
+  | "integrations"
   | "github"
   | "linear"
   | "webhooks"
@@ -107,19 +117,20 @@ export type WorkspaceTab =
   | "settings"
   | "audit";
 
+/** The tabs it shows. */
+type ShownTab = Exclude<WorkspaceTab, "github" | "linear">;
+
 const TABS: {
-  tab: WorkspaceTab;
+  tab: ShownTab;
   label: string;
   admin?: boolean;
-  linear?: boolean;
   /** Its admins', and its members' once it has a service account to answer. */
   serviceAccounts?: boolean;
 }[] = [
   { tab: "projects", label: "Projects" },
   { tab: "people", label: "People" },
   { tab: "runners", label: "Runners" },
-  { tab: "github", label: "GitHub" },
-  { tab: "linear", label: "Linear", linear: true },
+  { tab: "integrations", label: "Integrations" },
   { tab: "webhooks", label: "Webhooks", admin: true },
   { tab: "service-accounts", label: "Service accounts", serviceAccounts: true },
   { tab: "settings", label: "Settings" },
@@ -128,21 +139,26 @@ const TABS: {
 
 /**
  * Each tab's icon, as the rest of the app draws what it holds: folders of projects (a new one is a
- * folder with a plus), people, the chip runners are, GitHub's and Linear's marks, an account that works
- * on its own for service accounts, the sidebar's gear, and a clock turning back for what happened.
+ * folder with a plus), people, the chip runners are, a plug for what it connects to elsewhere
+ * (GitHub, Linear, Slack), an account that works on its own for service accounts, the sidebar's
+ * gear, and a clock turning back for what happened.
  */
-const ICONS: Record<WorkspaceTab, (className: string) => ReactNode> = {
+const ICONS: Record<ShownTab, (className: string) => ReactNode> = {
   projects: (className) => <Folders className={className} aria-hidden="true" />,
   people: (className) => <Users className={className} aria-hidden="true" />,
   runners: (className) => <Cpu className={className} aria-hidden="true" />,
-  github: (className) => <GithubIcon className={className} />,
-  // Linear's mark is filled: a little smaller, it weighs as much as the outlined icons.
-  linear: (className) => <LinearIcon className={cn(className, "scale-[0.85]")} />,
+  integrations: (className) => <Plug className={className} aria-hidden="true" />,
   webhooks: (className) => <Webhook className={className} aria-hidden="true" />,
   "service-accounts": (className) => <UserRoundCog className={className} aria-hidden="true" />,
   settings: (className) => <Settings className={className} aria-hidden="true" />,
   audit: (className) => <History className={className} aria-hidden="true" />,
 };
+
+/** Whether someone is one of the instance's admins, who set its apps up. */
+const isInstanceAdmin = (me: G.Me | null | undefined) => !!me?.user?.role && me.user.role !== "member";
+
+/** Where an address takes someone on a workspace's page: GitHub's and Linear's old tabs are Integrations'. */
+const shownTab = (t: WorkspaceTab): ShownTab => (t === "github" || t === "linear" ? "integrations" : t);
 
 /** Refetches what a change to a workspace touches: the page caches it by its slug, its parts by its id. */
 function refresh() {
@@ -152,30 +168,34 @@ function refresh() {
 
 export function WorkspacePage() {
   const { slug } = useParams({ from: "/app/w/$slug" });
-  const {
-    tab: asked = "projects",
-    github,
-    account,
-    reason,
-    linear,
-    webhook,
-    serviceAccount,
-  } = useSearch({ from: "/app/w/$slug" });
+  const search = useSearch({ from: "/app/w/$slug" });
+  const { github, account, reason, linear, slack, team, webhook, serviceAccount } = search;
+  const asked = shownTab(search.tab ?? "projects");
   const navigate = useNavigate();
   const ws = useWorkspace(slug);
   const w = ws.data;
   const { data: instance } = useInstance();
+  const { data: me } = useMe();
   const admin = w?.role === "owner" || w?.role === "admin";
+  // Linear's where the instance has a Linear app; Slack's where it has a Slack app, and for its
+  // admins, who see how to create one.
+  const integrations = INTEGRATIONS.filter(
+    (i) =>
+      i === "github" ||
+      (i === "linear" && !!instance?.features.linear) ||
+      (i === "slack" && (!!instance?.features.slack || isInstanceAdmin(me))),
+  );
+  // Until the instance says which it has, the one the address asks for: the way back from Linear
+  // shouldn't show GitHub for a moment.
+  const integration = integrationOf(search, (i) => !instance || integrations.includes(i));
   // Runners that wait for you to approve them: the workspace's own, for its admins, and yours.
   const waiting = (useRunners().data?.runners ?? []).filter(
     (r) => r.pending_until && w && r.workspace?.id === w.id && approvedBy(r, w),
   ).length;
-  // Tabs this workspace has: admins' ones for admins, Linear's where the instance has a Linear app,
-  // and its service accounts for its admins, and for everyone once it has one.
+  // Tabs this workspace has: admins' ones for admins, and its service accounts for its admins, and
+  // for everyone once it has one.
   const has = (t: (typeof TABS)[number]) =>
-    (!t.admin || admin) &&
-    (!t.linear || !!instance?.features.linear) &&
-    (!t.serviceAccounts || admin || (w?.service_accounts?.length ?? 0) > 0);
+    (!t.admin || admin) && (!t.serviceAccounts || admin || (w?.service_accounts?.length ?? 0) > 0);
   // The service accounts that wait for your answer.
   const asking = (w?.service_accounts ?? []).filter((a) => a.consent && !a.answer).length;
   // Admins' tabs show members the workspace's projects instead.
@@ -295,8 +315,20 @@ export function WorkspacePage() {
             {w && tab === "projects" && <Projects w={w} />}
             {w && tab === "people" && <People w={w} />}
             {w && tab === "runners" && <Runners w={w} />}
-            {w && tab === "github" && <Github w={w} returned={github} account={account} reason={reason} />}
-            {w && tab === "linear" && <LinearTab w={w} returned={linear} />}
+            {w && tab === "integrations" && (
+              <Integrations w={w} shown={integrations} open={integration}>
+                <IntegrationPage
+                  w={w}
+                  integration={integration}
+                  github={github}
+                  account={account}
+                  reason={reason}
+                  linear={linear}
+                  slack={slack}
+                  team={team}
+                />
+              </Integrations>
+            )}
             {w && tab === "webhooks" && admin && (
               <WebhooksPanel
                 scope={{ kind: "workspace", workspace: w }}
@@ -330,6 +362,36 @@ export function WorkspacePage() {
       )}
     </div>
   );
+}
+
+/** The open integration's page, with what a sign-in there came back with. */
+function IntegrationPage({
+  w,
+  integration,
+  github,
+  account,
+  reason,
+  linear,
+  slack,
+  team,
+}: {
+  w: G.Workspace;
+  integration: Integration;
+  github?: GithubOutcome;
+  account?: string;
+  reason?: GithubRefusal;
+  linear?: LinearOutcome;
+  slack?: SlackOutcome;
+  team?: string;
+}) {
+  switch (integration) {
+    case "github":
+      return <Github w={w} returned={github} account={account} reason={reason} />;
+    case "linear":
+      return <LinearTab w={w} returned={linear} />;
+    case "slack":
+      return <SlackTab w={w} returned={slack} team={team} />;
+  }
 }
 
 // ───────────────────────────── projects ─────────────────────────────
@@ -521,7 +583,7 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
       title: "Connect a GitHub account",
       body: "Its projects use the repositories of the accounts the workspace works in.",
       action: (
-        <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "github" }}>
+        <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "integrations", integration: "github" }}>
           <Button size="sm" icon={<GithubIcon className="size-3.5" />}>
             Connect
           </Button>
@@ -1638,7 +1700,9 @@ function Github({
     void navigate({
       to: "/w/$slug",
       params: { slug: w.slug },
-      search: connected ? { tab: "github", github: "connected", account } : { tab: "github" },
+      search: connected
+        ? { tab: "integrations", integration: "github", github: "connected", account }
+        : { tab: "integrations", integration: "github" },
       replace: true,
     });
   };

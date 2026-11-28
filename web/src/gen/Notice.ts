@@ -7,6 +7,7 @@ import type { PostedReview } from "./PostedReview";
 import type { PublishedFile } from "./PublishedFile";
 import type { Retrospective } from "./Retrospective";
 import type { SessionQuestion } from "./SessionQuestion";
+import type { SlackNotice } from "./SlackNotice";
 import type { SummarizedPullRequest } from "./SummarizedPullRequest";
 import type { TicketNotice } from "./TicketNotice";
 
@@ -20,7 +21,8 @@ export type Notice = { level: NoticeLevel,
  * `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
  * `pull_request_summarized`, `follow_up_held`, `follow_up_own`,
  * `ticket_created`, `ticket_commented`, `ticket_updated`,
- * `ticket_replied`, `ticket_moved`, `ticket_failed`, `question_asked`,
+ * `ticket_replied`, `ticket_moved`, `ticket_failed`, `slack_replied`,
+ * `slack_asked`, `slack_posted`, `slack_failed`, `question_asked`,
  * `question_withdrawn`, `autopilot_action`, `memory_nearly_out`,
  * `memory_killed`, `snapshot_restored`, `snapshot_unusable`,
  * `snapshot_not_saved`, `snapshot_work_aside`, `snapshot_work_left_out`,
@@ -69,6 +71,11 @@ follow_up?: FollowUp,
  * in a `ticket_*` notice. Clients from before it show the message.
  */
 ticket?: TicketNotice, 
+/**
+ * What fctl or the agent did in the session's Slack thread, in a
+ * `slack_*` notice. Clients from before it show the message.
+ */
+slack?: SlackNotice, 
 /**
  * The question a `question_asked` notice is about (`fctl ask`), as the
  * agent asked it. Clients from before it show the message.

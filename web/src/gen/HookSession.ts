@@ -6,6 +6,7 @@ import type { HookSchedule } from "./HookSchedule";
 import type { HookTicket } from "./HookTicket";
 import type { SessionId } from "./SessionId";
 import type { SessionServiceAccount } from "./SessionServiceAccount";
+import type { SessionSlack } from "./SessionSlack";
 import type { SessionStatus } from "./SessionStatus";
 import type { WebhookOrigin } from "./WebhookOrigin";
 
@@ -48,7 +49,13 @@ autopilot?: string,
  * The workspace's service account that started it for `created_by`
  * (its name absent once it's deleted).
  */
-service_account?: SessionServiceAccount, ticket?: HookTicket, branch?: string, base_branch?: string, 
+service_account?: SessionServiceAccount, ticket?: HookTicket, 
+/**
+ * The Slack thread it started from: its Slack workspace, conversation
+ * and channel, and its link. Absent for other sessions, and from
+ * control planes before Slack.
+ */
+slack?: SessionSlack, branch?: string, base_branch?: string, 
 /**
  * Its agent's pull requests, in the order it opened them.
  */

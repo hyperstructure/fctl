@@ -39,7 +39,8 @@ Three pieces make up a factory:
 | Run your own instance, on a machine of yours or on Cloudflare | [Self-hosting](self-hosting.md) |
 | Run fctl for an organization: accounts from your directory, agents started from your own portal or bot, webhooks to your tools | [fctl for organizations](organizations.md) |
 | Run a fleet of runners in AWS, Google Cloud or Azure that grows and shrinks with the work | [Runners in your cloud](runners-in-your-cloud.md) |
-| Start agents from Slack, and answer their questions there | [A Slack bot of your own](chat-bot.md) |
+| Start and steer agents from Slack, answer their questions there, and hear from fctl in Slack | [Start agents from Slack](slack.md) |
+| Build a chat bot of your own on a service account, for Microsoft Teams or a flow fctl's Slack app doesn't have | [A Slack bot of your own](chat-bot.md) |
 | Count what agents get done in BigQuery or Snowflake | [Agents' work in your data warehouse](data-warehouse.md) |
 | Let agents prove who they are to your own services with OIDC tokens, and reach AWS, Google Cloud and Azure without keys | [Identity tokens](identity-tokens.md) |
 | Know what sessions run in, give a project its own image (on the default one or on another base, such as Ubuntu), or choose the images a host runs | [Sandbox images](sandbox-images.md) |

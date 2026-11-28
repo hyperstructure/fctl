@@ -30,7 +30,7 @@ sign_in?: Array<SignInRule>, self_sign_up?: boolean, claude_oversight?: ClaudeOv
 /**
  * 1 to [`MAX_CLAUDE_REFUSALS`].
  */
-claude_refusals?: number, 
+claude_refusals?: number, slack_match_email?: boolean, 
 /**
  * 0 to [`MAX_BROWSER_MAX_HOURS`]. Saving a session policy ends at once
  * the sign-ins and access tokens it doesn't let last

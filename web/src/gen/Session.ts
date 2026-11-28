@@ -12,6 +12,7 @@ import type { SessionReview } from "./SessionReview";
 import type { SessionRole } from "./SessionRole";
 import type { SessionSchedule } from "./SessionSchedule";
 import type { SessionServiceAccount } from "./SessionServiceAccount";
+import type { SessionSlack } from "./SessionSlack";
 import type { SessionSnapshot } from "./SessionSnapshot";
 import type { SessionStats } from "./SessionStats";
 import type { SessionStatus } from "./SessionStatus";
@@ -126,6 +127,12 @@ schedule?: SessionSchedule,
  * trackers.
  */
 ticket?: SessionTicket, 
+/**
+ * The Slack thread it started from: a mention of fctl's app in a
+ * channel, or someone's direct messages with it. Absent for other
+ * sessions, and from control planes before Slack.
+ */
+slack?: SessionSlack, 
 /**
  * What its agent asked the people who follow it (`fctl ask`), until
  * someone answers: a person's next message does. Absent while it

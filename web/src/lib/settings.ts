@@ -12,6 +12,7 @@ export const SETTINGS_TABS = [
   "workspaces",
   "claude",
   "linear",
+  "slack",
   "notifications",
   "appearance",
   "log",
@@ -45,6 +46,7 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsPage[])[] = [
       keywords: "subscription connection setup-token login usage limits plan remote control",
     },
     { tab: "linear", label: "Linear", keywords: "link delegate issues tickets" },
+    { tab: "slack", label: "Slack", keywords: "link mentions dm threads" },
   ],
   [
     { tab: "notifications", label: "Notifications", keywords: "push alerts follow browsers" },
@@ -87,7 +89,7 @@ export function settingsPageFor(word: string): SettingsTab | undefined {
   )?.tab;
 }
 
-/** What Settings' address says, besides its tab: where Google and Linear send people back to. */
+/** What Settings' address says, besides its tab: where Google, Linear and Slack send people back to. */
 export interface SettingsSearch {
   tab?: SettingsTab;
   /** Back from linking Google, which worked. */
@@ -96,6 +98,8 @@ export interface SettingsSearch {
   error?: string;
   /** Back from linking Linear. */
   linear?: string;
+  /** Back from linking Slack, or on the way there (`confirm`). */
+  slack?: string;
 }
 
 /**
@@ -109,6 +113,7 @@ export function askedTab(search: SettingsSearch, hash: string): SettingsTab | un
   if (named === "connect-claude") return "claude";
   if (isSettingsTab(named)) return named;
   if (search.linear) return "linear";
+  if (search.slack) return "slack";
   if (search.linked || search.error) return "security";
   return undefined;
 }

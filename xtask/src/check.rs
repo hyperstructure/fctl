@@ -42,7 +42,7 @@ impl Part {
 
 /// The npm workspaces (the root package.json's), whose Biome and tests the
 /// web part runs.
-const WORKSPACES: [&str; 3] = ["web", "deploy/standalone", "xtask/linear"];
+const WORKSPACES: [&str; 4] = ["web", "deploy/standalone", "xtask/linear", "xtask/slack"];
 
 /// Runs `parts`, or all of them when it is empty.
 pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {

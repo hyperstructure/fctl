@@ -319,7 +319,9 @@ pub fn wrangler(root: &Path) -> Result<Command> {
 /// `node_modules` from before the Linear stand-in's workspace lacks its link
 /// (and its graphql), which npm makes as it installs the workspaces.
 pub fn npm_installed(root: &Path) -> bool {
-    root.join("node_modules/@fctl/linear-standin").exists()
+    ["linear-standin", "slack-standin"]
+        .iter()
+        .all(|p| root.join("node_modules/@fctl").join(p).exists())
 }
 
 pub fn npm_install(root: &Path) -> Result<()> {

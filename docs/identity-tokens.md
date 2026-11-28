@@ -129,7 +129,7 @@ default image's), and its runner a host of that release.
 | `repository` | The project's primary repository, `owner/name`. | projects with one |
 | `branch`, `base_branch` | The branch its agent works on, and the one it started from. | every token |
 | `github_access` | What its agent may do on GitHub: `push`, `comment`, `triage` or `read`. | every token |
-| `started_by` | `person` (themselves, or a tool with their access token), `schedule`, `ticket`, `autopilot` or `service_account`, as webhooks say it. | every token |
+| `started_by` | `person` (themselves, or a tool with their access token), `schedule`, `ticket`, `autopilot`, `slack` or `service_account`, as webhooks say it. | every token |
 | `schedule_id` | The schedule that started it. | sessions of schedules |
 | `ticket` | The ticket it started from: `ENG-123`, `acme/web#12`. | sessions of tickets |
 | `autopilot_id`, `autopilot_role` | The autopilot's project, and `pilot` for its own session or `crew` for one it started. | sessions of autopilots |

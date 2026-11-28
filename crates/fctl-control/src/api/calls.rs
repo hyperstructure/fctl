@@ -57,14 +57,19 @@ struct Row {
 }
 
 /// A project's settings as its agents' calls take them. Settings that
-/// don't read as settings turn the memory, retrospectives and identity
-/// tokens off, and leave the agent reading only.
+/// don't read as settings turn the memory, retrospectives, identity
+/// tokens and Slack's readable channels off, and leave the agent reading
+/// only.
 fn read_settings(stored: &str) -> ProjectSettings {
     serde_json::from_str(stored).unwrap_or(ProjectSettings {
         project_memory: false,
         retrospectives: false,
         github_access: Some(GithubAccess::Read),
         id_tokens: false,
+        slack: fctl_proto::slack::SlackProject {
+            read_channels: false,
+            events: None,
+        },
         ..Default::default()
     })
 }
@@ -267,6 +272,9 @@ pub async fn runner_call(
         AgentCall::Ticket { request } => AgentAnswer::Ticket {
             answer: crate::tickets::call(ctx, &session, request).await?,
         },
+        AgentCall::Slack { request } => AgentAnswer::Slack {
+            answer: crate::slack::calls::call(ctx, &session, request).await?,
+        },
         AgentCall::Ask { question, options } => AgentAnswer::Asked {
             question: ask(ctx, &session, &question, &options).await?,
         },
@@ -427,6 +435,7 @@ mod tests {
         assert!(!s.id_tokens);
         assert!(!s.cloud_access.any());
         assert_eq!(s.github_access, Some(GithubAccess::Read));
+        assert!(!s.slack.read_channels);
         // Readable ones keep what they say, identity tokens on by default.
         assert!(read_settings("{}").id_tokens);
         assert!(!read_settings(r#"{"id_tokens": false}"#).id_tokens);

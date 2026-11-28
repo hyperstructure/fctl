@@ -112,12 +112,14 @@ pub fn document(path: &str) -> Option<(&str, Document)> {
 
 /// What started a session, as its tokens say (`started_by`), in the words
 /// and order webhooks say it (`crate::hooks::origin`): an autopilot, a
-/// schedule, a ticket delegated to fctl, a service account, or else its
-/// person, with their own hands or one of their access tokens.
+/// schedule, a ticket delegated to fctl, someone in Slack, a service
+/// account, or else its person, with their own hands or one of their
+/// access tokens.
 pub fn started_by(
     autopilot: bool,
     schedule: bool,
     ticket: bool,
+    slack: bool,
     service_account: bool,
 ) -> WebhookOrigin {
     if autopilot {
@@ -126,6 +128,8 @@ pub fn started_by(
         WebhookOrigin::Schedule
     } else if ticket {
         WebhookOrigin::Ticket
+    } else if slack {
+        WebhookOrigin::Slack
     } else if service_account {
         WebhookOrigin::ServiceAccount
     } else {
@@ -779,16 +783,29 @@ mod tests {
     #[test]
     fn started_by_says_what_webhooks_say() {
         assert_eq!(
-            started_by(false, false, false, false),
+            started_by(false, false, false, false, false),
             WebhookOrigin::Person
         );
         assert_eq!(
-            started_by(false, false, false, true),
+            started_by(false, false, false, false, true),
             WebhookOrigin::ServiceAccount
         );
-        assert_eq!(started_by(false, false, true, true), WebhookOrigin::Ticket);
-        assert_eq!(started_by(false, true, true, true), WebhookOrigin::Schedule);
-        assert_eq!(started_by(true, true, true, true), WebhookOrigin::Autopilot);
+        assert_eq!(
+            started_by(false, false, true, true, true),
+            WebhookOrigin::Ticket
+        );
+        assert_eq!(
+            started_by(false, false, false, true, true),
+            WebhookOrigin::Slack
+        );
+        assert_eq!(
+            started_by(false, true, true, true, true),
+            WebhookOrigin::Schedule
+        );
+        assert_eq!(
+            started_by(true, true, true, true, true),
+            WebhookOrigin::Autopilot
+        );
     }
 
     #[test]

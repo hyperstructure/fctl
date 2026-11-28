@@ -32,14 +32,16 @@ same for both, in the order to follow:
    the agents that opened the pull requests answer.
 4. Optionally, [Linear](#connect-linear-optional): an OAuth app with which
    teams delegate Linear issues to fctl.
-5. Optionally, [Google sign-in](#google-sign-in-optional) and
+5. Optionally, [Slack](#connect-slack-optional): an app with which people
+   start and steer agents from Slack.
+6. Optionally, [Google sign-in](#google-sign-in-optional) and
    [email](#email-optional).
-6. [Runners](#bring-runners-online), the machines agents run on.
+7. [Runners](#bring-runners-online), the machines agents run on.
 
-Each app takes a few minutes in GitHub's or Linear's settings, then its
-IDs and secrets go to the control plane: as environment variables on your
-own machine, in the instance file and with `cargo xtask secrets` on
-Cloudflare.
+Each app takes a few minutes in GitHub's, Linear's or Slack's settings,
+then its IDs and secrets go to the control plane: as environment variables
+on your own machine, in the instance file and with `cargo xtask secrets`
+on Cloudflare.
 
 Running it for an organization's people?
 [fctl for organizations](organizations.md) shows the settings to change,
@@ -149,6 +151,7 @@ Docker and Kubernetes secrets do.
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
 | `GITHUB_REVIEW_APP_ID`, `GITHUB_REVIEW_APP_SLUG`, `GITHUB_REVIEW_APP_PRIVATE_KEY` | | [The app review agents post as](#a-review-app-optional) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET` | | [Linear](#connect-linear-optional) |
+| `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_APP_TOKEN` | | [Slack](#connect-slack-optional) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | | [Google sign-in](#google-sign-in-optional) |
 | `RESEND_API_KEY`, `FCTL_EMAIL_FROM` | | [Email](#email-optional) |
 
@@ -203,8 +206,10 @@ the instance's container already behind a reverse proxy inside.
 | `/oidc/` | AWS, Google Cloud and Azure, which fetch each workspace's issuer's documents and keys before they take its agents' [identity tokens](identity-tokens.md) | The clouds refuse agents' tokens |
 | `/api/v1/published/` | GitHub's image proxy, which fetches the screenshots agents publish in pull requests | Pull requests show broken images |
 
-Sign-ins with GitHub, Linear and Google come back through people's
-browsers, which are inside, and so need no path of their own.
+Sign-ins with GitHub, Linear, Slack and Google come back through people's
+browsers, which are inside, and so need no path of their own. Slack needs
+none either: a private instance takes its events over Socket Mode, a
+connection it opens to Slack ([Connect Slack](#connect-slack-optional)).
 
 ```text
 inside: people, runners                         internet: GitHub, Linear, clouds
@@ -800,7 +805,7 @@ and the server convert it); it never reaches a host or a sandbox. fctl
 reads it also on one line, as a form can store it, its line breaks turned
 into spaces, dropped or written as `\n`. Without the client secret, a
 workspace keeps the accounts it has but can't connect a new one, and its
-GitHub tab says so.
+Integrations → GitHub says so.
 
 ### 4. Connect it to a workspace
 
@@ -896,8 +901,8 @@ for a comment that reached an agent, and fctl puts an 👀 reaction on it.
 
 ### Which workspace uses which account
 
-A workspace's admins connect accounts under the workspace's **GitHub** tab,
-or with `fctl workspaces connect`. Connecting sends them to GitHub to sign
+A workspace's admins connect accounts under the workspace's
+**Integrations → GitHub**, or with `fctl workspaces connect`. Connecting sends them to GitHub to sign
 in with the app, which shows fctl what they may give the workspace: every
 repository of their own account, or of an organization whose every
 repository the app reaches and they administer all of (as its owners do);
@@ -1027,14 +1032,14 @@ Skip it, and review agents work all the same.
 3. Install it on the accounts the GitHub App is installed on. Nobody
    connects it: fctl uses it only on repositories a workspace connected
    through the GitHub App, so installing it is all it takes. Each
-   workspace's **GitHub** tab says which app posts the reviews on each of
-   its accounts, and its admins install the review app there from the tab,
-   on the repositories the workspace connected (`fctl workspaces
+   workspace's **Integrations → GitHub** says which app posts the reviews
+   on each of its accounts, and its admins install the review app there
+   from it, on the repositories the workspace connected (`fctl workspaces
    review-app` prints the links); a project's **Reviews** tab says which
    app its reviews post as. When fctl can't sign in to GitHub as the
    review app, because it can't read `GITHUB_REVIEW_APP_PRIVATE_KEY` or
-   GitHub refuses the key, every review posts as the GitHub App, and the
-   **GitHub** tab says why.
+   GitHub refuses the key, every review posts as the GitHub App, and
+   **Integrations → GitHub** says why.
 
 Which app writes a review is settled as the review starts, since only the
 app that created a check may change it: a review that started before the
@@ -1114,8 +1119,9 @@ reach your instance from the internet.
    cargo xtask deploy acme
    ```
 3. A workspace's admin connects their Linear workspace under the
-   workspace's **Linear** tab, or a project's **Settings → Tickets**: Linear asks
-   one of its admins to install the app and to choose the teams it sees.
+   workspace's **Integrations → Linear**, or a project's **Settings →
+   Tickets**: Linear asks one of its admins to install the app and to
+   choose the teams it sees.
    Each project then chooses its teams. People link their Linear accounts
    (Settings, the project's Settings → Tickets, or Linear's own button the first
    time they delegate an issue), and fctl starts sessions only for people
@@ -1135,6 +1141,212 @@ Progress, In Review and Done itself as their sessions work, which each
 project's Settings → Tickets can turn off where a team's own automation in Linear
 moves them otherwise. fctl hears of merges through the GitHub App's
 webhook ([Pull request state and checks](#pull-request-state-and-checks)).
+
+## Connect Slack (optional)
+
+With a Slack app, people start and steer agents from Slack: mentioning
+fctl in a channel, writing to it in its messages, `/fctl` or **Send to
+fctl…** on a message starts a session as the person who asked, and its
+card, replies and questions come back to the thread, where replies steer
+it ([Start agents from Slack](slack.md), [Architecture](architecture.md#slack)).
+An instance has one app, which each workspace's admins install in their
+Slack workspaces from fctl. Yours is your organization's own, an internal
+app to Slack: Slack's full rate limits apply to it, and it may use Slack's
+Real-time Search, which an app distributed outside the Slack Marketplace,
+as app.fctl.sh's is until Slack lists it there, may not. Slack's events
+reach the instance over HTTP, at addresses Slack reaches from the
+internet, or, for an instance Slack can't reach, over Socket Mode: a
+WebSocket the instance opens to Slack itself.
+
+1. **Create the app from its manifest.** Under **Admin → Slack**,
+   **Create the Slack app** opens Slack's form with the manifest filled in
+   with your instance's name and addresses (`fctl admin slack --manifest
+   yaml` prints it): choose the Slack workspace to create it in, check it
+   and create it. For an instance named `fctl` at
+   `https://fctl.acme.dev`, it is:
+
+   ```yaml
+   _metadata:
+     major_version: 2
+     minor_version: 1
+   display_information:
+     background_color: "#171717"
+     description: "Start and steer fctl's agents from Slack."
+     long_description: "Mention fctl in a channel, or write to it in its messages, and an agent starts on the work in a sandbox, as you, on your Claude subscription. Its card in the thread shows how it goes: what it's doing, its plan, its pull requests with their checks. Your replies in the thread steer it, its questions come with a button for each answer, and its replies come back where you asked. Agents read the thread they started from, and only the public channels your workspace's admins make readable."
+     name: "fctl"
+   features:
+     agent_view:
+       agent_description: "Starts fctl's agents on your projects: say what to do, and an agent works on it in a sandbox, as you, and reports back here."
+       suggested_prompts:
+         - message: "Fix the bug where "
+           title: "Fix a bug"
+         - message: "How does this work: "
+           title: "Explain some code"
+         - message: "What are my sessions doing?"
+           title: "What's running?"
+     app_home:
+       agent_tasks_enabled: false
+       home_tab_enabled: true
+       messages_tab_enabled: true
+       messages_tab_read_only_enabled: false
+     bot_user:
+       always_online: true
+       display_name: "fctl"
+     shortcuts:
+       - callback_id: "fctl_send_message"
+         description: "Start an fctl session from this message"
+         name: "Send to fctl"
+         type: "message"
+       - callback_id: "fctl_start_session"
+         description: "Start an fctl session on one of your projects"
+         name: "Start an fctl session"
+         type: "global"
+     slash_commands:
+       - command: "/fctl"
+         description: "Start an fctl session, or see yours"
+         should_escape: true
+         url: "https://fctl.acme.dev/api/v1/slack/commands"
+         usage_hint: "[what to do] | status"
+   oauth_config:
+     redirect_urls:
+       - "https://fctl.acme.dev/api/v1/slack/installed"
+       - "https://fctl.acme.dev/api/v1/slack/linked"
+     scopes:
+       bot:
+         - "app_mentions:read"
+         - "assistant:write"
+         - "channels:history"
+         - "channels:join"
+         - "channels:read"
+         - "chat:write"
+         - "commands"
+         - "groups:history"
+         - "groups:read"
+         - "im:history"
+         - "im:read"
+         - "im:write"
+         - "reactions:write"
+         - "search:read.public"
+         - "team:read"
+         - "users:read"
+         - "users:read.email"
+       user:
+         - "openid"
+         - "profile"
+         - "email"
+   settings:
+     event_subscriptions:
+       bot_events:
+         - "agent_session_stopped"
+         - "app_home_opened"
+         - "app_mention"
+         - "app_uninstalled"
+         - "message.channels"
+         - "message.groups"
+         - "message.im"
+         - "tokens_revoked"
+       request_url: "https://fctl.acme.dev/api/v1/slack/events"
+     interactivity:
+       is_enabled: true
+       request_url: "https://fctl.acme.dev/api/v1/slack/interactivity"
+     org_deploy_enabled: false
+     socket_mode_enabled: false
+     token_rotation_enabled: false
+   ```
+
+   Where the instance has `SLACK_APP_TOKEN`, or an address Slack can't
+   reach (plain `http://`, or a private host), the manifest turns
+   `socket_mode_enabled` on and leaves the three request URLs out (the
+   command's `url`, and the events' and interactivity's `request_url`):
+   Slack then sends everything over Socket Mode (step 3). The app's name
+   is the instance's (at most 35 characters): people mention it by that
+   name. Org-wide installs and token rotation stay off, as fctl takes
+   neither yet.
+
+   What fctl does with each bot scope:
+
+   | Scope | For |
+   |---|---|
+   | `app_mentions:read` | Mentions of fctl in channels |
+   | `assistant:write` | Its messages in Slack's agent view, where each thread of someone's messages with it is a session |
+   | `channels:history` | Public channels' messages: replies in its threads there, a thread's earlier messages, and the channels admins make readable for agents |
+   | `channels:join` | Joining the public channels admins map to projects or make readable |
+   | `channels:read` | Looking a public channel up before reading or posting there, and listing public channels for admins |
+   | `chat:write` | Posting and changing the card, replies, questions and notes, each thread's agent session, and streams in direct messages |
+   | `commands` | `/fctl`, **Send to fctl** and **Start an fctl session** |
+   | `groups:history` | Private channels it was invited to: replies in its threads there, and a thread's earlier messages |
+   | `groups:read` | Looking a private channel up |
+   | `im:history` | People's direct messages with it |
+   | `im:read` | Looking direct messages up |
+   | `im:write` | Opening someone's direct messages with it, for notifications and the sessions its forms start |
+   | `reactions:write` | 👀 on what it took up |
+   | `search:read.public` | Searching readable channels with Slack's Real-time Search, for agents |
+   | `team:read` | The Slack workspace's name and icon |
+   | `users:read` | Who wrote what, their time zone, and whether they are guests |
+   | `users:read.email` | People's addresses, for knowing them by address where the instance allows it |
+
+   The user scopes, `openid`, `profile` and `email`, are for Sign in with
+   Slack, with which people link their accounts: fctl reads who they are
+   and revokes the sign-in's token at once. The app needs no other
+   token: agents never hold one, and fctl reads and posts for them.
+2. **Tell the control plane about it**: the **Client ID**, **Client
+   Secret** and **Signing Secret** under the app's **Basic Information →
+   App Credentials**. On your own machine, set `SLACK_CLIENT_ID`,
+   `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` and start the server
+   again. On Cloudflare, add the client ID to the instance file and the
+   secrets to the Worker:
+
+   ```toml
+   [slack]
+   client_id = "1234567890.1234567890123"
+   ```
+
+   ```sh
+   echo "$SLACK_CLIENT_SECRET" | cargo xtask secrets acme --set SLACK_CLIENT_SECRET
+   echo "$SLACK_SIGNING_SECRET" | cargo xtask secrets acme --set SLACK_SIGNING_SECRET
+   cargo xtask deploy acme
+   ```
+
+   Slack checks the events address as the manifest is saved, which the
+   instance answers only once it has the signing secret: where Slack says
+   the address isn't verified, have it check again under the app's **Event
+   Subscriptions** now.
+3. **Socket Mode**, for an instance Slack can't reach: under **Basic
+   Information → App-Level Tokens**, generate a token with the
+   `connections:write` scope, and set it as `SLACK_APP_TOKEN` (`xapp-…`),
+   on Cloudflare as a secret (`cargo xtask secrets acme --set
+   SLACK_APP_TOKEN`). An app made from the manifest of an instance Slack
+   can't reach has Socket Mode on already; otherwise turn it on under the
+   app's **Socket Mode**. The instance needs no signing secret with it. A
+   Durable Object keeps the connection open and opens a new one as Slack
+   refreshes it, on Cloudflare and on your own machine alike; **Admin →
+   Slack** and `fctl admin slack` say whether it's connected, and what
+   went wrong last.
+4. **Install it.** A workspace's admin connects their Slack workspace on
+   the workspace's **Integrations** tab under **Slack** (**Add to Slack**),
+   or with `fctl workspaces slack connect`: Slack asks someone who may add
+   apps there to install it, and where its admins approve apps, one of
+   them. To install it in a Slack workspace other than the one you created
+   it in, choose **Activate Public Distribution** under the app's
+   **Manage Distribution** first: Slack lets no other Slack workspace
+   install it until then. Each person links their Slack account once, as
+   they first ask fctl there or in **Settings → Slack**.
+5. **Knowing people by their address** (optional). Where your people sign
+   in to Slack and to fctl through the same provider, **Admin → Slack**
+   lets workspaces know them by their verified address in Slack, without a
+   link (`fctl admin slack --match-email on`), and each workspace's admins
+   then turn it on for their Slack workspace. It's off by default, and
+   off on app.fctl.sh: an address in Slack proves nothing to fctl where
+   Slack's admins can set anyone's.
+
+What Slack sends over HTTP (`/api/v1/slack/events`, `/interactivity` and
+`/commands`) counts only signed with the signing secret, within five
+minutes of its time: the instance answers anything else with 401
+(without the secret, 501). It answers each at once, as Slack wants within
+three seconds, and does the work after. Slack uninstalls an
+app whose installer leaves the Slack workspace or becomes a guest there:
+the workspace's Slack page then says its access was revoked, and an admin
+connects it again.
 
 ## Google sign-in (optional)
 

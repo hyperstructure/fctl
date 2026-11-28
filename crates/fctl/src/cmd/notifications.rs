@@ -29,6 +29,10 @@ pub enum NotificationsCmd {
         /// Starting or resuming a session follows it.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         follow_started: Option<bool>,
+        /// Tell me in Slack too: fctl's app sends them in your messages
+        /// with it, where you linked your Slack account.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        slack: Option<bool>,
     },
     /// Send a test notification to your browsers.
     Test,
@@ -48,8 +52,10 @@ pub async fn run(server: Option<&str>, cmd: NotificationsCmd, json: bool) -> Res
             paused,
             failed,
             follow_started,
+            slack,
         } => {
             api.update_notifications(&UpdateNotificationsRequest {
+                slack,
                 waiting,
                 paused,
                 failed,
@@ -105,6 +111,21 @@ fn print(n: &Notifications, base: &str) {
         "{} Starting or resuming a session follows it",
         mark(s.follow_started)
     );
+    if !n.slack.is_empty() {
+        println!("{} Tell me in Slack too", mark(s.slack));
+        for p in &n.slack {
+            let state = match (&p.account, p.allowed) {
+                (_, false) => {
+                    style::amber("its workspace's admins keep notifications out of Slack")
+                }
+                (None, true) => {
+                    style::amber("link your Slack account there: `fctl account slack link`")
+                }
+                (Some(a), true) => style::dim(&format!("as {}", style::terminal_safe(&a.name))),
+            };
+            println!("  {} {}", style::terminal_safe(&p.team_name), state);
+        }
+    }
     println!();
     if n.public_key.is_none() {
         println!(

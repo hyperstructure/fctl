@@ -104,6 +104,10 @@ export const keys = {
   projectTickets: (project: string) => ["project-tickets", project] as const,
   /** Your Linear accounts. */
   myLinear: ["me", "linear"] as const,
+  /** Your Slack accounts, and the Slack workspaces your workspaces work in. */
+  mySlack: ["me", "slack"] as const,
+  /** The instance's Slack app, as its admins see it. */
+  adminSlack: ["admin", "slack"] as const,
   runners: ["runners"] as const,
   users: ["users"] as const,
   allowlist: ["allowlist"] as const,
@@ -127,6 +131,11 @@ export const keys = {
   /** The teams fctl's app reaches in a Linear workspace a workspace works in. */
   linearTeams: (id: string, organization: string) =>
     ["workspace", id, "linear", organization, "teams"] as const,
+  /** The Slack workspaces it works in, and what it lets people and agents do there. */
+  workspaceSlack: (id: string) => ["workspace", id, "slack"] as const,
+  /** Public channels of a Slack workspace it works in, by what their names were searched for. */
+  slackChannels: (id: string, team: string, query: string) =>
+    ["workspace", id, "slack", team, "channels", query] as const,
   workspaceAudit: (id: string) => ["workspace", id, "audit"] as const,
   adminWorkspaces: ["admin", "workspaces"] as const,
   adminGithub: ["admin", "github"] as const,

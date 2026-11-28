@@ -1448,6 +1448,7 @@ async fn deliver(
             client_key: None,
             by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
+                slack: None,
                 id: delivery_id,
                 author: None,
                 text: text.to_owned(),
@@ -1482,6 +1483,8 @@ async fn start_pilot(
         env,
         db,
         crate::starts::NewSession {
+            slack: None,
+            slack_message: None,
             project,
             title: format!("{} autopilot", project.name),
             branch: crate::starts::Branch::Titled,

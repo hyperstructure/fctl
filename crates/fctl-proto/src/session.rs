@@ -762,6 +762,15 @@ pub struct ProjectSettings {
     /// agents never mint them. An update that leaves it out keeps what was
     /// stored. Agents from before it mint none.
     pub id_tokens: bool,
+    /// What it does with Slack, where its workspace works in a Slack
+    /// workspace: whether its agents read the channels the workspace made
+    /// readable, and a channel it posts events to. An update that leaves it
+    /// out keeps what was stored.
+    #[cfg_attr(
+        feature = "ts",
+        ts(as = "Option<crate::slack::SlackProject>", optional)
+    )]
+    pub slack: crate::slack::SlackProject,
     /// The clouds agents reach as themselves, with identity tokens
     /// ([`crate::identity::CloudAccess`]): fctl-agent keeps a token for
     /// each in the sandbox and sets the variables the cloud's CLI and SDKs
@@ -1123,6 +1132,7 @@ impl Default for ProjectSettings {
             follow_ups: FollowUps::default(),
             tickets: Tickets::default(),
             id_tokens: true,
+            slack: Default::default(),
             cloud_access: Default::default(),
             env: Default::default(),
         }
@@ -1506,6 +1516,10 @@ pub struct Session {
     /// Absent for other sessions, and from control planes before ticket
     /// trackers.
     pub ticket: Option<SessionTicket>,
+    /// The Slack thread it started from: a mention of fctl's app in a
+    /// channel, or someone's direct messages with it. Absent for other
+    /// sessions, and from control planes before Slack.
+    pub slack: Option<crate::slack::SessionSlack>,
     /// What its agent asked the people who follow it (`fctl ask`), until
     /// someone answers: a person's next message does. Absent while it
     /// asks nothing, and from control planes before questions.

@@ -495,7 +495,7 @@ describe("a workspace's GitHub tab", () => {
     expect(chooseGithub).toHaveBeenCalledWith("ws_side", "acme", { repos: ["api", "web"] });
     expect(navigate).toHaveBeenCalledWith(
       expect.objectContaining({
-        search: { tab: "github", github: "connected", account: "acme" },
+        search: { tab: "integrations", integration: "github", github: "connected", account: "acme" },
         replace: true,
       }),
     );
@@ -534,7 +534,9 @@ describe("a workspace's GitHub tab", () => {
     await click(button(page, "Not now"));
     expect(dismissGithubOffer).toHaveBeenCalledWith("ws_side", "acme");
     expect(chooseGithub).not.toHaveBeenCalled();
-    expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "github" } }));
+    expect(navigate).toHaveBeenCalledWith(
+      expect.objectContaining({ search: { tab: "integrations", integration: "github" } }),
+    );
   });
 
   it("offers every repository first where the app reaches none yet", () => {
@@ -635,6 +637,66 @@ describe("a workspace's GitHub tab", () => {
     expect(page.textContent).toContain("Side project works in no GitHub account yet.");
     expect(page.textContent).not.toContain("Connect with GitHub");
     expect(page.textContent).not.toContain("Choose what");
+  });
+});
+
+describe("a workspace's Integrations tab", () => {
+  /** The page at `?tab=…`, on an instance with these apps, as `workspace` sees it. */
+  function page(tab: string, features: Partial<G.Features>, workspace = side) {
+    route.tab = tab;
+    queryClient.setQueryData(keys.workspace(workspace.slug), workspace);
+    queryClient.setQueryData(keys.instance, { name: "fctl", features: { github: true, ...features } });
+    queryClient.setQueryData<G.WorkspaceLinear>(keys.workspaceLinear(workspace.id), {
+      configured: true,
+      webhook: true,
+      connections: [],
+    });
+    queryClient.setQueryData<G.WorkspaceGithub>(keys.workspaceGithub(workspace.id), {
+      configured: true,
+      connections: [],
+      approval_required: false,
+      can_connect: true,
+      offers: [],
+    });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspacePage />
+        </QueryClientProvider>,
+      ),
+    );
+    roots.push(() => act(() => root.unmount()));
+    return container;
+  }
+  const tabs = (c: HTMLElement) =>
+    [...c.querySelectorAll('nav[aria-label="Workspace"] a')].map((a) => a.textContent?.trim());
+
+  it("holds GitHub, Linear and Slack in one tab, beside the others", () => {
+    const c = page("integrations", { linear: true, slack: true });
+    expect(tabs(c)).toContain("Integrations");
+    expect(tabs(c)).not.toContain("GitHub");
+    expect(tabs(c)).not.toContain("Linear");
+    const integrations = c.querySelector('nav[aria-label="Integrations"]');
+    expect(integrations?.textContent).toContain("GitHub");
+    expect(integrations?.textContent).toContain("Linear");
+    expect(integrations?.textContent).toContain("Slack");
+  });
+
+  it("opens GitHub's and Linear's old addresses there, as the control plane still sends people back to them", () => {
+    expect(page("linear", { linear: true }).textContent).toContain("Delegate Linear issues to fctl");
+    expect(page("github", { linear: true }).textContent).toContain("works in no GitHub account yet");
+  });
+
+  it("shows Slack only where the instance has a Slack app, or to its admins, who create it", () => {
+    expect(
+      page("integrations", { linear: true }).querySelector('nav[aria-label="Integrations"]')?.textContent,
+    ).not.toContain("Slack");
+    queryClient.setQueryData(keys.me, { user: { id: "usr_ada", name: "Ada", role: "admin" }, claude: [] });
+    expect(
+      page("integrations", { linear: true }).querySelector('nav[aria-label="Integrations"]')?.textContent,
+    ).toContain("Slack");
   });
 });
 

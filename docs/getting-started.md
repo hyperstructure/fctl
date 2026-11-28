@@ -370,9 +370,9 @@ sidebar); a workspace's admins create its projects, and add the people who
 work in them. Link an existing repository of a GitHub account the workspace
 works in, create a new one, or start without a repository. A workspace
 works in an account once the instance's GitHub App is installed there and
-one of its admins connects it under the workspace's **GitHub** tab, by
-signing in to GitHub, which connects what that person may give the
-workspace. Optionally add a setup script (it
+one of its admins connects it on the workspace's **Integrations** tab,
+under **GitHub**, by signing in to GitHub, which connects what that
+person may give the workspace. Optionally add a setup script (it
 runs in the clone before the agent starts, e.g. `npm ci`) and instructions for
 agents. When sessions need tools the default image lacks, give the project an
 image of its own, or one built from a Dockerfile or devcontainer.json in its

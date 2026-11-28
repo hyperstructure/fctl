@@ -1192,6 +1192,7 @@ pub async fn start(
         &InitSession {
             session,
             prompt: UserMessage {
+                slack: None,
                 ticket: None,
                 autopilot: None,
                 wake: None,

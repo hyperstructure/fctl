@@ -122,6 +122,11 @@ pub struct UserMessage {
     /// the message tells the agent. Clients from before it show the
     /// message's text.
     pub ticket: Option<crate::tickets::TicketMessage>,
+    /// For a message that came from Slack (a mention of fctl's app, a
+    /// direct message to it, a reply in the session's thread, an answer
+    /// clicked there): who wrote what where, which the message tells the
+    /// agent. Clients from before it show the message's text.
+    pub slack: Option<crate::slack::SlackMessage>,
     /// For a message an autopilot sent one of its sessions: the autopilot,
     /// which wrote it as its owner, the message's author. Clients from
     /// before autopilots show the author.
@@ -589,7 +594,8 @@ pub struct Notice {
     /// `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
     /// `pull_request_summarized`, `follow_up_held`, `follow_up_own`,
     /// `ticket_created`, `ticket_commented`, `ticket_updated`,
-    /// `ticket_replied`, `ticket_moved`, `ticket_failed`, `question_asked`,
+    /// `ticket_replied`, `ticket_moved`, `ticket_failed`, `slack_replied`,
+    /// `slack_asked`, `slack_posted`, `slack_failed`, `question_asked`,
     /// `question_withdrawn`, `autopilot_action`, `memory_nearly_out`,
     /// `memory_killed`, `snapshot_restored`, `snapshot_unusable`,
     /// `snapshot_not_saved`, `snapshot_work_aside`, `snapshot_work_left_out`,
@@ -622,6 +628,9 @@ pub struct Notice {
     /// What the agent, or fctl for it, did in the project's ticket tracker,
     /// in a `ticket_*` notice. Clients from before it show the message.
     pub ticket: Option<crate::tickets::TicketNotice>,
+    /// What fctl or the agent did in the session's Slack thread, in a
+    /// `slack_*` notice. Clients from before it show the message.
+    pub slack: Option<crate::slack::SlackNotice>,
     /// The question a `question_asked` notice is about (`fctl ask`), as the
     /// agent asked it. Clients from before it show the message.
     pub question: Option<crate::session::SessionQuestion>,
@@ -646,6 +655,7 @@ impl Notice {
             summarized: None,
             follow_up: None,
             ticket: None,
+            slack: None,
             question: None,
             autopilot: None,
         }
@@ -713,6 +723,7 @@ mod tests {
             seq: 7,
             ts: 1_700_000_000_000,
             body: EventBody::UserMessage(UserMessage {
+                slack: None,
                 ticket: None,
                 autopilot: None,
                 wake: None,
@@ -784,6 +795,7 @@ mod tests {
         assert_eq!(old.published, None);
         assert!(serde_json::to_value(&old)?.get("published").is_none());
         let shot = Notice {
+            slack: None,
             ticket: None,
             level: NoticeLevel::Info,
             code: "screenshot_published".into(),
@@ -971,6 +983,7 @@ mod tests {
             }],
         };
         let m = UserMessage {
+            slack: None,
             ticket: None,
             autopilot: None,
             wake: None,

@@ -10,6 +10,7 @@ mod linear;
 mod macho;
 mod release;
 mod serve;
+mod slack;
 mod util;
 
 use anyhow::{Context, Result, bail};
@@ -21,10 +22,12 @@ cargo xtask <command>
 Develop
   dev [--no-host] [--no-vite] [--smoke] [--server <url>]
                                 Run everything locally: control plane, web app (hot reload),
-                                a host whose agents run fake-claude and a stand-in for Linear;
-                                --smoke runs one session to the end and a delegation in Linear,
+                                a host whose agents run fake-claude and stand-ins for Linear and
+                                Slack; --smoke runs one session to the end, a delegation in
+                                Linear and a mention in Slack,
                                 and stops (CI); --server uses the control plane running there
                                 (started with FCTL_SETUP_TOKEN=dev-setup-token), without Linear
+                                and Slack
   linear delegate <issue | title> [--description <text>] [--as <person>]
   linear mention <issue | title> [<text>] [--as <person>]
   linear reply <issue> <text> [--as <person>]
@@ -37,6 +40,18 @@ Develop
                                 shows what fctl did there; uninstall removes fctl's app
   linear check                  Check every query and mutation fctl sends Linear against
                                 Linear's schema (xtask/linear/schema.graphql); check web does
+  slack mention ['#<channel>'] [<text>] [--as <person>]
+  slack dm <text> [--as <person>]
+  slack reply [<thread>] <text> [--as <person>]
+  slack answer <n> | press <label> | project <name> [remember]
+  slack command <text> [<channel>] | home | stop [<thread>]
+  slack show [<thread>]
+  slack uninstall               In the Slack stand-in of cargo xtask dev, someone in Acme (the
+                                dev owner, or grace) mentions fctl in #web-team (or a channel
+                                named), writes to it, replies in a thread, clicks an answer, a
+                                button or a project, runs /fctl, opens the Home tab or presses
+                                stop, and this follows what fctl answers there; show shows a
+                                thread; uninstall removes fctl's app
   check [--quick] [lint|test|web]...
                                 What CI checks (fmt, types, lint, tests, builds): lint is
                                 rustfmt, web/src/gen and Clippy; test is cargo test; web is
@@ -129,6 +144,17 @@ fn main() -> Result<()> {
             let text = a.optional();
             a.done()?;
             linear::command(&action, target, text, who, description)
+        }
+        "slack" => {
+            let action = a.positional(
+                "what to do: mention, dm, reply, answer, press, project, command, home, stop, show or uninstall",
+            )?;
+            let who = a.value("--as")?;
+            let channel = a.value("--channel")?;
+            let target = a.optional();
+            let text = a.optional();
+            a.done()?;
+            slack::command(&action, target, text, who, channel)
         }
         "demo" => {
             // The flags first: --cast's value would pass for a positional.

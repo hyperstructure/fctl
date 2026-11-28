@@ -33,6 +33,8 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         setup_required: owners.map_or(0, |c| c.n) == 0,
         features: Features {
+            slack: ctx.cfg.slack.is_some(),
+            slack_events: ctx.cfg.slack.as_ref().is_some_and(|s| s.events()),
             google: ctx.cfg.google.is_some(),
             email: ctx.cfg.email.is_some(),
             github: ctx.cfg.github.is_some(),

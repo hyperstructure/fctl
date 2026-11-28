@@ -3,6 +3,7 @@ import type { CloudAccess } from "./CloudAccess";
 import type { FollowUps } from "./FollowUps";
 import type { GithubAccess } from "./GithubAccess";
 import type { ImageBuild } from "./ImageBuild";
+import type { SlackProject } from "./SlackProject";
 import type { Tickets } from "./Tickets";
 import type { Verbosity } from "./Verbosity";
 
@@ -208,6 +209,13 @@ tickets?: Tickets,
  * stored. Agents from before it mint none.
  */
 id_tokens: boolean, 
+/**
+ * What it does with Slack, where its workspace works in a Slack
+ * workspace: whether its agents read the channels the workspace made
+ * readable, and a channel it posts events to. An update that leaves it
+ * out keeps what was stored.
+ */
+slack?: SlackProject, 
 /**
  * The clouds agents reach as themselves, with identity tokens
  * ([`crate::identity::CloudAccess`]): fctl-agent keeps a token for

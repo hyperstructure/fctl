@@ -790,9 +790,14 @@ async fn ask(
         | AgentCall::ResolveThread { .. }
         | AgentCall::ReviewThreads
         | AgentCall::SummarizePullRequest { .. } => true,
-        // What reads the tracker; a request this host doesn't know may write.
+        // What reads the tracker, or Slack; a request this host doesn't
+        // know may write.
         AgentCall::Ticket { request } => {
             serde_json::from_value::<fctl_proto::tickets::TicketRequest>(request.clone())
+                .is_ok_and(|r| r.reads())
+        }
+        AgentCall::Slack { request } => {
+            serde_json::from_value::<fctl_proto::slack::SlackRequest>(request.clone())
                 .is_ok_and(|r| r.reads())
         }
         // An autopilot's reads of the API.

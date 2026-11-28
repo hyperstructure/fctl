@@ -85,6 +85,10 @@ pub enum Sensitive {
     /// token could otherwise go on starting their sessions from Linear long
     /// after it was revoked.
     LinkLinear,
+    /// Linking a Slack account: what it asks fctl's app in Slack then
+    /// starts sessions as the person, on their subscription, and its
+    /// replies reach their sessions' agents, as for Linear.
+    LinkSlack,
     /// Approving a CLI's sign-in, or confirming it's you for a CLI that is
     /// signed in already.
     ApproveCli,
@@ -158,6 +162,7 @@ impl Sensitive {
             ConnectClaude => "connect a Claude subscription",
             GiveClaudeTokenToSandboxes => "give sandboxes your Claude token again",
             LinkLinear => "link a Linear account",
+            LinkSlack => "link a Slack account",
             ApproveCli => "approve the CLI",
             RemovePasskey => "remove a passkey",
             Export => "export your data",

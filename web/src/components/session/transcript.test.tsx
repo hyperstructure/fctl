@@ -12,7 +12,7 @@ vi.mock("@/components/ui", async () => {
     await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox");
   const { Gallery, useLightbox } =
     await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery");
-  const { GithubIcon, LinearIcon, ReviewIcon, ThoughtIcon } =
+  const { GithubIcon, LinearIcon, ReviewIcon, SlackIcon, ThoughtIcon } =
     await vi.importActual<typeof import("@/components/ui/icons")>("@/components/ui/icons");
   const { DotWave } =
     await vi.importActual<typeof import("@/components/ui/dot-wave")>("@/components/ui/dot-wave");
@@ -32,6 +32,7 @@ vi.mock("@/components/ui", async () => {
     MenuItem: () => null,
     plainClick,
     ReviewIcon,
+    SlackIcon,
     Spinner: () => <svg className="animate-spin" />,
     ThoughtIcon,
     Thumbnail,
@@ -902,5 +903,115 @@ describe("tickets", () => {
     expect(more.textContent).toContain("Changed acme/web#12 on GitHub");
     expect(more.textContent).toContain("Closed");
     expect(more.textContent).toContain("added bug");
+  });
+});
+
+describe("Slack", () => {
+  const url = "https://acme.slack.com/archives/C1/p1700000000000100";
+  const message = (m: G.SlackMessage, text = "Ada Lovelace asked fctl in #web-team in Slack"): Item => ({
+    kind: "user",
+    key: `u-${++seq}`,
+    seq,
+    ts: 0,
+    author: ada,
+    text,
+    source: "api",
+    slack: m,
+  });
+  const told = (c: HTMLElement) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent === "What fctl told the agent");
+
+  it("shows a mention as Slack does: who, where, what they wrote, with what fctl told the agent a click away", () => {
+    const c = transcript(
+      [
+        message({
+          event: "mentioned",
+          place: "channel",
+          channel_name: "web-team",
+          team_name: "Acme",
+          by: { name: "Ada Lovelace", user: "U1" },
+          body: "@fctl Safari sends people back to /login. Can you fix it?",
+          url,
+          context: 4,
+        }),
+      ],
+      "idle",
+    );
+    expect(c.textContent).toContain("mentioned fctl in #web-team");
+    expect(c.textContent).toContain("@fctl Safari sends people back to /login. Can you fix it?");
+    expect(c.textContent).toContain("#web-team · Acme");
+    expect(c.textContent).toContain("With 4 earlier messages of the thread, as information");
+    expect(c.querySelector(`a[href="${url}"]`)).not.toBeNull();
+    expect(c.textContent).not.toContain("Ada Lovelace asked fctl in #web-team in Slack");
+    act(() => told(c)?.click());
+    expect(c.textContent).toContain("Ada Lovelace asked fctl in #web-team in Slack");
+  });
+
+  it("says when what a message said was dropped once its session ended", () => {
+    const c = transcript(
+      [
+        message(
+          { event: "replied", place: "channel", channel_name: "web-team", dropped: true },
+          "Ada replied",
+        ),
+      ],
+      "idle",
+    );
+    expect(c.textContent).toContain("replied in the thread in #web-team");
+    expect(c.textContent).toContain("What it said was dropped once the session ended");
+  });
+
+  it("links into Slack only where the link is Slack's", () => {
+    const c = transcript(
+      [
+        message({
+          event: "direct",
+          place: "dm",
+          body: "Look at the flaky test",
+          url: "https://evil.example/archives/D1/p1",
+        }),
+      ],
+      "idle",
+    );
+    expect(c.textContent).toContain("wrote to fctl");
+    expect(c.textContent).toContain("Direct message");
+    expect(c.querySelector('a[href^="https://evil.example"]')).toBeNull();
+  });
+
+  it("says what fctl posted in the thread, which opens, and what the agent read", () => {
+    const notice = (code: string, slack: G.SlackNotice, text: string): Item => ({
+      kind: "notice",
+      key: `n-${++seq}`,
+      seq,
+      ts: 0,
+      notice: { level: "info", code, message: text, slack },
+    });
+    const c = transcript(
+      [
+        notice(
+          "slack_replied",
+          {
+            place: "channel",
+            channel_name: "web-team",
+            body: "Fixed: the cookie lost its SameSite setting.",
+            url,
+          },
+          "Replied in #web-team",
+        ),
+        notice(
+          "slack_read",
+          { place: "channel", channel_name: "incidents", messages: 12 },
+          "Read #incidents",
+        ),
+      ],
+      "idle",
+    );
+    expect(c.textContent).toContain("Replied in #web-team");
+    expect(c.textContent).toContain("Read 12 messages in #incidents");
+    expect(c.textContent).not.toContain("Fixed: the cookie");
+    const line = [...c.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Replied in"));
+    act(() => line?.click());
+    expect(c.textContent).toContain("Fixed: the cookie lost its SameSite setting.");
+    expect(c.querySelector(`a[href="${url}"]`)?.textContent).toContain("Open in Slack");
   });
 });

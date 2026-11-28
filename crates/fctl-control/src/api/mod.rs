@@ -31,6 +31,7 @@ pub mod search;
 pub mod service_accounts;
 pub mod sessions;
 pub mod sign_in;
+pub mod slack;
 pub mod snapshots;
 pub mod tickets;
 pub mod tokens;

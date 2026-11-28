@@ -112,8 +112,8 @@ fctl -- workspaces create "Side project"`, then `workspaces add-runner
 dev-host -w side-project` so that the dev runner takes its sessions too,
 and `admin invite grace@example.com -w side-project`, whose link signs Grace
 up in another browser. The dev instance has no GitHub App, so projects there
-have no repository and the GitHub tabs say so. It takes requests for early
-access, as app.fctl.sh does: signed out, the sign-in page links to
+have no repository and Integrations → GitHub says so. It takes requests
+for early access, as app.fctl.sh does: signed out, the sign-in page links to
 `/early-access`, and the requests show under Admin → Early access and in
 `cargo run -p fctl -- admin early-access`.
 
@@ -151,7 +151,9 @@ does (`~/.claude/projects/<working directory>/<session>.jsonl`), so that a
 session that resumed on another runner shows whether its conversation came
 along ([Session snapshots](architecture.md#session-snapshots)), a line
 that starts with `fctl ticket` runs as it is (`fctl ticket view ENG-1`), as
-agents reach their project's tracker, and so does one that starts with
+agents reach their project's tracker, and so do one that starts with
+`fctl slack` (`fctl slack thread`, `fctl slack reply "On it"`), as agents
+read and post in Slack, and one that starts with
 `fctl id-token`, as agents prove who they are (`fctl id-token -a
 https://api.acme.dev --claims`; check one against the dev instance's
 issuer, `http://localhost:8787/oidc/<workspace id>`), `clouds` shows the
@@ -257,8 +259,9 @@ fctl doesn't know. graphql-js runs each query on Linear's own schema
 activity that Linear wouldn't take fails there too. `cargo xtask dev`
 connects the dev workspace to Acme through the redirects a browser follows,
 has Playground take Engineering's tickets and links the dev owner's
-account, unless they are already. The workspace's Linear tab, Playground's
-settings (Tickets) and Settings show them as they would with Linear, and connect
+account, unless they are already. The workspace's Integrations → Linear,
+Playground's settings (Tickets) and Settings show them as they would with
+Linear, and connect
 and link through the stand-in. Acme, and a log of every request, live in
 `.fctl-dev/linear/`.
 
@@ -305,6 +308,41 @@ runs it too. The schema is a copy of the one Linear publishes with its SDK
 the commit it came from, and `npm run update-schema --workspace
 xtask/linear` brings it up to date.
 
+Slack's side runs against a stand-in for Slack too (`xtask/slack`), at
+http://127.0.0.1:8791, which the control plane's Slack app points at
+(`SLACK_URL`). It answers the Web API methods, the install and Sign in
+with Slack that fctl uses, for a made-up Slack workspace, Acme: Dev Owner
+(the dev owner's Slack account), Grace Hopper, a guest, the channels
+#web-team, #incidents, #deploys and #random, a private channel, #secret,
+and one shared with another organization, #partners. `cargo xtask dev`
+connects the dev workspace to Acme through the redirects a browser
+follows, maps #web-team to Playground, makes #incidents readable and
+links the dev owner's account, unless they are already. The stand-in keeps
+what fctl posted there, the messages only one person sees, its views and
+its agent sessions; Acme, and a log of every request, live in
+`.fctl-dev/slack/`. `cargo xtask slack` acts in Acme as people there do:
+it sends the control plane the event, interaction or command Slack would,
+signed with the app's signing secret, and follows what fctl answers in
+the thread:
+
+```sh
+cargo xtask slack mention "write notes.md"      # Dev Owner mentions fctl in #web-team
+cargo xtask slack mention '#incidents' "what broke the deploy?"   # in another channel (quoted: the shell takes # for a comment)
+cargo xtask slack dm "fctl slack thread"        # Dev Owner writes to fctl in its messages
+cargo xtask slack reply "watch 60"              # a reply in the thread of the last request
+cargo xtask slack reply "@fctl can I help?" --as grace   # Grace asks fctl: it asks her to link her account first
+cargo xtask slack answer 0                      # click the first answer to the agent's question
+cargo xtask slack project playground remember   # choose the project, and remember it for the channel
+cargo xtask slack command "write notes.md"      # /fctl in #web-team (home: the Home tab)
+cargo xtask slack stop                          # Slack's stop button, while the agent works
+cargo xtask slack show                          # what fctl did in #web-team (or a thread, by its ts)
+cargo xtask slack uninstall                     # Acme uninstalls fctl's app
+```
+
+Mentions, messages and replies reach fake-claude as a session's task and
+messages do, quoted as Slack's come, so its words work in them; a line
+that starts with `fctl slack` runs as an agent's would.
+
 Notifications work locally too: `http://localhost:5173` is a secure
 context, so turn them on in Settings → Notifications, follow a session and
 give it a task. The dev control plane sends them through your browser's real
@@ -312,8 +350,8 @@ push service, so it needs the internet. A finished turn notifies you unless
 the session's tab is visible; `limit` pauses a session.
 
 `--no-host` skips the host; `--no-vite` serves the built web app from
-wrangler instead; `--smoke` runs one session and a delegation in Linear's
-stand-in, and stops ([Checks](#checks)).
+wrangler instead; `--smoke` runs one session, a delegation in Linear's
+stand-in and a mention in Slack's, and stops ([Checks](#checks)).
 Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/` to start over.
 
 The hourly housekeeping job (`crates/fctl-control/src/housekeeping.rs`:
@@ -479,11 +517,11 @@ cargo xtask dev --smoke    # and CI's other check: a session through the local s
 
 That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
 types, Biome and TypeScript for the web app, Biome for the standalone
-server and the Linear stand-in, Clippy (native and wasm) with warnings as
-errors, `cargo test`, the control plane's tests (in Node, as
+server and the Linear and Slack stand-ins, Clippy (native and wasm) with
+warnings as errors, `cargo test`, the control plane's tests (in Node, as
 [Working on the control plane](#working-on-the-control-plane) says), the
-web app's Vitest suite, the standalone server's and the Linear stand-in's
-tests (`node --test`), fctl's Linear queries against Linear's schema
+web app's Vitest suite, the standalone server's and the stand-ins' tests
+(`node --test`), fctl's Linear queries against Linear's schema
 (`cargo xtask linear check`), and a production build of the web app. It
 comes in three parts: `lint` (formatting, the generated types and
 Clippy), `test` (`cargo test` and the control plane's tests) and `web`
@@ -528,11 +566,16 @@ pause note must name Dev Owner's time zone; Grace's reply must get her
 asked to link her account; a mention of fctl in another issue must start
 a session that answers there; and an issue of a team no project takes
 must get fctl's refusal. The stand-in must have found nothing Linear would
-refuse, or fctl didn't do in time. The smoke test then stops the sessions
+refuse, or fctl didn't do in time. Then, in the Slack stand-in, Dev Owner
+mentions fctl in #web-team, and the smoke test waits until fctl has
+posted the session's card in the thread and, once the agent's turn ended,
+its reply there, and checks that a session of Playground names the thread;
+that stand-in must have found nothing Slack would refuse either. The smoke
+test then stops the sessions
 and everything else. It fails when any step does. CI runs it from a fresh
 checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and
-ports 8787, 8790 and 5173: stop `cargo xtask dev` first.
+ports 8787, 8790, 8791 and 5173: stop `cargo xtask dev` first.
 
 `cargo xtask dev`, with `--smoke` or without, builds the CLI, the host
 and the agent, the Worker (`worker-build --dev`, in `target/worker`, so
@@ -620,6 +663,7 @@ the lockfile, so their directories open none.
 | `crates/fake-claude` | The scripted Claude stand-in |
 | `xtask` | `cargo xtask`: dev, check, gen, serve, deploy, secrets, dist, publish |
 | `xtask/linear` | The Linear stand-in: Linear's sign-in, GraphQL API (on Linear's schema) and webhook deliveries |
+| `xtask/slack` | The Slack stand-in: Slack's Web API, its install and Sign in with Slack, and the events, interactions and commands it signs |
 | `web` | The web app (React, TanStack Router and Query, Tailwind, WebGL) |
 | `deploy/instances` | Instance descriptions for `cargo xtask deploy` |
 | `deploy/standalone` | The control plane without Cloudflare: its server, container image, Compose and Kubernetes examples |

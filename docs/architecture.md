@@ -21,6 +21,7 @@ boundary.
                 │        │   │  that searches sessions                │
                 │        │   ├─ HooksDO (per workspace): webhooks'    │
                 │        │   │  deliveries                            │
+                │        │   ├─ SlackDO: Slack's Socket Mode          │
                 │        │   └─ SessionDO (one per session): events,  │
                 │        │      viewers, message delivery             │
                 │        └──────────────▲─────────────▲───────────────┘
@@ -52,6 +53,7 @@ boundary.
 | `crates/fctl` | The `fctl` binary: CLI for people and agents, plus `fctl host …`. | macOS, Linux |
 | `crates/fake-claude` | A scripted stand-in for `claude` that speaks stream-json. Used by tests and `cargo xtask dev`. | dev, CI |
 | `xtask/linear` | A stand-in for Linear: its sign-in and GraphQL API, answered on Linear's own schema, and the webhook deliveries it signs. Used by `cargo xtask dev`. | dev, CI |
+| `xtask/slack` | A stand-in for Slack: its Web API, its install and Sign in with Slack for a made-up Slack workspace, and the events, interactions and commands it signs. Used by `cargo xtask dev`. | dev, CI |
 | `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `deploy`, `dist`, `publish`). | dev, CI |
 | `web/` | The web app (React, Vite, TypeScript, WebGL), installable on phones and computers. Served by fctl-control. | browser |
 
@@ -956,8 +958,8 @@ nothing about where else the app is installed; a sign-in that names no
 account offers every installation the token sees (at most 20). fctl uses
 the token once and revokes it. What it showed waits ten minutes for the
 admin to choose from (`github_offers`, theirs alone): the workspace's
-GitHub tab lists it, with what the workspace works in there now checked,
-else all of it, and connects what they choose (`POST
+Integrations tab lists it under GitHub, with what the workspace works in
+there now checked, else all of it, and connects what they choose (`POST
 /api/v1/workspaces/{id}/github/offers/{account}`), which must come from the
 offer (`fctl_domain::github::choose`). A connection records who connected
 it and the account they signed in as (`api::github`). Repositories named
@@ -994,11 +996,11 @@ GitHub sends people to the app's setup URL (`…/api/v1/github/installed`)
 after they install the app, with that state, and after they change an
 installation (Redirect on update), without it: there the cookie stands in.
 The GitHub sign-in for the installation GitHub names follows, and the
-browser comes back to the workspace's GitHub tab to choose. A setup URL
-reached without either (the app installed or changed on GitHub itself)
-goes to the GitHub tab of the person's workspace that uses the
-installation, or of the only one they're an admin of, where they connect
-with GitHub.
+browser comes back to the workspace's Integrations tab, under GitHub, to
+choose. A setup URL reached without either (the app installed or changed
+on GitHub itself) goes to that tab of the person's workspace that uses
+the installation, or of the only one they're an admin of, where they
+connect with GitHub.
 
 Signing in to GitHub needs the app's client ID and secret
 (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`), the callback URL
@@ -1022,8 +1024,9 @@ the GitHub App ([Review agents](#review-agents)). Nothing connects it, and
 it signs nobody in: fctl uses it only on repositories a workspace connected
 through the GitHub App, where its installation on the same account (by
 GitHub's id) reaches the repository, so installing it on the account is all
-it takes. The workspace's GitHub tab says where it is on each of the
-workspace's accounts (`GET /api/v1/workspaces/{id}/github/review-app`,
+it takes. The workspace's Integrations tab, under GitHub, says where it
+is on each of the workspace's accounts (`GET
+/api/v1/workspaces/{id}/github/review-app`,
 `fctl workspaces review-app`): installed, missing some of the repositories
 the workspace's projects write to, which it names, or not installed
 (`fctl_domain::review_app::state`). Where GitHub doesn't say, the control
@@ -3417,8 +3420,8 @@ which workspaces install in their Linear workspaces as an agent: Linear
 then lists fctl as a user people assign issues to, which makes it the
 issue's delegate (the person stays its assignee), and mention.
 
-1. **Installing it** (the workspace's **Linear** tab, a project's Tickets
-   tab, `fctl workspaces linear connect`). A workspace's admin signs in to
+1. **Installing it** (the workspace's **Integrations → Linear**, a
+   project's Tickets tab, `fctl workspaces linear connect`). A workspace's admin signs in to
    Linear from fctl, through the app's OAuth client with `actor=app` and
    PKCE (`api::linear`), which takes an admin of the Linear workspace too:
    Linear asks them to install the app and to choose the teams it sees.
@@ -3436,8 +3439,8 @@ issue's delegate (the person stays its assignee), and mention.
    it ends (`crate::linear::mark_revoked`, `workspace_linear.revoked_at`):
    installing the app again, which takes an admin of the Linear workspace,
    connects only the fctl workspace it is installed from, and the others'
-   Linear tabs show theirs revoked until their admins connect it again, so
-   that the Linear workspace's admins can end what they let fctl
+   Integrations → Linear show theirs revoked until their admins connect
+   it again, so that the Linear workspace's admins can end what they let fctl
    workspaces reach, a former admin's own one too. A
    workspace that disconnects a Linear workspace hears nothing more from
    it and reaches none of its tickets, whatever other workspaces do; once
@@ -3462,9 +3465,9 @@ issue's delegate (the person stays its assignee), and mention.
    (`fctl_domain::settings::keep_unsent`). Each move of a ticket
    (step 8) goes to the states of the ticket's own team, whose workflow
    may differ from the others'; `fctl ticket states` lists those of every
-   team, each name once. The workspace's Linear tab lists, for each Linear
-   workspace, the projects that take its tickets among those the person
-   sees. Linear prices a query by how much it asks
+   team, each name once. The workspace's Integrations → Linear lists, for
+   each Linear workspace, the projects that take its tickets among those
+   the person sees. Linear prices a query by how much it asks
    for, whatever it finds, and refuses one of more than 10,000 points, so
    the control plane counts the teams first (up to 250) and then asks for
    their workflows and open projects 50 teams at a time, under 5,000
@@ -3613,6 +3616,445 @@ merge, say, turns fctl's switch for that move off. The project's Tickets
 tab shows the sessions tickets started lately (`GET
 /api/v1/projects/{id}/tickets`), and session lists and pages show each
 session's ticket (`Session::ticket`).
+
+### Slack
+
+People start and steer agents from Slack through fctl's Slack app
+([ADR 0103](adr/0103-workspaces-start-and-steer-agents-from-slack-through-fctls-app.md),
+[Start agents from Slack](slack.md) for people's side): a mention of it
+in a channel, a message in their direct messages with it, `/fctl`, its
+**Send to fctl…** shortcut or its Home tab starts a session as them, and
+the session's card, replies and questions come back to the thread, where
+replies steer it (`crate::slack`). Slack's own boundary is membership: an
+app reads every conversation it is in, every message of a private channel
+it was invited to, and every person's direct messages with it. What an
+agent reaches there is fctl's to narrow, so agents never hold a Slack
+token (step 9).
+
+1. **The app.** An instance has one Slack app: its OAuth client
+   (`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`), which installs it in Slack
+   workspaces and signs people in with Slack, and the way Slack's events,
+   interactions and commands reach the instance: over HTTP, signed with
+   `SLACK_SIGNING_SECRET`, or over Socket Mode, with an app-level token in
+   `SLACK_APP_TOKEN` (step 11, [Self-hosting](self-hosting.md#connect-slack-optional)).
+   app.fctl.sh's is set up the same way, with the Worker's secrets.
+   Admin → Slack (`GET /api/v1/admin/slack`) gives the manifest that
+   creates it, with the instance's name and addresses filled in, as JSON,
+   as YAML, and as a link that opens Slack's form with it
+   (`fctl_domain::slack::manifest`): its bot user, `/fctl`, the **Send to
+   fctl** message shortcut and the **Start an fctl session** global one, a
+   Home tab and messages in Slack's agent view (`agent_view`, with Slack's
+   Tasks tab off), the bot events it hears (`BOT_EVENTS`) and the bot
+   scopes they and its calls need (`fctl_domain::slack::BOT_SCOPES`), and
+   `openid`, `profile` and `email` for Sign in with Slack. Org-wide
+   installs stay off (`org_deploy_enabled`), and so does token rotation,
+   so a bot token lasts until Slack revokes it.
+2. **Installing it** (the workspace's **Integrations** tab under Slack,
+   `/w/<slug>?tab=integrations&integration=slack`; `fctl workspaces slack
+   connect`). A workspace's admin gets a link that works for ten minutes
+   (`POST /api/v1/workspaces/{id}/slack/connect`, a ticket signed with the
+   master key), which signs them in to Slack with OAuth v2 for the bot
+   scopes, the sign-in's `state` kept in a signed cookie (`api::slack`).
+   Slack asks whoever may add apps there to install it, and where its
+   admins approve apps, one of them. Back at `/api/v1/slack/installed`,
+   the control plane trades the code for the bot token (`oauth.v2.access`),
+   refuses an Enterprise Grid org-wide install (step 15), learns the bot's
+   id and the Slack workspace's address and icon (`auth.test`,
+   `team.info`), and keeps the token sealed with the master key, bound to
+   `slack:<team>` (`slack_installations`, one row per Slack workspace),
+   and the fctl workspace's connection, with what it lets people and
+   agents do there (`workspace_slack`, a `SlackSettings` at its
+   defaults). Slack keeps one bot token for an app in a Slack workspace,
+   so every fctl workspace connected to it shares the installation:
+   installing the app again, to connect another fctl workspace, replaces
+   the token for all of them; the admin who installs it links their own
+   Slack account as anyone does (step 3). Slack's `app_uninstalled`, its
+   `tokens_revoked` naming the bot, and any call Slack refuses as
+   unauthorized (`invalid_auth`, `token_revoked`…) mark the installation
+   revoked, forget its token, and end every fctl
+   workspace's connection to it (`crate::slack::mark_revoked`,
+   `workspace_slack.revoked_at`) until an admin connects it again, which
+   installs the app again; the workspace's Slack page says so. A workspace
+   that disconnects a Slack workspace (`DELETE
+   /api/v1/workspaces/{id}/slack/{team}`) forgets its channels there, and
+   nothing from there reaches its sessions any more, nor goes back from
+   them; once no fctl workspace works in a Slack workspace, fctl uninstalls
+   its app there (`apps.uninstall`; the hourly job catches deleted
+   workspaces). Changes are audited (`workspace.slack_connected`,
+   `slack_updated`, `slack_channel_set`, `slack_disconnected`).
+3. **Knowing people.** fctl starts sessions only for people it knows in
+   the Slack workspace, as them: on their Claude subscription, while they
+   may start sessions in the project. People link their Slack account
+   with Sign in with Slack (Settings → Slack, `fctl account slack link`,
+   or the link fctl sends them in Slack the first time they ask, `GET
+   /api/v1/slack/link`): OpenID Connect with `openid profile email` and a
+   nonce, whose ID token, straight from Slack's token endpoint, names them
+   and their Slack workspace (`https://slack.com/user_id`,
+   `https://slack.com/team_id`). D1 keeps who they are there
+   (`slack_accounts`: the Slack workspace's id, name and address, their
+   Slack id, name, address and avatar), and fctl revokes the sign-in's
+   token at once (`auth.revoke`). Linking takes confirming it's you where
+   the instance asks for that (`Sensitive::LinkSlack`), since what the
+   account asks then runs as you: a link opened from elsewhere (Slack, the
+   CLI) goes back to Settings (`?tab=slack&slack=confirm`) to confirm and
+   link again. fctl emails the person once it's linked, when email is set
+   up, and takes up what waited for them there
+   (`crate::slack::inbound::linked`); a browser that came from a request
+   in Slack goes on to the session it started. A person has one Slack
+   account in each Slack workspace, in as many Slack workspaces as they
+   like, and a Slack account is one person's: whoever links it last has
+   it (`user.slack_linked`, `user.slack_unlinked`). An address in Slack
+   says nothing an fctl account has to agree with, since a Slack
+   workspace's admins change people's addresses there, so fctl matches
+   none unless the instance allows it. A self-hosted instance whose people
+   sign in to Slack and fctl through the same provider turns
+   `InstanceSettings::slack_match_email` on (Admin → Slack, `PATCH
+   /api/v1/admin/settings`), and each workspace that wants it
+   `SlackSettings::match_email`, for a Slack workspace. Then someone fctl
+   doesn't know there, and who isn't a guest, a bot or deactivated there,
+   is the active account whose verified address is their Slack address
+   (`users.info`, with `users:read.email`) and that is a member of a
+   workspace that turned it on (`crate::slack::match_email`); fctl keeps
+   the match (`slack_accounts.via` email) until they unlink it, also once
+   matching is turned off. app.fctl.sh knows people only by their link.
+4. **Starting from a channel** (`app_mention`, `crate::slack::inbound`).
+   Slack wants an answer within three seconds, so the control plane
+   answers at once and works after (`ctx.defer`). A request keeps its
+   thread (`slack_threads`, by `<team>:<channel>:<thread_ts>`: new,
+   waiting, started, refused or expired), so that a delivery Slack sends
+   again starts nothing more; a thread reaches one session, and a mention
+   in a thread that has one is a reply to it (step 8). fctl finds the
+   person who wrote it among the people it knows; without them, it asks
+   them, in a message only they see, to link their account, and keeps the
+   request for an hour (`waiting_for` link, the request in `payload` until
+   `expires_at`): once they link it, the session starts. Slack keeps its
+   guests from agent apps, and fctl refuses them, and bots
+   (`users.info`), and channels shared with other organizations (step
+   15). The project is the one the channel maps to, where a connected
+   workspace's admins mapped it (`slack_channels.project_id`: the
+   Integrations tab, `PUT
+   /api/v1/workspaces/{id}/slack/{team}/channels/{channel}`, `fctl
+   workspaces slack map`); else the only one the person may start
+   sessions in; else the one they choose, in a message only they see
+   (buttons for up to five, a menu for more, each named with its workspace
+   where projects of several are offered), for which the request waits as
+   for a link (`waiting_for` project). Beside the choice, a workspace's
+   admin sees "Remember for #channel", which maps the channel to the
+   project they choose (`slack.channel_mapped`). Projects count only in
+   workspaces connected to the Slack workspace that let mentions start
+   sessions (`SlackSettings::channels`), not archived, where the person
+   may start sessions; where the channel maps to projects they can't
+   start sessions in, fctl names those, and where they have no Claude
+   connection for the project's workspace, it asks them to connect one. A
+   request that fails on the way says why where only its person sees it
+   ("fctl couldn't start on this: …", fctl's own errors without more), and
+   waits an hour too: a reply of theirs tries again. Before a thread's
+   session starts, only the person who asked moves it on, a reply of
+   theirs adding to the request: anyone else's message would start it, or
+   choose its project, on that person's subscription, so anyone else who
+   mentions fctl there hears that only they can. Otherwise a new session
+   starts (`crate::starts`, as a schedule's do), as the person, titled
+   after their request, on the branch `fctl/<number>-<title>`, with the
+   project's GitHub access. Its task (`fctl_domain::slack::task`) says
+   who asked where, with the link to their message, then what they asked,
+   as plain text without the mention: mentions as names, links as their
+   words and address. The thread's messages before it follow (of its
+   first 50, read with `conversations.replies`, at most 30,000 characters,
+   the newest kept), each with its author and its time in UTC, as
+   information from the people who wrote them rather than instructions
+   from fctl: the task ends by saying so, and to do what the person asks.
+   Files aren't passed on. The transcript shows the message as Slack's
+   (`UserMessage::slack`, a `SlackMessage`: how it came, who wrote it,
+   where, its link, and how many earlier messages came with it). fctl
+   reacts to the message that asked with 👀, sets the thread's agent
+   session in Slack to processing (step 5), and has SessionDO post the
+   card (step 6).
+5. **Direct messages** (`message.im`). Each thread of someone's direct
+   messages with fctl's app (Slack's agent view) is a session of its own,
+   private to them: a message there starts one as a mention does, where
+   the workspace lets direct messages start sessions
+   (`SlackSettings::direct_messages`), in the project they keep for them
+   (Settings → Slack, `fctl account slack dm-project`,
+   `slack_accounts.dm_project_id`), else the only one, else the one they
+   choose; their next messages in the thread are replies. fctl keeps
+   Slack's agent session of each thread current
+   (`agents.sessions.setStatus`, which Slack shows in channels' threads
+   too): processing while the session waits for a runner, starts or works;
+   suspended while its agent waits for an answer; active once a turn
+   ended, or while it pauses; closed once it stopped, failed or its pull
+   requests merged. While it processes, Slack shows a stop button
+   (`agent_session_stopped`), which interrupts the agent's turn as the
+   person who pressed it, as their stop in fctl would; one from someone
+   fctl knows who may not message the session does nothing. In direct
+   messages, the agent's words also stream into the thread as it writes
+   them (`chat.startStream`, `appendStream`, `stopStream`, one after
+   another through SessionDO's queue), each turn's for at most nine
+   minutes and 11,000 characters, inside Slack's ten and 12,000; past
+   them, or where Slack or the person stopped the stream, the turn's last
+   message comes as a reply, as in a channel, and none follows a stream
+   that said it all.
+6. **What goes back** (`crate::slack::outbound`). A card, in the thread at
+   once, which fctl keeps current in place (`chat.update`): the session's
+   title, linked to it; how it stands, in words (Waiting for a runner,
+   Starting its sandbox, the agent's step, Waiting for your answer,
+   Waiting for a reply, Done once its pull requests merged, Paused until a
+   time, Failed and why, Stopped); its number and whom it runs for; the
+   agent's plan; its pull requests (at most five) with their checks; and
+   **Open in fctl** (`fctl_domain::slack::blocks::card`). SessionDO builds
+   it from the session's summary and the agent's step and todo list as
+   they come (`slack_step`, `slack_plan`), and posts a change at once, but
+   one of the agent's step alone at most every 15 seconds
+   (`crate::slack::outbound::due`): Slack takes about 50 changes a minute
+   in a Slack workspace, which every session there shares. The step says
+   what the agent does as Linear's steps do, without what could hold a
+   secret (`fctl_domain::linear::step`). The plan is Claude Code's todo
+   list, as Slack's `plan` block draws it (at most 20 tasks), or as a list
+   where Slack refuses the block. A card someone deleted comes back as a
+   new one at the next change, and two changes that race post one card
+   (`slack_threads.card_ts`). The agent's last message of each turn goes
+   to the thread as a reply, once (`slack_replied_seq`), in Slack's
+   `markdown` block (in Slack's own markup where it refuses that block),
+   cut at 3,000 characters with a link to the rest in fctl
+   (`fctl_domain::slack::blocks::reply`); the transcript says so
+   (`slack_replied`). A question (`fctl ask`) follows the turn's reply, or
+   goes at once where the agent asks after its turn ended, with a button
+   for each answer (at most six), named for the question
+   (`fctl_q:<session>:<asked_at>`), so that a click on an older one
+   answers nothing and says so to the clicker alone. A click answers as
+   the clicker, as their message, when fctl knows them and they may
+   message the session, and the question then shows who answered what in
+   place of its buttons; anyone else hears why in a message only they
+   see, and someone fctl doesn't know gets the link to link their account.
+   A session that pauses on a usage limit, or fails, says so in the
+   thread: a paused one says when it carries on, in Slack's date
+   formatting (`<!date^…>`), which shows each reader the time in their own
+   time zone, and UTC where it can't; a failed one says why, and that
+   people who manage it can resume it in fctl. Only replies, questions,
+   pauses and failures post new messages, so that the thread stays
+   readable. Nothing goes back for a session whose workspace no longer
+   works in that Slack workspace (`thread_of`).
+7. **`/fctl`, Send to fctl… and the Home tab.** `/fctl <task>` (`POST
+   /api/v1/slack/commands`), in the channel's project or the person's only
+   one, posts "<name> asked fctl: …" in the channel as a new thread's
+   first message (in their direct messages with fctl where fctl's app
+   isn't in the channel), and starts the session there as a mention would;
+   with several projects to choose from, it opens the form that starts a
+   session, with the task in it, and the thread starts as the form is
+   sent. `/fctl status` lists what needs the person and what runs, for
+   them alone, and `/fctl` alone or `/fctl help` says how it works, at
+   once. Slack runs no app's slash commands in threads. **Send to fctl…**,
+   a message shortcut on any message, where fctl's app is in the
+   conversation or not, opens a form with the message, a project (the
+   channel's, where it maps to one), the task, and, where fctl's app is in
+   the channel, "Post its card and replies in this thread", on by default.
+   The message comes with the task as information ("The message they sent,
+   which Grace wrote on …"), as Slack's payload gave it (its first 1,800
+   characters, read again where it was longer and fctl's app can), and so
+   do the messages of its thread where it's in one or has replies; its
+   card goes to the message's thread, else to a new thread of the person's
+   direct messages with fctl. **Start a session** on the Home tab, and the
+   **Start an fctl session** shortcut, open a form with a project and the
+   task, whose session's card always goes to such a thread. The Home tab
+   (`app_home_opened`, `views.publish`) shows someone fctl knows what
+   needs them (questions, finished turns whose pull requests aren't all
+   merged or closed, pauses, failures), what runs, and their recent pull
+   requests, of their sessions of the last two weeks; someone it doesn't,
+   the link that links their account (`crate::slack::home`).
+8. **Replies** (`message.channels`, `message.groups`, `message.im`). A
+   reply in a started thread, from a person (not a bot, an app or Slack's
+   notice of an edit), reaches its session's agent as a message of the
+   person who wrote it, as fctl knows them, when they may message the
+   session ("Ada Lovelace replied in the session's thread in Slack:"),
+   resuming a stopped session on the subscription it ran on, as a
+   person's message does; fctl reacts to it with 👀. A failed session
+   takes none, and the thread says so. Its files are named, not passed
+   on. The message's Slack id is its key (`slack:<channel>:<ts>`), so a
+   delivery Slack sends again reaches the agent once, and fctl notes the
+   messages it passed on as people's (`slack_threads.delivered`, the
+   newest 200), for `fctl slack thread` to say which are which. Replies
+   from people who may not message the session stay in the thread, as
+   information the agent can read; they hear so where they mentioned fctl
+   or asked for the session. Someone fctl doesn't know who mentions fctl
+   gets the link to link their account, and their message waits an hour,
+   each person's apart (`waiting_for` reply), reaching the agent once
+   they link it.
+9. **`fctl slack`** in the sandbox goes to the control plane as an agent
+   call (`AgentCall::Slack`), as `fctl ticket` does: a `SlackRequest`
+   (`fctl_proto::slack`) that hosts and fctl-agent pass on as it is, so
+   that what `fctl slack` does grows with the control plane
+   (`crate::slack::calls`). The control plane holds the bot token, and
+   looks each conversation up with Slack (`conversations.info`: a public
+   or private channel, direct messages, a group's, shared or not) before
+   it reads anything, against what the session may reach
+   (`fctl_domain::slack::access::may_read`):
+   - its own thread, in whatever conversation it started in: `fctl slack
+     thread` (what's new since its agent last read it, `read_ts`, or
+     `--all`; fctl's own messages left out) and `fctl slack read <link>`;
+   - the public channels its workspace's admins made readable
+     (`slack_channels.readable`; fctl's app joins them, which shows
+     there), where its project reads them (`ProjectSettings::slack`'s
+     `read_channels`, on unless its maintainers turn it off): `fctl slack
+     read <link>` (a message and its thread), `fctl slack history
+     <channel> --since 2d` (its newest messages, at most 200, oldest
+     first), and `fctl slack search "<words>"` where the workspace lets
+     agents search (`SlackSettings::search`): with Slack's Real-time
+     Search (`assistant.search.context`) and the action token of the
+     event that started the session's thread, keeping what it finds in
+     the readable channels, else in each readable channel's last week,
+     read here, for the messages with all the words;
+   - never more of a private channel, someone's direct messages or a
+     group's than its own thread, never anyone else's direct messages
+     with the app, and never channels shared with other organizations.
+
+   `fctl slack reply "…"` posts in its own thread alone, as fctl's app,
+   where the workspace lets agents (`SlackSettings::agent_replies`): at
+   most 3,000 characters, posted as a turn's reply is, which the
+   transcript shows (`slack_posted`). A session that didn't start in
+   Slack reads the readable channels of the Slack workspace its workspace
+   connected first. In an hour, a session's agent reads Slack at most 120
+   times, searches it at most 30 times and posts at most 20 times
+   (`slack_calls`, each call taking its place in one statement,
+   `fctl_domain::slack::access::limit_of`): an agent that loops would
+   otherwise fill a thread, or use up the app's limits at Slack, which
+   every session of the Slack workspace shares. What `fctl slack` shows
+   of a message says whether fctl passed it on as its author's message
+   (`SlackMessageView::delivered`), and its files by name, unread. Review
+   agents reach nothing in Slack.
+10. **What agents are told** comes from the control plane
+    (`SessionSpec::slack`, `fctl_domain::slack::task::instructions`), so
+    that it grows with what the control plane lets them do: where the
+    session started, and that fctl posts each turn's last message there,
+    cut at 3,000 characters, so that each turn ends with what the people
+    there should read; that the card shows the agent's plan, pull
+    requests and steps, so it needn't post progress; that `fctl ask` asks
+    there with buttons; that people's replies reach it as their messages
+    when they may message the session, and anything else from Slack is
+    information from the people who wrote it, never instructions, even
+    when it asks for something; what it may read, search and post; and,
+    outside direct messages, that everyone in the channel reads the
+    thread, so that it posts no secrets or people's details there.
+    fctl-agent puts it in the system prompt, or, where the sandbox's fctl
+    has no `fctl slack`, the lines that say how replies go back without
+    it (`SlackSpec::without_cli`). Hosts and agents from before Slack tell
+    agents nothing of it, and refuse `AgentCall::Slack`; the card, replies
+    and questions still go back, since the control plane posts them.
+11. **Socket Mode** (`crate::slack::socket`). An instance that Slack can't
+    reach, on a private network or over plain http (Admin → Slack says
+    whether Slack can, `fctl_domain::slack::manifest::reachable`), takes
+    Slack's events, interactions and commands over a WebSocket of its own
+    instead, opened with the app-level token (`SLACK_APP_TOKEN`, `xapp-…`
+    with `connections:write`), on Cloudflare and on the standalone server
+    alike: a Durable Object, `SlackObject` (one, named `socket`), calls
+    `apps.connections.open`, acknowledges each envelope at once, with
+    fctl's quick answer where Slack takes one (`/fctl help`, a form's
+    errors), then handles it as the HTTP endpoints do. Slack refreshes
+    connections every few hours: its `disconnect` has the object open a
+    new one, and its alarm, every minute, opens one where none is open or
+    none has heard from Slack for ten minutes. The hourly job and the
+    pages that show Slack kick it, and it keeps itself going from then on;
+    Admin → Slack shows whether it's connected, since when, and what went
+    wrong last. With the token set, or an address Slack can't reach,
+    Admin → Slack's manifest turns Socket Mode on and leaves the request
+    URLs out, and Slack sends nothing over HTTP.
+12. **Notifications in Slack** ("Tell me in Slack",
+    `NotificationSettings::slack`: Settings → Notifications, `fctl
+    notifications set --slack on`). NotifyDO sends a person's
+    notifications, as it gathers them for their browsers, also as direct
+    messages from fctl's app (`crate::slack::home::notify`), in the Slack
+    workspace of each session's workspace, where they linked their
+    account and that workspace lets notifications go there
+    (`SlackSettings::notifications`); `GET /api/v1/me/notifications` says
+    where they go (`Notifications::slack`). One about a session says what
+    happened (its turn ended, it asks, paused or failed), with the agent's
+    question and a button for each answer (at most five) where it asks,
+    which answers as the clicker; several come as one list. A
+    notification's thread reaches its session (a `slack_threads` row with
+    `updates` off, which gets no card or replies): a reply there is the
+    person's message, as a reply in a session's own thread is.
+13. **Project events in a channel** (`ProjectSettings::slack`'s `events`,
+    the project's settings under Slack). A project posts the events it
+    chooses among webhooks' (`session.ready_for_review` and
+    `session.failed` unless its maintainers choose others) to a channel
+    through fctl's app, where its workspace lets projects
+    (`SlackSettings::project_events`): `crate::hooks::emit` hands each of
+    a project's events to `crate::slack::home::project_event`, whatever
+    the workspace's webhooks, which posts a line of what happened, the
+    session's title and **Open in fctl**. The control plane checks the
+    channel as it is saved (`crate::slack::check_events`): a channel of a
+    Slack workspace the project's workspace works in, not shared with
+    another organization, that fctl's app is in; it joins a public one,
+    and a private one's members invite it first.
+14. **Transcripts** (`SlackSettings::transcripts`). What agents read with
+    `fctl slack`, and the messages that came from Slack, stay in a
+    session's transcript as anything else there does (`keep`, the
+    default). A workspace that chooses `drop` has fctl drop what Slack's
+    messages said once a session ends (it stopped, failed or was
+    archived): the hourly job (`crate::slack::drop_ended`, 25 sessions a
+    run, ten minutes after they ended) asks each one's SessionDO
+    (`/slack-drop`), which replaces the text of each message that came
+    from Slack with who wrote it where and its link
+    (`SlackMessage::dropped`), and the output of each `fctl slack` call
+    with a note that it was dropped; its search index takes the
+    transcript again, and D1's copy of the first message goes too
+    (`sessions.prompt`). A session that carries on is dropped again once
+    it ends. Claude's own conversation keeps what the agent read: in its
+    sandbox while its runner keeps that, and in the session's snapshot
+    ([Session snapshots](#session-snapshots)) until the snapshot expires
+    or the session is deleted. What the agent wrote, its replies in Slack
+    included, stays.
+15. **What fctl doesn't take yet.** An Enterprise Grid org-wide install:
+    the install refuses it (the workspace's Slack page says to install the
+    app in one Slack workspace), and events and commands from one start
+    nothing. Channels shared with other organizations (Slack Connect: the
+    event's `is_ext_shared_channel`, and `conversations.info`'s
+    `is_ext_shared`, `is_shared`, `is_org_shared` and
+    `is_pending_ext_shared`): a mention there gets an answer that its
+    author alone sees, saying so, and fctl maps, reads and posts in none
+    of them. Guests of a Slack workspace, whom Slack keeps from agent
+    apps: their requests are refused, and no address matches them.
+16. **Rate limits.** Slack limits each method in each Slack workspace and
+    app. A call it limits (`429`, `ratelimited`) fails rather than waits:
+    `fctl slack` tells the agent when to try again, and the card catches
+    up at its next change. fctl keeps its own use small: one card per
+    thread, changed in place, one reply per turn, and the agent's step at
+    most every 15 seconds. app.fctl.sh's app is distributed outside the
+    Slack Marketplace until Slack lists it there, so Slack lets it read
+    threads and channels (`conversations.replies`,
+    `conversations.history`) once a minute in each Slack workspace, 15
+    messages at a time, and keeps its Real-time Search from it: there, a
+    task carries at most 15 of a thread's messages, `fctl slack` reads as
+    often, and search reads the readable channels instead. A self-hosted
+    instance's app is its organization's own, an internal app to Slack,
+    with Slack's full limits and Real-time Search.
+17. **Rules for all of it.** What Slack sends over HTTP counts only with
+    the signing secret's signature (`X-Slack-Signature`: `v0=` and the
+    HMAC-SHA256 of `v0:<timestamp>:<body>`, checked in constant time) and
+    an `X-Slack-Request-Timestamp` within five minutes, up to 512 KB
+    (`fctl_domain::slack::signed`); without the secret, the endpoints
+    answer 501. Agents never hold a Slack token. What fctl posts goes with
+    `unfurl_links` and `unfurl_media` off, so that no link an agent writes
+    previews, and what agents wrote goes with Slack's special mentions
+    taken apart (`<!channel>`, `<!here>`, `<!everyone>`, user groups and
+    people, and `@channel`, `@here` and `@everyone` written out:
+    `fctl_domain::slack::text::defuse` puts a word joiner after the `<` or
+    the `@`), in text that Slack reads `verbatim`, so that it notifies
+    nobody and Slack makes no links or mentions of plain words. What fctl
+    keeps of Slack: each installation (the Slack workspace's id, name,
+    address and icon, the bot's ids and scopes, the sealed token, who
+    installed it), each connection's settings and who connected it,
+    people's Slack accounts, the channels admins chose (ids and names),
+    which thread reaches which session (with the ids of its card's and
+    question's messages and of the messages fctl passed on), a request
+    waiting for its person, with its text, for an hour, what agents did in
+    Slack in the last hour (`slack_calls`, without what), and what reaches
+    transcripts: the messages fctl passed on, a task's earlier messages,
+    and what agents read, which a workspace can drop once sessions end
+    (step 14). Threads that never started a session are forgotten after a
+    month. Sessions that started in Slack name their thread
+    (`Session::slack`), and webhooks say they started there (`started_by`
+    `slack`, `WebhookOrigin::Slack`, which receivers from before it read
+    as `other`), with the thread (`HookSession::slack`), as identity tokens
+    do (`started_by` `slack`).
 
 ### Commits
 
@@ -4390,7 +4832,8 @@ provider; on iPhone and iPad they reach fctl on the Home Screen.
    session right now (a viewer whose tab is visible: the web app sends
    `visibility`) and whoever interrupted the turn, and asks D1 for the other
    followers who can still see the session, want this kind of news
-   (`notification_settings`) and have a browser for it. A finished turn
+   (`notification_settings`) and have a browser for it, or a Slack account
+   and "Tell me in Slack" (step 5). A finished turn
    carries the start of the agent's last message.
 2. It hands the news to each one's NotifyDO, which waits ten seconds for
    more, so that a burst goes out as one, and sends at most one notification
@@ -4406,6 +4849,11 @@ provider; on iPhone and iPad they reach fctl on the Home Screen.
 4. The service worker (`web/public/sw.js`) shows it. A click opens the
    session, in a window of the app that is already open when there is one;
    a digest replaces the notifications about the sessions it sums up.
+5. For people who chose "Tell me in Slack", NotifyDO sends the same news
+   as direct messages from fctl's Slack app too, where they linked their
+   Slack account: followers with a linked account and that choice count
+   as having somewhere to hear, without a browser
+   ([Slack](#slack), step 12).
 
 A browser's subscription (`push_subscriptions`) belongs to the sign-in that
 made it: signing out, revoking that sign-in or its expiry deletes it, and so
@@ -4430,7 +4878,7 @@ what happens to as it happens, signed with each one's secret
    also those a later version adds), a workspace's webhook's projects
    (empty: all, also later ones), whose sessions' events it wants
    (`started_by`: people and tools, schedules, an autopilot, tickets,
-   service accounts; empty: any), whether it's on, and a secret of 32 random bytes
+   service accounts, Slack; empty: any), whether it's on, and a secret of 32 random bytes
    (`whsec_` and their base64, as Standard Webhooks' libraries take it),
    sealed with the master key (`webhook:<id>`). A workspace has at most
    20 (`fctl_domain::hooks::MAX_WEBHOOKS`). Its address is checked

@@ -66,6 +66,7 @@ pub mod settings;
 pub mod sign_in;
 pub mod sigv4;
 pub mod size;
+pub mod slack;
 pub mod slugs;
 pub mod snapshots;
 pub mod threads;

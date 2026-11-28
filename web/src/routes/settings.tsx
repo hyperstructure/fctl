@@ -42,6 +42,8 @@ import { AppLog } from "@/components/settings/app-log";
 import { SettingsIcon } from "@/components/settings/icon";
 import { type NavEntry, type NavLinkProps, SettingsList, SettingsNav } from "@/components/settings/nav";
 import { ProviderMark } from "@/components/sign-in/provider";
+import { SlackAccounts, useMySlack } from "@/components/slack/accounts";
+import { SlackNotifications } from "@/components/slack/notifications";
 import { AccessTokens } from "@/components/tokens";
 import { ConfirmWithCode } from "@/components/two-factor/confirm-code";
 import { RecoveryCodes } from "@/components/two-factor/recovery-codes";
@@ -100,6 +102,7 @@ import {
 } from "@/lib/settings";
 import { forgetSidebar } from "@/lib/sidebar";
 import { domainOf, domainsWords, GOOGLE, providers, ruleFor, says, startHref } from "@/lib/sign-in";
+import { type SlackOutcome, slackGist } from "@/lib/slack";
 import { useTheme } from "@/lib/theme";
 import { useTickAt } from "@/lib/tick";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
@@ -122,8 +125,9 @@ export function SettingsPage() {
   const hash = useLocation({ select: (l) => l.hash });
   const { data: instance } = useInstance();
   if (!me) return null;
-  // Linear's page, where the instance has a Linear app.
-  const has = (t: SettingsTab) => t !== "linear" || !!instance?.features.linear;
+  // Linear's page, where the instance has a Linear app; Slack's, where it has a Slack app.
+  const has = (t: SettingsTab) =>
+    (t !== "linear" || !!instance?.features.linear) && (t !== "slack" || !!instance?.features.slack);
   const asked = askedTab(search, hash);
   const tab = asked && has(asked) ? asked : undefined;
   return (
@@ -173,7 +177,7 @@ function SettingsBody({
 }: {
   tab: SettingsTab;
   me: G.Me;
-  search: SettingsSearch & { linear?: LinearOutcome };
+  search: SettingsSearch & { linear?: LinearOutcome; slack?: SlackOutcome; team?: string; thread?: string };
 }) {
   switch (tab) {
     case "profile":
@@ -186,6 +190,8 @@ function SettingsBody({
       return <Claude me={me} />;
     case "linear":
       return <LinearAccounts returned={search.linear} />;
+    case "slack":
+      return <SlackAccounts returned={{ slack: search.slack, team: search.team, thread: search.thread }} />;
     case "notifications":
       return <Notifications me={me} />;
     case "appearance":
@@ -300,6 +306,7 @@ function PageList({
 function useGists(me: G.Me, has: (t: SettingsTab) => boolean): Partial<Record<SettingsTab, Gist>> {
   const workspaces = useWorkspaces().data?.workspaces;
   const linear = useQuery({ queryKey: keys.myLinear, queryFn: api.myLinear, enabled: has("linear") });
+  const slack = useMySlack(has("slack"));
   const tokens = useQuery({ queryKey: keys.tokens, queryFn: api.tokens });
   const notifications = useQuery({ queryKey: keys.notifications, queryFn: api.notifications });
   const [theme] = useTheme();
@@ -310,6 +317,7 @@ function useGists(me: G.Me, has: (t: SettingsTab) => boolean): Partial<Record<Se
     workspaces: workspacesGist(workspaces),
     claude: claudeGist(me.claude),
     linear: linearGist(linear.data?.accounts),
+    slack: slackGist(slack.data?.accounts),
     notifications: notifications.data && {
       text: here ? "On in this browser" : "Off in this browser",
     },
@@ -1036,7 +1044,11 @@ function Notifications({ me }: { me: G.Me }) {
   return (
     <Section
       title="Notifications"
-      description="Sessions you follow notify you when they wait for your reply, pause on a usage limit or fail. You follow the sessions you start; follow others from their page."
+      description={
+        n?.slack
+          ? "Sessions you follow notify you when they wait for your reply, pause on a usage limit or fail: in your browsers, and in Slack if you choose. You follow the sessions you start; follow others from their page."
+          : "Sessions you follow notify you when they wait for your reply, pause on a usage limit or fail. You follow the sessions you start; follow others from their page."
+      }
     >
       {!n ? (
         <Skeleton className="h-28 w-full" />
@@ -1109,6 +1121,8 @@ function Notifications({ me }: { me: G.Me }) {
               )}
             </div>
           )}
+
+          <SlackNotifications n={n} onChange={change} />
 
           <div>
             <h3 className="text-[13.5px] font-medium text-ink">Notify me when a session I follow</h3>

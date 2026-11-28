@@ -35,6 +35,7 @@ const WHO: Record<G.WebhookOrigin, string | undefined> = {
   autopilot: "an autopilot",
   ticket: "tickets",
   service_account: "service accounts",
+  slack: "people in Slack",
   other: undefined,
 };
 
@@ -173,7 +174,7 @@ export function presetOf(events: readonly string[]): Preset | undefined {
   return PRESETS.find((p) => p.events.length === events.length && p.events.every((e) => events.includes(e)));
 }
 
-/** Sessions start from people, schedules, an autopilot or tickets: how the form names each. */
+/** Sessions start from people, schedules, an autopilot, tickets, service accounts or Slack: how the form names each. */
 export const ORIGINS: { value: G.WebhookOrigin; label: string; line: string }[] = [
   { value: "person", label: "People and tools", line: "Started here, with the CLI or an access token" },
   { value: "schedule", label: "Schedules", line: "At their times, on events, or run now" },
@@ -184,6 +185,7 @@ export const ORIGINS: { value: G.WebhookOrigin; label: string; line: string }[] 
     label: "Service accounts",
     line: "Started for people by a program of the workspace's, such as its portal",
   },
+  { value: "slack", label: "Slack", line: "Asked of fctl's app in Slack: mentions, direct messages, /fctl" },
 ];
 
 /**

@@ -149,6 +149,30 @@ mod tests {
             .then(|| format!("{} has no heading #{anchor}", file.display()))
     }
 
+    /// The self-hosting guide shows the Slack app's manifest as fctl makes
+    /// it (`fctl_domain::slack::manifest`), for an instance named `fctl` at
+    /// `https://fctl.acme.dev`: a change to one is a change to the other.
+    #[test]
+    fn the_guides_slack_manifest_is_fctls() {
+        use fctl_domain::slack::manifest;
+        let guide = std::fs::read_to_string(root().join("docs/self-hosting.md")).unwrap();
+        let block: String = guide
+            .split("```yaml\n")
+            .find(|b| b.contains("display_information:") && b.contains("slash_commands:"))
+            .and_then(|b| b.split("```").next())
+            .unwrap()
+            .lines()
+            .map(|l| l.strip_prefix("   ").unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let made = manifest::yaml(&manifest::manifest("fctl", "https://fctl.acme.dev", false));
+        assert_eq!(
+            block.trim_end(),
+            made.trim_end(),
+            "docs/self-hosting.md's Slack manifest differs from fctl's: put `fctl admin slack --manifest yaml`'s there"
+        );
+    }
+
     #[test]
     fn every_link_in_the_docs_leads_somewhere() {
         let root = root();

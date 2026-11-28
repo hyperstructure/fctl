@@ -195,6 +195,20 @@ impl NotifyObject {
                 Ok(_) => self.set_meta("last_sent", &now.to_string()),
                 Err(e) => worker::console_error!("notify: sending failed: {}", e.0.message),
             }
+            // And in Slack, for those who chose "Tell me in Slack".
+            let slack = async {
+                let db = self.env.d1("DB")?;
+                if !crate::notify::settings(&db, &user).await?.slack {
+                    return Ok(false);
+                }
+                crate::slack::home::notify(&self.env, &user, &current).await
+            }
+            .await;
+            match slack {
+                Ok(true) => self.set_meta("last_sent", &now.to_string()),
+                Ok(false) => {}
+                Err(e) => worker::console_error!("notify: Slack failed: {}", e.0.message),
+            }
         }
         // Forget what went out, but keep what arrived while it did: a newer
         // event for a session has a later time.

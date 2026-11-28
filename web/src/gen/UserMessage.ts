@@ -6,6 +6,7 @@ import type { DeliveryId } from "./DeliveryId";
 import type { FollowUp } from "./FollowUp";
 import type { MessageSource } from "./MessageSource";
 import type { PassedOnReview } from "./PassedOnReview";
+import type { SlackMessage } from "./SlackMessage";
 import type { TicketMessage } from "./TicketMessage";
 import type { UserRef } from "./UserRef";
 
@@ -41,6 +42,13 @@ review?: PassedOnReview,
  * message's text.
  */
 ticket?: TicketMessage, 
+/**
+ * For a message that came from Slack (a mention of fctl's app, a
+ * direct message to it, a reply in the session's thread, an answer
+ * clicked there): who wrote what where, which the message tells the
+ * agent. Clients from before it show the message's text.
+ */
+slack?: SlackMessage, 
 /**
  * For a message an autopilot sent one of its sessions: the autopilot,
  * which wrote it as its owner, the message's author. Clients from

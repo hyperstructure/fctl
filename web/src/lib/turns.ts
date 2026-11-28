@@ -12,6 +12,7 @@ import { wokeLine } from "./autopilot";
 import type { Json } from "./claude-types";
 import { parts as followUpParts, happenedText, pullRef } from "./follow-ups";
 import { changed, type Lines, type Part, shownPath } from "./runs";
+import { placeName } from "./slack";
 import type { Item, Step, Tool } from "./transcript";
 
 type Ask = Extract<Item, { kind: "user" }>;
@@ -234,6 +235,14 @@ export function turnTitle(turn: Turn, first: boolean, hasMoreBefore: boolean): s
     const what = event === "delegated" ? ticket.title : body && firstLine(body);
     return what ? `${ticket.key}: ${what}` : ticket.key;
   }
+  // From Slack: what they wrote there, without the mention it starts with, else where they wrote it.
+  if (ask.slack) {
+    const said = ask.slack.body && firstLine(ask.slack.body.replace(/^@\S+\s+/, ""));
+    return (
+      said ||
+      (ask.slack.place === "dm" ? "A direct message in Slack" : `A message in ${placeName(ask.slack)}`)
+    );
+  }
   if (ask.followUp) {
     const f = ask.followUp;
     const { wrote, happened } = followUpParts(f);
@@ -300,7 +309,9 @@ export function turnMarkdown(
   const ask = turn.ask;
   if (ask) {
     out.push(`**${ask.author?.name ?? "fctl"}** · ${when(ask.ts)}`);
-    const text = ask.followUp || ask.ticket || ask.review ? title : ask.text.trim();
+    const text =
+      ask.slack?.body?.trim() ||
+      (ask.followUp || ask.ticket || ask.slack || ask.review ? title : ask.text.trim());
     if (text)
       out.push(
         text

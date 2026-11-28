@@ -320,6 +320,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "passkey_challenges",
         "workspace_members",
         "linear_accounts",
+        "slack_accounts",
         "service_account_answers",
         "user_emails",
         "user_avatars",
@@ -742,6 +743,15 @@ async fn start(ctx: &Ctx, user: &UserRow, slot: Slot) -> AppResult<Export> {
         rows(
             ctx,
             "SELECT organization_name, url_key, linear_user_id, name, email, avatar_url, linked_at FROM linear_accounts WHERE user_id = ? ORDER BY linked_at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "slack_accounts".into(),
+        rows(
+            ctx,
+            "SELECT team_name, team_domain, slack_user_id, name, email, avatar_url, via, linked_at FROM slack_accounts WHERE user_id = ? ORDER BY linked_at",
             &me(),
         )
         .await?,

@@ -129,6 +129,18 @@ pub struct Features {
     #[serde(default = "yes")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub service_account_consent: bool,
+    /// The instance has a Slack app (`SLACK_CLIENT_ID` and its secret):
+    /// workspaces connect Slack workspaces, where people start and steer
+    /// agents. Absent from control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub slack: bool,
+    /// Slack's events reach it (`SLACK_SIGNING_SECRET`, or `SLACK_APP_TOKEN`
+    /// for Socket Mode): what people ask fctl's app in Slack starts
+    /// sessions.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub slack_events: bool,
 }
 
 fn yes() -> bool {
@@ -1780,6 +1792,13 @@ pub struct InstanceSettings {
     /// trouble at Claude doesn't: [`DEFAULT_CLAUDE_REFUSALS`] by default,
     /// 1 to [`MAX_CLAUDE_REFUSALS`].
     pub claude_refusals: u32,
+    /// Workspaces connected to a Slack workspace may know people by their
+    /// verified address in Slack, where they haven't linked their Slack
+    /// account (`slack::SlackSettings::match_email`), for organizations
+    /// whose people sign in to Slack and fctl through the same provider.
+    /// Off by default: an address in Slack says nothing an fctl account
+    /// has to agree with.
+    pub slack_match_email: bool,
     /// A browser stays signed in at most this many hours after its sign-in,
     /// however much it's used; then its person signs in again, through
     /// their domain's provider where one is required, which checks they
@@ -2112,6 +2131,7 @@ impl Default for InstanceSettings {
             claude_limit_pauses: true,
             claude_instance_view: false,
             claude_refusals: DEFAULT_CLAUDE_REFUSALS,
+            slack_match_email: false,
             browser_max_hours: 0,
             browser_idle_minutes: DEFAULT_BROWSER_IDLE_MINUTES,
             cli_max_days: 0,
@@ -2151,6 +2171,7 @@ pub struct UpdateInstanceSettingsRequest {
     pub claude_instance_view: Option<bool>,
     /// 1 to [`MAX_CLAUDE_REFUSALS`].
     pub claude_refusals: Option<u32>,
+    pub slack_match_email: Option<bool>,
     /// 0 to [`MAX_BROWSER_MAX_HOURS`]. Saving a session policy ends at once
     /// the sign-ins and access tokens it doesn't let last
     /// ([`SessionPolicyPreview`]).
@@ -5147,6 +5168,16 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(type = "TicketRequest"))]
         request: serde_json::Value,
     },
+    /// Reads or posts in Slack (`fctl slack`): a
+    /// [`crate::slack::SlackRequest`], which hosts and fctl-agent pass on as
+    /// it is, so that what `fctl slack` does grows with the control plane
+    /// and the sandbox's fctl. The control plane keeps it to the session's
+    /// own thread and the channels its workspace made readable. Hosts and
+    /// control planes from before Slack refuse it.
+    Slack {
+        #[cfg_attr(feature = "ts", ts(type = "SlackRequest"))]
+        request: serde_json::Value,
+    },
     /// A request to the REST API, from an autopilot's own session (its
     /// sandbox's `fctl`, which has no token): the control plane answers it
     /// as the autopilot's owner, within what the autopilot may do
@@ -5273,6 +5304,12 @@ pub enum AgentAnswer {
     /// [`crate::tickets::TicketAnswer`], passed on as it is.
     Ticket {
         #[cfg_attr(feature = "ts", ts(type = "TicketAnswer"))]
+        answer: serde_json::Value,
+    },
+    /// Slack's answer to a [`AgentCall::Slack`]: a
+    /// [`crate::slack::SlackAnswer`], passed on as it is.
+    Slack {
+        #[cfg_attr(feature = "ts", ts(type = "SlackAnswer"))]
         answer: serde_json::Value,
     },
     /// The API's answer to an [`AgentCall::Api`]: its HTTP status, and its
@@ -5786,6 +5823,10 @@ pub struct NotificationSettings {
     pub failed: bool,
     /// Starting or resuming a session follows it.
     pub follow_started: bool,
+    /// They hear of it from fctl's app in Slack too ("Tell me in Slack"),
+    /// in the Slack workspace the session's workspace works in, where they
+    /// linked their account and its admins let notifications go there.
+    pub slack: bool,
 }
 
 impl Default for NotificationSettings {
@@ -5795,6 +5836,7 @@ impl Default for NotificationSettings {
             paused: true,
             failed: true,
             follow_started: true,
+            slack: false,
         }
     }
 }
@@ -5826,6 +5868,16 @@ pub struct Notifications {
     /// The instance's VAPID public key (base64url), for
     /// `PushManager.subscribe`. Absent when it cannot send notifications.
     pub public_key: Option<String>,
+    /// Where "Tell me in Slack" sends them: your Slack accounts in the
+    /// Slack workspaces your workspaces work in, and whether those
+    /// workspaces let notifications go there. Absent where the instance has
+    /// no Slack app, and from control planes before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(
+        feature = "ts",
+        ts(as = "Option<Vec<crate::slack::SlackNotifyPlace>>", optional)
+    )]
+    pub slack: Vec<crate::slack::SlackNotifyPlace>,
 }
 
 /// `PATCH /api/v1/me/notifications`: the settings to change.
@@ -5837,6 +5889,7 @@ pub struct UpdateNotificationsRequest {
     pub paused: Option<bool>,
     pub failed: Option<bool>,
     pub follow_started: Option<bool>,
+    pub slack: Option<bool>,
 }
 
 /// A browser's keys for encrypting notifications to it, from

@@ -8,6 +8,7 @@ import { identityGist } from "./identity";
 import { imageSource } from "./images";
 import { effortLabel, modelLabel } from "./models";
 import { runnersGist } from "./pools";
+import { projectSlackGist } from "./slack";
 import { TRACKERS, trackerOf } from "./tickets";
 
 /** The tabs under the project's header, in their order: what its agents do, who and what it has, its settings. */
@@ -29,6 +30,7 @@ export const SETTINGS_PAGES = [
   "agents",
   "pull-requests",
   "tickets",
+  "slack",
   "runners",
   "sandbox",
   "secrets",
@@ -61,9 +63,15 @@ export const manages = (role?: G.ProjectRole) => role === "owner" || role === "m
 /** Pages everyone in the project reads: where its agents track their work. */
 const OPEN_PAGES: readonly ProjectSettingsPage[] = ["tickets"];
 
-/** The pages of Settings someone in the project sees, in their order. */
-export function settingsPagesFor(role?: G.ProjectRole): ProjectSettingsPage[] {
-  return SETTINGS_PAGES.filter((p) => manages(role) || OPEN_PAGES.includes(p));
+/**
+ * The pages of Settings someone in the project sees, in their order: of those the instance has
+ * (`has`: Slack's only where it has a Slack app).
+ */
+export function settingsPagesFor(
+  role?: G.ProjectRole,
+  has: (page: ProjectSettingsPage) => boolean = () => true,
+): ProjectSettingsPage[] {
+  return SETTINGS_PAGES.filter((p) => has(p) && (manages(role) || OPEN_PAGES.includes(p)));
 }
 
 export interface SettingsEntry {
@@ -72,8 +80,8 @@ export interface SettingsEntry {
 }
 
 /**
- * Settings' pages in their groups: the project, how its agents work, where they run and what they
- * reach, what it tells other tools.
+ * Settings' pages in their groups: the project, how its agents work (with the tools they read and
+ * write: tickets, Slack), where they run and what they reach, what it tells other tools.
  */
 export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
   [{ page: "general", label: "General" }],
@@ -81,6 +89,7 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
     { page: "agents", label: "Agents" },
     { page: "pull-requests", label: "Pull requests" },
     { page: "tickets", label: "Tickets" },
+    { page: "slack", label: "Slack" },
   ],
   [
     { page: "runners", label: "Runners" },
@@ -193,6 +202,7 @@ export function settingsGists(
     agents: agentsGist(s),
     "pull-requests": pullRequestsGist(s),
     tickets: ticketsGist(s),
+    slack: projectSlackGist(s),
     runners: runnersGist(s),
     sandbox: sandboxGist(s),
     identity: identityGist(s),

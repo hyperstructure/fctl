@@ -1,5 +1,12 @@
 # A Slack bot of your own
 
+fctl has a Slack app of its own: [Start agents from Slack](slack.md).
+A workspace's admins connect their Slack workspace, people mention fctl,
+write to it or use `/fctl`, and its agents read the thread they were
+asked from. This guide builds a bot of your own instead, on a service
+account and a webhook: for Microsoft Teams ([below](#microsoft-teams)),
+or for a flow fctl's app doesn't have.
+
 At the end of this guide, Acme's people start agents from Slack: Ada
 writes `@fctl Fix the login redirect after a password reset` in `#web`,
 and a session of the project `web` starts for Ada, on Ada's Claude
@@ -446,8 +453,9 @@ And the bot's log:
 
 - **The agent reads what the bot sends**, and nothing else of Slack: the
   message that started it and the replies in its thread. It can't read
-  the channel or other threads. A Slack app of fctl's own, whose agents
-  read the thread they were asked from, is on the roadmap.
+  the channel or other threads. fctl's own Slack app's agents read the
+  thread they were asked from, and the public channels a workspace's
+  admins make readable ([Start agents from Slack](slack.md)).
 - **Each person needs an fctl account**, in the workspace, with their
   Slack address among their addresses, and a Claude subscription
   connected: sessions run on theirs.

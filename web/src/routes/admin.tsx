@@ -40,6 +40,7 @@ import { SnapshotStoreLine } from "@/components/runner-snapshots";
 import { SignInAdmin } from "@/components/sign-in/admin";
 import { Networks } from "@/components/sign-in/networks";
 import { SessionPolicies } from "@/components/sign-in/sessions";
+import { AdminSlackTab } from "@/components/slack/admin";
 import {
   Avatar,
   AvatarStack,
@@ -59,6 +60,7 @@ import {
   Select,
   type SelectOption,
   Skeleton,
+  SlackIcon,
   Switch,
   toast,
 } from "@/components/ui";
@@ -93,6 +95,7 @@ type Tab =
   | "people"
   | "workspaces"
   | "github"
+  | "slack"
   | "runners"
   | "access"
   | "sign-in"
@@ -104,6 +107,7 @@ const TABS: { tab: Tab; label: string }[] = [
   { tab: "people", label: "People" },
   { tab: "workspaces", label: "Workspaces" },
   { tab: "github", label: "GitHub" },
+  { tab: "slack", label: "Slack" },
   { tab: "runners", label: "Runners" },
   { tab: "access", label: "Access" },
   { tab: "sign-in", label: "Sign-in" },
@@ -115,14 +119,16 @@ const TABS: { tab: Tab; label: string }[] = [
 
 /**
  * Each tab's icon, as the rest of the app draws what it holds: people, the grid Settings draws
- * workspaces with, GitHub's mark, the chip runners are, a door for who gets in, a key for how they
- * sign in, the inbox requests land in, the sidebar's gear, and a clock turning back for what
- * happened.
+ * workspaces with, GitHub's and Slack's marks, the chip runners are, a door for who gets in, a key
+ * for how they sign in, the inbox requests land in, the sidebar's gear, and a clock turning back
+ * for what happened.
  */
 const ICONS: Record<Tab, (className: string) => ReactNode> = {
   people: (className) => <UsersIcon className={className} aria-hidden="true" />,
   workspaces: (className) => <LayoutGrid className={className} aria-hidden="true" />,
   github: (className) => <GithubIcon className={className} />,
+  // In one color, as the icons beside it are.
+  slack: (className) => <SlackIcon mono className={cn(className, "scale-[0.9]")} />,
   runners: (className) => <Cpu className={className} aria-hidden="true" />,
   access: (className) => <DoorOpen className={className} aria-hidden="true" />,
   "sign-in": (className) => <KeyRound className={className} aria-hidden="true" />,
@@ -163,6 +169,7 @@ export function Admin() {
         {tab === "people" && <Users />}
         {tab === "workspaces" && <Workspaces />}
         {tab === "github" && <Github />}
+        {tab === "slack" && <AdminSlackTab />}
         {tab === "access" && <Access />}
         {tab === "sign-in" && <SignInTab />}
         {tab === "early-access" && early && <EarlyAccess />}
@@ -2268,6 +2275,10 @@ function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest
       : "Admin → People no longer shows Claude connections";
   if (b.claude_refusals !== undefined)
     return `fctl marks a token ended once Claude refused it in ${refusalsWords(s.claude_refusals)}`;
+  if (b.slack_match_email !== undefined)
+    return s.slack_match_email
+      ? "Workspaces' admins may let fctl know people by their verified address in Slack now"
+      : "fctl knows only the people who link their Slack account now, in every workspace";
   return s.publish_screenshots
     ? "Projects can now publish screenshots"
     : "Published screenshots are off and offline";
@@ -2481,6 +2492,7 @@ function SignInSettings({
     claude_refusals: 2,
     ...DEFAULT_POLICY,
     networks: [],
+    slack_match_email: false,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

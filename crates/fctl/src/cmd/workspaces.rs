@@ -113,6 +113,120 @@ pub enum LinearCmd {
     },
 }
 
+/// On or off, as `fctl workspaces slack set` takes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum OnOff {
+    On,
+    Off,
+}
+
+impl OnOff {
+    fn on(self) -> bool {
+        self == Self::On
+    }
+}
+
+/// What transcripts keep of Slack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Keep {
+    /// What came from Slack stays in transcripts.
+    Keep,
+    /// fctl drops what Slack's messages said once a session ends.
+    Drop,
+}
+
+#[derive(Subcommand)]
+pub enum SlackCmd {
+    /// The Slack workspaces it works in, with what it lets people and
+    /// agents do there (the default).
+    #[command(visible_alias = "ls")]
+    List,
+    /// Install fctl's app in a Slack workspace and connect it (admins).
+    /// Opens Slack in your browser.
+    Connect {
+        /// The Slack workspace to install it in, as when you connect one
+        /// again: its name, its address (<name>.slack.com) or its id
+        /// (T…). Slack's sign-in then offers it alone.
+        #[arg(long)]
+        team: Option<String>,
+        /// Print the link without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Stop working in a Slack workspace (admins): nothing there reaches
+    /// the workspace's sessions any more, and once no workspace works there
+    /// fctl's app uninstalls itself.
+    Disconnect {
+        /// The Slack workspace: its name, its address (<name>.slack.com) or
+        /// its id (T…).
+        team: String,
+    },
+    /// Change what people and agents may do there (admins).
+    #[command(
+        after_help = "Examples:\n  fctl workspaces slack set --channels off\n  fctl workspaces slack set --agent-replies off --transcripts drop"
+    )]
+    Set {
+        /// The Slack workspace (default: the only one).
+        #[arg(long)]
+        team: Option<String>,
+        /// Mentions in channels, /fctl and Send to fctl… start sessions.
+        #[arg(long, value_enum)]
+        channels: Option<OnOff>,
+        /// Messages to fctl's app start sessions.
+        #[arg(long = "direct-messages", value_enum)]
+        direct_messages: Option<OnOff>,
+        /// Agents search the readable channels.
+        #[arg(long, value_enum)]
+        search: Option<OnOff>,
+        /// Agents post in their own thread with `fctl slack reply`.
+        #[arg(long = "agent-replies", value_enum)]
+        agent_replies: Option<OnOff>,
+        /// People get their notifications from fctl's app, when they ask.
+        #[arg(long, value_enum)]
+        notifications: Option<OnOff>,
+        /// Projects post their chosen events to a channel.
+        #[arg(long = "project-events", value_enum)]
+        project_events: Option<OnOff>,
+        /// Know people by their verified address in Slack (where the
+        /// instance allows it).
+        #[arg(long = "match-email", value_enum)]
+        match_email: Option<OnOff>,
+        /// What sessions' transcripts keep of Slack once they end.
+        #[arg(long, value_enum)]
+        transcripts: Option<Keep>,
+    },
+    /// Public channels of the Slack workspace, to map or make readable
+    /// (admins).
+    Channels {
+        /// Only those whose name has these letters.
+        query: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Mentions of fctl in a channel start sessions in a project (admins):
+    /// `none` for no project of its own.
+    Map {
+        /// The channel: web-team, or its id (a `#` needs quotes in a shell).
+        channel: String,
+        /// The project (slug or id), or `none`.
+        project: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Agents of projects that read Slack read these public channels
+    /// (admins). fctl's app joins them, which shows there.
+    Readable {
+        /// Channels: incidents, deploys…
+        #[arg(required = true)]
+        channels: Vec<String>,
+        /// Stop agents reading them instead.
+        #[arg(long)]
+        off: bool,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum WorkspacesCmd {
     /// List your workspaces, and the invitations waiting for you.
@@ -415,6 +529,20 @@ pub enum WorkspacesCmd {
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
+        workspace: Option<String>,
+    },
+    /// The Slack workspaces a workspace works in, where people start and
+    /// steer agents: connect one (admins), choose what people and agents
+    /// may do there, map channels to projects, and make channels readable.
+    #[command(
+        after_help = "Examples:\n  fctl workspaces slack\n  fctl workspaces slack connect\n  fctl workspaces slack map web-team web\n  fctl workspaces slack readable incidents deploys\n  fctl workspaces slack set --agent-replies off"
+    )]
+    Slack {
+        #[command(subcommand)]
+        cmd: Option<SlackCmd>,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
+        #[arg(short, long, global = true)]
         workspace: Option<String>,
     },
     /// The Linear workspaces a workspace works in, whose teams its
@@ -1424,6 +1552,10 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 w.name
             );
         }
+        WorkspacesCmd::Slack { cmd, workspace } => {
+            let w = resolve(&api, workspace).await?;
+            slack(&api, &w, cmd.unwrap_or(SlackCmd::List), json).await?;
+        }
         WorkspacesCmd::Linear { cmd, workspace } => {
             let w = resolve(&api, workspace).await?;
             linear(&api, &w, cmd.unwrap_or(LinearCmd::List), json).await?;
@@ -1591,6 +1723,349 @@ async fn invitation(api: &Api, which: &str) -> Result<WorkspaceInvitation> {
         .with_context(|| {
             format!("No invitation to {which} waits for you. `fctl workspaces` lists them.")
         })
+}
+
+/// The Slack workspace of `connections` that `named` names (by name,
+/// address or id), or the only one.
+pub(crate) fn pick_slack<'a>(
+    connections: &'a [fctl_proto::slack::SlackConnection],
+    named: Option<&str>,
+    workspace: &str,
+) -> Result<&'a fctl_proto::slack::SlackConnection> {
+    match named.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => {
+            let n = n.trim_end_matches(".slack.com");
+            connections
+                .iter()
+                .find(|c| {
+                    c.team == n
+                        || c.name.eq_ignore_ascii_case(n)
+                        || c.domain
+                            .as_deref()
+                            .is_some_and(|d| d.eq_ignore_ascii_case(n))
+                })
+                .with_context(|| {
+                    format!("{workspace} isn't connected to a Slack workspace called {n}")
+                })
+        }
+        None => match connections {
+            [only] => Ok(only),
+            [] => bail!(
+                "{workspace} works in no Slack workspace yet: `fctl workspaces slack connect`"
+            ),
+            _ => bail!("{workspace} works in several Slack workspaces: name one with --team"),
+        },
+    }
+}
+
+/// A channel's id, from what `named` names: a channel the workspace chose
+/// something for, else one of the Slack workspace's public channels.
+async fn slack_channel(
+    api: &Api,
+    w: &Workspace,
+    c: &fctl_proto::slack::SlackConnection,
+    named: &str,
+) -> Result<(String, String)> {
+    let name = named.trim().trim_start_matches('#');
+    if let Some(ch) = c
+        .channels
+        .iter()
+        .find(|ch| ch.id == name || ch.name.eq_ignore_ascii_case(name))
+    {
+        return Ok((ch.id.clone(), ch.name.clone()));
+    }
+    let list = api
+        .slack_channels(w.id.as_str(), &c.team, Some(name), None)
+        .await?;
+    list.channels
+        .iter()
+        .find(|ch| ch.id == name || ch.name.eq_ignore_ascii_case(name))
+        .map(|ch| (ch.id.clone(), ch.name.clone()))
+        .with_context(|| {
+            format!("{} has no public channel #{name}: a private one's members invite fctl's app, and mention it there", c.name)
+        })
+}
+
+async fn slack(api: &Api, w: &Workspace, cmd: SlackCmd, json: bool) -> Result<()> {
+    let on = |b: bool| {
+        if b {
+            style::accent("on")
+        } else {
+            style::dim("off")
+        }
+    };
+    match cmd {
+        SlackCmd::List => {
+            let l = api.workspace_slack(w.id.as_str()).await?;
+            if json {
+                return style::print_json(&l);
+            }
+            if !l.configured {
+                println!(
+                    "This instance has no Slack app: its admins create one (`fctl admin slack` gives its manifest)."
+                );
+                return Ok(());
+            }
+            if l.connections.is_empty() {
+                println!(
+                    "{} works in no Slack workspace yet. Connect one with `fctl workspaces slack connect`.",
+                    w.name
+                );
+            }
+            for c in &l.connections {
+                let state = match c.status {
+                    fctl_proto::slack::SlackStatus::Active => style::accent("connected"),
+                    fctl_proto::slack::SlackStatus::Revoked => {
+                        style::amber("access revoked: connect it again")
+                    }
+                };
+                println!(
+                    "{:<24} {:<28} {}",
+                    style::bold(&style::terminal_safe(&c.name)),
+                    style::dim(&style::terminal_safe(
+                        &c.domain
+                            .as_deref()
+                            .map(|d| format!("{d}.slack.com"))
+                            .unwrap_or_else(|| c.team.clone())
+                    )),
+                    state
+                );
+                println!("  {}", style::terminal_safe(&c.reach));
+                let st = &c.settings;
+                println!(
+                    "  Channels {} · Messages {} · Search {} · Agent replies {} · Notifications {} · Project events {} · Match by address {} · Transcripts {}",
+                    on(st.channels),
+                    on(st.direct_messages),
+                    on(st.search),
+                    on(st.agent_replies),
+                    on(st.notifications),
+                    on(st.project_events),
+                    on(st.match_email),
+                    match st.transcripts {
+                        fctl_proto::slack::SlackTranscripts::Keep => style::dim("keep"),
+                        fctl_proto::slack::SlackTranscripts::Drop =>
+                            style::accent("drop when sessions end"),
+                    }
+                );
+                for ch in &c.channels {
+                    let mut what = Vec::new();
+                    if let Some(p) = &ch.project {
+                        what.push(format!("mentions start sessions in {}", p.slug));
+                    }
+                    if ch.readable {
+                        what.push("readable".to_owned());
+                    }
+                    println!(
+                        "  {} {}",
+                        style::dim("→"),
+                        style::terminal_safe(&format!("#{}: {}", ch.name, what.join(", ")))
+                    );
+                }
+                println!(
+                    "  {}",
+                    style::dim(&format!(
+                        "{} {} linked their Slack account",
+                        c.linked,
+                        if c.linked == 1 { "member" } else { "members" }
+                    ))
+                );
+            }
+            if l.configured && !l.events {
+                println!(
+                    "{}",
+                    style::dim(
+                        "This instance takes no Slack events yet, so nothing in Slack reaches fctl: its admins set SLACK_SIGNING_SECRET, or SLACK_APP_TOKEN for Socket Mode."
+                    )
+                );
+            }
+        }
+        SlackCmd::Connect { team, no_browser } => {
+            let team = match team {
+                Some(t) if fctl_domain::slack::is_id(&t) && t.starts_with('T') => Some(t),
+                Some(t) => {
+                    let l = api.workspace_slack(w.id.as_str()).await?;
+                    Some(pick_slack(&l.connections, Some(&t), &w.name)?.team.clone())
+                }
+                None => None,
+            };
+            let link = api.connect_slack(w.id.as_str(), team.as_deref()).await?;
+            if json {
+                return style::print_json(&link);
+            }
+            println!(
+                "Install fctl's app in a Slack workspace and connect it to {}, in a browser where you're signed in to fctl. The link works for 10 minutes:",
+                style::bold(&w.name)
+            );
+            println!();
+            println!("  {}", style::terminal_safe(&link.url));
+            println!();
+            if !no_browser
+                && fctl_client::http::same_site(api.base(), &link.url)
+                && crate::cmd::auth::open_browser(&link.url)
+            {
+                println!("{}", style::dim("Opened it in your browser."));
+            }
+        }
+        SlackCmd::Disconnect { team } => {
+            let l = api.workspace_slack(w.id.as_str()).await?;
+            let c = pick_slack(&l.connections, Some(&team), &w.name)?;
+            let l = api.disconnect_slack(w.id.as_str(), &c.team).await?;
+            if json {
+                return style::print_json(&l);
+            }
+            println!(
+                "{} {} no longer works in {} on Slack",
+                style::accent("✓"),
+                w.name,
+                style::terminal_safe(&c.name)
+            );
+        }
+        SlackCmd::Set {
+            team,
+            channels,
+            direct_messages,
+            search,
+            agent_replies,
+            notifications,
+            project_events,
+            match_email,
+            transcripts,
+        } => {
+            let l = api.workspace_slack(w.id.as_str()).await?;
+            let c = pick_slack(&l.connections, team.as_deref(), &w.name)?;
+            let req = fctl_proto::slack::UpdateSlackRequest {
+                channels: channels.map(OnOff::on),
+                direct_messages: direct_messages.map(OnOff::on),
+                search: search.map(OnOff::on),
+                agent_replies: agent_replies.map(OnOff::on),
+                notifications: notifications.map(OnOff::on),
+                project_events: project_events.map(OnOff::on),
+                match_email: match_email.map(OnOff::on),
+                transcripts: transcripts.map(|t| match t {
+                    Keep::Keep => fctl_proto::slack::SlackTranscripts::Keep,
+                    Keep::Drop => fctl_proto::slack::SlackTranscripts::Drop,
+                }),
+            };
+            let l = api.update_slack(w.id.as_str(), &c.team, &req).await?;
+            if json {
+                return style::print_json(&l);
+            }
+            println!(
+                "{} Saved for {}",
+                style::accent("✓"),
+                style::terminal_safe(&c.name)
+            );
+        }
+        SlackCmd::Channels { query, team } => {
+            let l = api.workspace_slack(w.id.as_str()).await?;
+            let c = pick_slack(&l.connections, team.as_deref(), &w.name)?;
+            let list = api
+                .slack_channels(w.id.as_str(), &c.team, query.as_deref(), None)
+                .await?;
+            if json {
+                return style::print_json(&list);
+            }
+            for ch in &list.channels {
+                println!(
+                    "{:<28} {}",
+                    style::bold(&style::terminal_safe(&format!("#{}", ch.name))),
+                    style::dim(&style::terminal_safe(&format!(
+                        "{}{}",
+                        ch.members
+                            .map(|m| format!("{m} members"))
+                            .unwrap_or_default(),
+                        if ch.member { " · fctl is in it" } else { "" }
+                    )))
+                );
+            }
+            if list.more {
+                println!(
+                    "{}",
+                    style::dim("More channels: narrow them down with a query.")
+                );
+            }
+        }
+        SlackCmd::Map {
+            channel,
+            project,
+            team,
+        } => {
+            let l = api.workspace_slack(w.id.as_str()).await?;
+            let c = pick_slack(&l.connections, team.as_deref(), &w.name)?;
+            let (id, name) = slack_channel(api, w, c, &channel).await?;
+            let none = project.eq_ignore_ascii_case("none");
+            let l = api
+                .set_slack_channel(
+                    w.id.as_str(),
+                    &c.team,
+                    &id,
+                    &fctl_proto::slack::SetSlackChannelRequest {
+                        name: Some(name.clone()),
+                        project: Some(if none { String::new() } else { project.clone() }),
+                        readable: None,
+                    },
+                )
+                .await?;
+            if json {
+                return style::print_json(&l);
+            }
+            if none {
+                println!(
+                    "{} Mentions in #{} start sessions in whichever project people can, or choose",
+                    style::accent("✓"),
+                    style::terminal_safe(&name)
+                );
+            } else {
+                println!(
+                    "{} Mentions in #{} start sessions in {}",
+                    style::accent("✓"),
+                    style::terminal_safe(&name),
+                    style::bold(&style::terminal_safe(&project))
+                );
+            }
+        }
+        SlackCmd::Readable {
+            channels,
+            off,
+            team,
+        } => {
+            let l = api.workspace_slack(w.id.as_str()).await?;
+            let c = pick_slack(&l.connections, team.as_deref(), &w.name)?;
+            let mut last = None;
+            for ch in &channels {
+                let (id, name) = slack_channel(api, w, c, ch).await?;
+                last = Some(
+                    api.set_slack_channel(
+                        w.id.as_str(),
+                        &c.team,
+                        &id,
+                        &fctl_proto::slack::SetSlackChannelRequest {
+                            name: Some(name.clone()),
+                            project: None,
+                            readable: Some(!off),
+                        },
+                    )
+                    .await?,
+                );
+                if !json {
+                    println!(
+                        "{} #{} {}",
+                        style::accent("✓"),
+                        style::terminal_safe(&name),
+                        if off {
+                            "isn't readable any more"
+                        } else {
+                            "is readable"
+                        }
+                    );
+                }
+            }
+            if json && let Some(l) = last {
+                return style::print_json(&l);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The Linear workspace of `connections` that `named` names (by name,

@@ -309,6 +309,7 @@ const instanceSettings = (s: Partial<G.InstanceSettings> = {}): G.InstanceSettin
   self_sign_up: true,
   ...DEFAULT_POLICY,
   networks: [],
+  slack_match_email: false,
   ...s,
 });
 

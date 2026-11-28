@@ -91,6 +91,41 @@ export function LinearIcon({ className }: { className?: string }) {
   );
 }
 
+/**
+ * Slack's mark, as Slack draws it: four bars, each with a rounded end and a nub beside it, in Slack's
+ * blue, green, yellow and red, which read on either theme's page. `mono` draws it in the text's color,
+ * for tabs and lines that draw their icons in one color.
+ */
+export function SlackIcon({ className, mono }: { className?: string; mono?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className ?? "size-4"} aria-hidden="true">
+      {SLACK_PARTS.map((p) => (
+        <path key={p.color} d={p.d} fill={mono ? "currentColor" : p.color} />
+      ))}
+    </svg>
+  );
+}
+
+/** Slack's mark in its four parts, each a bar and its nub: blue top left, green top right, yellow, red. */
+const SLACK_PARTS = [
+  {
+    color: "#36C5F0",
+    d: "M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z",
+  },
+  {
+    color: "#2EB67D",
+    d: "M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z",
+  },
+  {
+    color: "#ECB22E",
+    d: "M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z",
+  },
+  {
+    color: "#E01E5A",
+    d: "M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z",
+  },
+] as const;
+
 /** GitHub's octicons for a pull request's state, as GitHub shows them. */
 const PULL_REQUEST_PATHS = {
   open: "M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z",

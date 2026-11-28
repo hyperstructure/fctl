@@ -18,6 +18,7 @@
 //! | [`uplink`] | SessionDO ⇄ hosts (one connection per session) |
 //! | [`agent`] | hosts ⇄ fctl-agent inside a sandbox, and `fctl` ⇄ fctl-agent within it |
 //! | [`tickets`] | tickets in a project's tracker, whatever the tracker, and Linear's connections |
+//! | [`slack`] | Slack's connections, people's Slack accounts, and what agents read and post there |
 //! | [`vm`] | hosts ⇄ the init of a Firecracker microVM, over its vsock |
 
 pub mod agent;
@@ -31,6 +32,7 @@ pub mod ids;
 pub mod runner;
 pub mod service_accounts;
 pub mod session;
+pub mod slack;
 pub mod tickets;
 pub mod uplink;
 pub mod viewer;

@@ -39,6 +39,7 @@ mod reviews;
 mod schedules;
 mod service_accounts;
 mod sign_in;
+mod slack;
 mod slugs;
 mod snapshots;
 mod spec;
@@ -60,6 +61,7 @@ pub use do_search::SearchObject;
 pub use do_session::SessionObject;
 use error::{AppError, AppResult};
 use fctl_proto::ApiError;
+pub use slack::socket::SlackObject;
 use worker::{Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent, event};
 
 #[event(fetch)]
@@ -227,14 +229,37 @@ pub(crate) async fn route_autopilot(
     dispatch(ctx, req, method, segs.as_slice()).await
 }
 
+/// The route a request takes. Unoptimized (`cargo xtask dev`'s Worker, the
+/// wasm tests), a function's stack frame keeps a slot for the future of
+/// each of its routes, which together came near the Worker's 1 MiB stack:
+/// the routes come in two halves, tried one after the other, so that only
+/// one half's frame is ever on the stack. Add a route to the smaller one.
 async fn dispatch(
     ctx: &mut Ctx,
     req: &mut Request,
     method: Method,
     segs: &[&str],
 ) -> AppResult<Response> {
+    if let Some(answer) = Box::pin(dispatch_first(ctx, req, method.clone(), segs)).await {
+        return answer;
+    }
+    Box::pin(dispatch_rest(ctx, req, method, segs)).await
+}
+
+/// [`dispatch`]'s first half: the instance, signing in, accounts, admins,
+/// workspaces, integrations, runners and projects.
+async fn dispatch_first(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    method: Method,
+    segs: &[&str],
+) -> Option<AppResult<Response>> {
     use Method::*;
-    match (method, segs) {
+    Some(match (method, segs) {
+        // Slack's routes come as one, for the same reason as the halves.
+        (method, segs) if api::slack::routes(segs) => {
+            Box::pin(api::slack::route(ctx, req, method, segs)).await
+        }
         (Get, ["instance"]) => api::auth::instance(ctx).await,
         (Post, ["setup"]) => api::auth::setup(ctx, req).await,
         (Get, ["invites", token]) => api::auth::invite_preview(ctx, token).await,
@@ -523,6 +548,20 @@ async fn dispatch(
             api::repos::remove(ctx, id, owner, name).await
         }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
+        _ => return None,
+    })
+}
+
+/// [`dispatch`]'s second half: autopilots, webhooks, sessions and the
+/// rest.
+async fn dispatch_rest(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    method: Method,
+    segs: &[&str],
+) -> AppResult<Response> {
+    use Method::*;
+    match (method, segs) {
         // Autopilots (experimental)
         (Get, ["autopilots", "asks"]) => api::autopilots::open_asks(ctx).await,
         (Get, ["projects", id, "autopilot"]) => api::autopilots::get(ctx, id).await,

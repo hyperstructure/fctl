@@ -470,12 +470,29 @@ pub async fn build(
     });
     let tickets =
         crate::tickets::spec(db, &row, &project, &settings, &grants, github_access).await?;
+    // What its agent reaches in Slack: the thread it started from, and the
+    // channels its workspace made readable, where its project reads them.
+    let slack = crate::slack::calls::spec(
+        db,
+        &row.id,
+        &workspace_id,
+        &settings,
+        row.slack
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok()),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        worker::console_error!("what {} reaches in Slack: {}", row.id, e.0.message);
+        None
+    });
     // Its agent saves a snapshot as the sandbox stops, and restores the
     // last in a sandbox without the conversation, where the instance and
     // the workspace keep them. FleetDO leaves it out for hosts that don't
     // announce snapshots.
     let snapshot = crate::snapshots::spec(db, keys, &instance, &row.id, false, now).await?;
     Ok(SessionSpec {
+        slack,
         session_id: row.session_id(),
         number: row.number.max(0) as u32,
         title: row.title.clone(),
@@ -641,6 +658,7 @@ async fn review_spec(
     });
     let p = project.settings();
     let mut settings = ProjectSettings {
+        slack: Default::default(),
         image: p.image.clone(),
         image_build: p.image_build.clone(),
         setup_script: None,
@@ -702,6 +720,7 @@ async fn review_spec(
         conf.as_ref().and_then(|c| c.instructions.as_deref()),
     );
     Ok(SessionSpec {
+        slack: None,
         session_id: row.session_id(),
         number: row.number.max(0) as u32,
         title: row.title.clone(),

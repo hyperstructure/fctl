@@ -3,4 +3,4 @@
 /**
  * `PATCH /api/v1/me/notifications`: the settings to change.
  */
-export type UpdateNotificationsRequest = { waiting?: boolean, paused?: boolean, failed?: boolean, follow_started?: boolean, };
+export type UpdateNotificationsRequest = { waiting?: boolean, paused?: boolean, failed?: boolean, follow_started?: boolean, slack?: boolean, };

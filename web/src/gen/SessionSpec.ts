@@ -11,6 +11,7 @@ import type { PullRequestRef } from "./PullRequestRef";
 import type { ReviewSpec } from "./ReviewSpec";
 import type { SessionCredentials } from "./SessionCredentials";
 import type { SessionId } from "./SessionId";
+import type { SlackSpec } from "./SlackSpec";
 import type { SnapshotSpec } from "./SnapshotSpec";
 import type { TicketsSpec } from "./TicketsSpec";
 import type { UserRef } from "./UserRef";
@@ -139,6 +140,15 @@ review?: ReviewSpec,
  * it, while their GitHub tokens still follow the tracker.
  */
 tickets?: TicketsSpec, 
+/**
+ * What its agent reaches in Slack, and is told of it: the thread the
+ * session started from, the channels it may read, whether it may post
+ * (`fctl_domain::slack`). Absent where its workspace works in no Slack
+ * workspace, for review agents, and from older control planes; older
+ * hosts leave it out of the agent's configuration, and their agents
+ * hear nothing of Slack.
+ */
+slack?: SlackSpec, 
 /**
  * For an autopilot's own session: the autopilot, whose agent reaches
  * the API through fctl-agent (`AgentCall::Api`). Absent for other

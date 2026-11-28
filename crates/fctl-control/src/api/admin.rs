@@ -1162,6 +1162,9 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.self_sign_up {
         settings.self_sign_up = on;
     }
+    if let Some(on) = body.slack_match_email {
+        settings.slack_match_email = on;
+    }
     // Where people sign in from: never so that the admin who saves it is
     // outside, unless they're the primary instance owner, who signs in
     // from anywhere.

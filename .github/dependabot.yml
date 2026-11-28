@@ -28,6 +28,7 @@ updates:
       - /web
       - /deploy/standalone
       - /xtask/linear
+      - /xtask/slack
     schedule:
       interval: weekly
     open-pull-requests-limit: 0

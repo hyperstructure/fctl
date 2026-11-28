@@ -144,6 +144,15 @@ claude_instance_view: boolean,
  */
 claude_refusals: number, 
 /**
+ * Workspaces connected to a Slack workspace may know people by their
+ * verified address in Slack, where they haven't linked their Slack
+ * account (`slack::SlackSettings::match_email`), for organizations
+ * whose people sign in to Slack and fctl through the same provider.
+ * Off by default: an address in Slack says nothing an fctl account
+ * has to agree with.
+ */
+slack_match_email: boolean, 
+/**
  * A browser stays signed in at most this many hours after its sign-in,
  * however much it's used; then its person signs in again, through
  * their domain's provider where one is required, which checks they

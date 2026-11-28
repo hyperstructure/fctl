@@ -471,6 +471,34 @@ pub enum ProjectsCmd {
         #[arg(short, long)]
         project: Option<String>,
     },
+    /// What the project does with Slack: whether its agents read the
+    /// channels its workspace's admins made readable, and the channel its
+    /// events go to. The flags change them (maintainers).
+    #[command(
+        after_help = "Events: session.ready_for_review and session.failed unless you choose others, among session.question, session.finished, pull_request.opened and pull_request.merged (as webhooks name them).\n\nExamples:\n  fctl projects slack -p web\n  fctl projects slack -p web --read-channels off\n  fctl projects slack -p web --events web-alerts\n  fctl projects slack -p web --events web-alerts --kinds session.failed,session.question\n  fctl projects slack -p web --events C0123ABCD   # a private channel, by its ID, once its members invited fctl\n  fctl projects slack -p web --events none"
+    )]
+    Slack {
+        /// The project (slug or id); default from `fctl projects use`.
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Whether its agents read the channels its workspace's admins made
+        /// readable (on by default). Off, they read their own thread alone.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        read_channels: Option<bool>,
+        /// The channel its events go to: a public channel's name (without
+        /// `#`, or quoted), any channel's ID (C…), or none. fctl's app joins
+        /// a public one; a private one's members invite it first.
+        #[arg(long, value_name = "CHANNEL|none")]
+        events: Option<String>,
+        /// Which events go there, comma-separated (the default:
+        /// session.ready_for_review,session.failed).
+        #[arg(long, value_name = "EVENTS", value_delimiter = ',')]
+        kinds: Option<Vec<String>>,
+        /// The Slack workspace of the channel, where the project's workspace
+        /// works in several: its name, address (<name>.slack.com) or id.
+        #[arg(long)]
+        team: Option<String>,
+    },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
         /// The project (slug or id).
@@ -1918,6 +1946,108 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             print_identity(&p.slug, &id);
         }
+        ProjectsCmd::Slack {
+            project,
+            read_channels,
+            events,
+            kinds,
+            team,
+        } => {
+            let project = super::sessions::project_or_default(project)?;
+            let p = api.project(&project).await?;
+            let mut slack = p.settings.slack.clone();
+            if let Some(on) = read_channels {
+                slack.read_channels = on;
+            }
+            match events.as_deref().map(str::trim) {
+                Some("none" | "") => slack.events = None,
+                Some(named) => {
+                    let workspace = p
+                        .workspace
+                        .as_ref()
+                        .context("the project belongs to no workspace")?;
+                    let l = api.workspace_slack(workspace.id.as_str()).await?;
+                    let c = super::workspaces::pick_slack(
+                        &l.connections,
+                        team.as_deref(),
+                        &workspace.name,
+                    )?;
+                    let bare = named.trim_start_matches('#');
+                    let (channel, channel_name) = if fctl_domain::slack::is_id(bare) {
+                        (bare.to_owned(), bare.to_owned())
+                    } else {
+                        let found = api
+                            .slack_channels(
+                                workspace.id.as_str(),
+                                &c.team,
+                                Some(bare),
+                                Some(p.id.as_str()),
+                            )
+                            .await?;
+                        let ch = found
+                            .channels
+                            .iter()
+                            .find(|ch| ch.name.eq_ignore_ascii_case(bare))
+                            .with_context(|| {
+                                format!(
+                                    "{} has no public channel called #{bare}: give a private one's ID (C…) instead",
+                                    c.name
+                                )
+                            })?;
+                        (ch.id.clone(), ch.name.clone())
+                    };
+                    let kinds = match (&kinds, &slack.events) {
+                        (Some(k), _) => k.clone(),
+                        (None, Some(e)) => e.kinds.clone(),
+                        (None, None) => Vec::new(),
+                    };
+                    slack.events = Some(fctl_proto::slack::SlackEvents {
+                        team: c.team.clone(),
+                        channel,
+                        channel_name,
+                        kinds,
+                    });
+                }
+                None => {
+                    if let Some(k) = &kinds {
+                        let Some(e) = slack.events.as_mut() else {
+                            bail!(
+                                "{} posts no events to Slack: choose the channel with --events",
+                                p.slug
+                            );
+                        };
+                        e.kinds = k.clone();
+                    }
+                }
+            }
+            if let Some(e) = &slack.events {
+                for k in &e.kinds {
+                    if fctl_domain::hooks::Kind::parse(k).is_none() {
+                        bail!(
+                            "fctl has no event called {k} (`fctl projects slack --help` lists them)"
+                        );
+                    }
+                }
+            }
+            let p = if slack != p.settings.slack {
+                let mut settings = p.settings.clone();
+                settings.slack = slack;
+                api.update_project(
+                    p.id.as_str(),
+                    &UpdateProjectRequest {
+                        settings: Some(settings),
+                        ..Default::default()
+                    },
+                )
+                .await?
+            } else {
+                p
+            };
+            if json {
+                return style::print_json(&p.settings.slack);
+            }
+            print_slack(&p);
+        }
         ProjectsCmd::Tickets { project } => {
             let project = super::sessions::project_or_default(project)?;
             let t = api.project_tickets(&project).await?;
@@ -2040,6 +2170,35 @@ fn tickets(s: &ProjectSettings) -> String {
             Some(l) => fctl_domain::tickets::linear_scope(l, None),
             None => "Linear, without a team yet".to_owned(),
         },
+    }
+}
+
+/// What a project does with Slack, in two lines.
+fn print_slack(p: &Project) {
+    let s = &p.settings.slack;
+    println!(
+        "{} {}",
+        style::bold(&p.slug),
+        if s.read_channels {
+            "Agents read the channels the workspace's admins made readable, besides their own thread."
+        } else {
+            "Agents read their own thread alone."
+        }
+    );
+    match &s.events {
+        Some(e) => {
+            let kinds: Vec<&str> = if e.kinds.is_empty() {
+                fctl_proto::slack::SlackEvents::DEFAULT.to_vec()
+            } else {
+                e.kinds.iter().map(String::as_str).collect()
+            };
+            println!(
+                "  Events to #{}: {}",
+                style::terminal_safe(&e.channel_name),
+                kinds.join(", ")
+            );
+        }
+        None => println!("  {}", style::dim("Posts no events to Slack's channels.")),
     }
 }
 

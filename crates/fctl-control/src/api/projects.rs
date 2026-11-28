@@ -605,6 +605,11 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         )
         .await?;
     }
+    // The channel its events go to, when the update changes it.
+    if settings.slack.events != stored.slack.events {
+        settings.slack.events =
+            crate::slack::check_events(ctx, p.workspace_id(), settings.slack.events.take()).await?;
+    }
     let archived_at = match body.archived {
         Some(true) => row.archived_at.or(Some(ctx.now)),
         Some(false) => None,

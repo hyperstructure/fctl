@@ -64,6 +64,7 @@ import {
   TicketLink,
 } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
+import { SlackPlaceLink } from "@/components/session/slack";
 import { SnapshotRow } from "@/components/session/snapshot";
 import { TakeOverDialog } from "@/components/session/take-over";
 import {
@@ -1097,6 +1098,7 @@ function Cover({
         )}
         <ScheduleLink session={session} />
         <TicketLink session={session} />
+        <SlackPlaceLink session={session} />
         {!session.review && <SessionGithub session={session} />}
       </div>
       {glance}
@@ -1743,6 +1745,7 @@ function Details({
           <Row k="Schedule" v={<ScheduleLink session={session} className="justify-end" />} />
         )}
         {session.ticket && <Row k="Ticket" v={<TicketLink session={session} className="justify-end" />} />}
+        {session.slack && <Row k="Slack" v={<SlackPlaceLink session={session} className="justify-end" />} />}
         {session.autopilot && (
           <Row k="Autopilot" v={<AutopilotLink session={session} className="justify-end" />} />
         )}

@@ -344,8 +344,8 @@ A webhook is `{"id": "whk_…", "workspace_id", "project": {"id", "slug",
 "created_at", "updated_at", "health", "can_manage"}`, with `project` only
 for a project's own. `events` empty is every event, also those a later
 version adds; `projects` empty is every project; `started_by` (`person`,
-`schedule`, `autopilot`, `ticket`) empty is sessions however they
-started. A delivery is `{"id": "whd_…", "webhook_id", "event_id", "type",
+`schedule`, `autopilot`, `ticket`, `service_account`, `slack`) empty is
+sessions however they started. A delivery is `{"id": "whd_…", "webhook_id", "event_id", "type",
 "gist", "project_id", "session_id", "created_at", "state": "pending" |
 "delivered" | "failed", "attempts", "next_at", "last": {"at", "ms",
 "status", "error", "by", "response": {"headers", "body", "truncated"}},
@@ -460,10 +460,13 @@ requests and issues: `null` for fctl's defaults, `""` for nothing),
 memory note stays before fctl deletes it, 1 to 365; `null`, as it's
 always sent, keeps them until someone deletes them), `retrospectives`,
 `id_tokens`
-(agents mint identity tokens: on unless `false`) and `cloud_access`
+(agents mint identity tokens: on unless `false`), `cloud_access`
 (`{"aws": {"role_arn", "region", "session_tags"}, "gcp": {"provider",
 "service_account"}, "azure": {"tenant_id", "client_id"}}`, each left out
-for none) ([`ProjectSettings`](../crates/fctl-proto/src/session.rs)
+for none) and `slack` (`{"read_channels": true, "events": {"team",
+"channel", "channel_name", "kinds": […]}}`: whether its agents read the
+channels its workspace made readable, and a channel it posts events to,
+[below](#slack)) ([`ProjectSettings`](../crates/fctl-proto/src/session.rs)
 describes each).
 
 ### Memory, retrospectives and reviews
@@ -725,6 +728,47 @@ at once. A self-hosted control plane whose deployment sets
 `FCTL_METRICS_TOKEN` also serves every workspace's pools to Prometheus at
 `GET /api/v1/metrics`, with that token as the bearer token
 ([Self-hosting](self-hosting.md#runner-pools-in-prometheus)).
+
+## Slack
+
+fctl's Slack app ([Start agents from Slack](slack.md),
+[Architecture](architecture.md#slack)): what a workspace lets people and
+agents do in the Slack workspaces it works in, your Slack accounts, and
+the instance's app. The types are in
+[`crates/fctl-proto/src/slack.rs`](../crates/fctl-proto/src/slack.rs).
+
+| Request | What it does |
+|---|---|
+| `GET /api/v1/workspaces/{id}/slack` | `WorkspaceSlack`: whether the instance has a Slack app (`configured`) and Slack's events reach it (`events`, `socket_mode`, `socket_connected`), whether it lets workspaces know people by address (`match_email`), and its `connections`: each Slack workspace (`team`, `name`, `domain`, `status`: `active` or `revoked`), its `settings`, its `channels` (`project`, `readable`, `private`), what each project does with it (`projects`), what agents read there in a sentence (`reach`) and how many members linked their account (`linked`) |
+| `POST /api/v1/workspaces/{id}/slack/connect` | `{"url", "expires_at"}`: the link, for ten minutes, that installs fctl's app in a Slack workspace and connects it, opened in the admin's browser (admins) |
+| `PATCH /api/v1/workspaces/{id}/slack/{team}` | `{"channels", "direct_messages", "search", "agent_replies", "notifications", "project_events", "match_email", "transcripts": "keep" \| "drop"}`: what it lets people and agents do there; what it leaves out stays (admins; `match_email` where the instance allows it) |
+| `DELETE /api/v1/workspaces/{id}/slack/{team}` | stops working there, with its channels; once no workspace works in the Slack workspace, fctl's app uninstalls itself (admins) |
+| `GET /api/v1/workspaces/{id}/slack/{team}/channels` | its public channels, not shared with other organizations, at most 200 (`?query=` narrows them; `more` says there are others) (admins) |
+| `PUT /api/v1/workspaces/{id}/slack/{team}/channels/{channel}` | `{"name", "project", "readable"}`: the project (id or slug, `""` for none) its mentions start sessions in, and whether agents read it (public channels only); what it leaves out stays, and a channel with neither goes from the list. fctl's app joins a public channel (admins) |
+| `GET /api/v1/me/slack` | `MySlack`: your Slack `accounts` (`via`: `linked` or `email`, and the `dm_project` your messages with fctl start sessions in) and the Slack workspaces your workspaces work in (`teams`) |
+| `POST /api/v1/me/slack/link` | `{"url", "expires_at"}`: the link that links your Slack account, for a browser where you're signed in (`?team=` a Slack workspace's id) |
+| `PATCH /api/v1/me/slack/{team}` | `{"dm_project": "web"}`: the project your messages with fctl start sessions in there (`""`: choose each time) |
+| `DELETE /api/v1/me/slack/{team}` | unlinks your account there |
+| `GET /api/v1/admin/slack` | `AdminSlack`, for instance admins: which variables are set, Socket Mode's state (`socket_connected`, `socket_since`, `socket_error`), whether Slack can reach the instance (`reachable`), the `manifest` that creates the app (also `manifest_yaml`, and `create_url`, which opens Slack's form with it), the addresses Slack calls, and the Slack workspaces it's installed in |
+
+`PATCH /api/v1/admin/settings` with `{"slack_match_email": true}` lets
+workspaces know people by their verified address in Slack, and `PATCH
+/api/v1/me/notifications` with `{"slack": true}` is "Tell me in Slack":
+`GET /api/v1/me/notifications` says where they go (`slack`, each Slack
+workspace with your account there and whether its workspaces let
+notifications go there). A session that started in Slack names its thread
+(`slack`: `team`, `channel`, `channel_name`, `place`: `channel`,
+`private` or `dm`, `thread_ts`, `url`), and its transcript's messages
+from Slack say so (`slack` in a `user_message`: who wrote it, where, its
+link, and with `dropped` once its workspace dropped what it said).
+`GET /api/v1/instance` says whether the instance has a Slack app
+(`features.slack`) and takes Slack's events (`features.slack_events`).
+
+Slack calls the rest, signed with the app's signing secret:
+`POST /api/v1/slack/events` (the Events API), `/interactivity` (buttons,
+forms and shortcuts) and `/commands` (`/fctl`); and people's browsers come
+back to `GET /api/v1/slack/installed` and `/linked` from signing in to
+Slack.
 
 ## Routes
 

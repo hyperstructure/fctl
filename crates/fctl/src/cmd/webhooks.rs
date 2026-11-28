@@ -704,8 +704,9 @@ fn started_by(given: &[String]) -> Result<Option<Vec<WebhookOrigin>>> {
             "service-account" | "service-accounts" | "service_account" | "service_accounts" => {
                 WebhookOrigin::ServiceAccount
             }
+            "slack" => WebhookOrigin::Slack,
             _ => bail!(
-                "Sessions start from people, schedules, an autopilot, tickets or service accounts: {g} isn't one."
+                "Sessions start from people, schedules, an autopilot, tickets, service accounts or Slack: {g} isn't one."
             ),
         };
         if !out.contains(&o) {
