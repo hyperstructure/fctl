@@ -5,7 +5,7 @@ agents do it in isolated sandboxes on machines you own. This document is
 the map. Read it before changing anything that crosses a component
 boundary.
 
-```
+```text
                          ┌──────── Cloudflare, or a container ────────┐
   browser (web app) ───► │  fctl-control  (Rust → wasm Worker)        │
   fctl CLI ────────────► │   ├─ REST API  /api/v1/*                   │
@@ -983,7 +983,7 @@ Signing in to GitHub needs the app's client ID and secret
 setup URL with Redirect on update; without the first two a workspace keeps
 the accounts it has but connects no new one (`can_connect` is false). Instance admins
 connect and approve nothing: Admin → GitHub lists the installations and the
-workspaces that use each (`fctl admin github`), and an instance admin can
+workspaces that use each (`fctl admin github list`), and an instance admin can
 take an account from a workspace, not give one. Project repositories must
 be within the workspace's connections (`fctl_domain::repos::check_scope`),
 and every token a session gets is minted within them (`repos::narrow`), for
@@ -2106,7 +2106,8 @@ audience, for 10 minutes ([Identity tokens](identity-tokens.md),
   (`fctl_domain::id_tokens::plan`); two Workers that find one due make
   one, as the insert checks that no newer key is there.
 - **Agents mint them through their host**, as `fctl memory` does: `fctl
-  id-token` asks fctl-agent (`AgentCall::IdToken`), which refuses where
+  id-token`, run by the agent or by the project's setup script, asks
+  fctl-agent (`AgentCall::IdToken`), which refuses where
   its spec has no `id_tokens`, and the host sends it with its runner token.
   The control plane checks that the runner runs the session now
   (`spec::check_runs`), that the session's status is active, that its
@@ -5639,14 +5640,17 @@ session until it is
   (`Runner.waits_for_driver`).
 
 A second socket beside
-it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
-serves programs in the sandbox: `fctl edit` names and describes the session
+it, the session socket (`FCTL_SESSION_SOCKET`, with `FCTL_SESSION_ID`, in
+the environment of Claude and of the project's setup script), serves
+programs in the sandbox: `fctl edit` names and describes the session
 there, `fctl publish` publishes screenshots, `fctl memory` and `fctl retro`
 keep the project's memory and record and update retrospectives,
 `fctl resolve` resolves review threads ([GitHub access](#github-access)),
-and `fctl ticket` reads and writes the project's tickets
-([Ticket trackers](#ticket-trackers)), with no fctl credentials in the
-sandbox.
+`fctl ticket` reads and writes the project's tickets
+([Ticket trackers](#ticket-trackers)), and `fctl id-token` mints identity
+tokens ([Identity tokens](#identity-tokens)), with no fctl credentials in
+the sandbox. fctl-agents of fctl 0.38.1 and earlier give the setup script
+neither variable, so `fctl` there can't reach the socket.
 
 Docker sandboxes don't reach cloud metadata services
 (`fctl_domain::metadata`), which hand out the machine's own credentials,

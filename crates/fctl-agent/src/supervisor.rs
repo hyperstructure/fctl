@@ -781,6 +781,22 @@ impl Supervisor {
 
     // ───────────────────────────── the session socket ─────────────────────────────
 
+    /// What tells `fctl` in the sandbox which session it runs and how to
+    /// reach this agent (the session socket), for Claude and the setup
+    /// script alike: a setup script mints identity tokens with `fctl
+    /// id-token`, as the agent does, to log in to Vault, say. They come
+    /// after the project's variables, and win.
+    fn session_env(&self, spec: &fctl_proto::runner::SessionSpec) -> Vec<(String, String)> {
+        let mut env = vec![
+            ("FCTL_SESSION_ID".to_owned(), spec.session_id.0.clone()),
+            ("FCTL_SESSION_URL".to_owned(), spec.web_url.clone()),
+        ];
+        if let Some(socket) = &self.session_socket {
+            env.push((SESSION_SOCKET_ENV.to_owned(), socket.display().to_string()));
+        }
+        env
+    }
+
     /// Answers a program in the sandbox: now, or once the host has
     /// uploaded the screenshot it publishes.
     fn on_session_call(&mut self, call: local::Call) {
@@ -1300,6 +1316,7 @@ impl Supervisor {
             self.persist();
         }
         let sandbox_env = prompt::sandbox_env(config.sandbox);
+        let session_env = self.session_env(&spec);
         self.cache = None;
         if let Some(cache) = &config.cache {
             match caches::prepare(cache, &home, &|key| std::env::var_os(key)) {
@@ -1420,6 +1437,7 @@ impl Supervisor {
                                 .map(|(k, v)| (k.clone(), v.clone())),
                         )
                         .chain(sandbox_env)
+                        .chain(session_env)
                         .collect();
                     // Its first tokens come through the host as the
                     // repository is cloned; a setup script that reaches a
@@ -1873,8 +1891,7 @@ impl Supervisor {
         // Turns Claude starts on its own (for background work) count too.
         env.insert(tasks::SESSION_STATE_ENV.into(), "1".into());
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
-        env.insert("FCTL_SESSION_ID".into(), spec.session_id.0.clone());
-        env.insert("FCTL_SESSION_URL".into(), spec.web_url.clone());
+        env.extend(self.session_env(spec));
         // An autopilot's own session: its `fctl` reaches the API through
         // this agent (`AgentCall::Api`), as the autopilot of this project.
         if let Some(a) = &spec.autopilot {
@@ -1882,9 +1899,6 @@ impl Supervisor {
         }
         if keeps_memory {
             env.insert(claude::DISABLE_AUTO_MEMORY_ENV.into(), "1".into());
-        }
-        if let Some(socket) = &self.session_socket {
-            env.insert(SESSION_SOCKET_ENV.into(), socket.display().to_string());
         }
         env.extend(prompt::sandbox_env(config.sandbox));
         // `fctl ticket` reaches the tracker, where the sandbox's fctl has it.
@@ -3979,6 +3993,59 @@ mod tests {
         );
         assert!(matches!(elsewhere, Some(SessionReply::Error { .. })));
         assert_eq!(sup.state.title.as_deref(), Some("Fix the login test"));
+        Ok(())
+    }
+
+    /// The setup script reaches this agent as Claude does, so that `fctl
+    /// id-token` works there, and the project's variables don't change
+    /// which session it is.
+    #[tokio::test]
+    async fn the_setup_script_reaches_the_session_socket() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("session.sock");
+        let (mut sup, _claude, mut work) =
+            Supervisor::new(dir.path().join("state"), Some(socket.clone()))?;
+        let mut spec = crate::workspace::tests::spec()?;
+        spec.project.repo = None;
+        spec.project.settings.setup_script = Some("env > \"$HOME/setup.env\"".into());
+        spec.project
+            .settings
+            .env
+            .insert("FCTL_SESSION_ID".into(), "ses_other".into());
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home)?;
+        sup.configure(AgentConfig {
+            spec,
+            workdir: dir.path().join("workspace").display().to_string(),
+            home: Some(home.display().to_string()),
+            claude_bin: None,
+            claude_args: vec![],
+            env: Default::default(),
+            push_on_commit: true,
+            first_agent_seq: None,
+            sandbox: None,
+            cache: None,
+            diffs: false,
+            claude_relay: None,
+        });
+        loop {
+            match tokio::time::timeout(Duration::from_secs(60), work.recv()).await? {
+                Some(Work::Prepared(done)) => break done.map_err(anyhow::Error::msg)?,
+                Some(_) => {}
+                None => anyhow::bail!("the workspace was never prepared"),
+            }
+        }
+        let env = std::fs::read_to_string(home.join("setup.env"))?;
+        let has = |line: &str| env.lines().any(|l| l == line);
+        assert!(has("FCTL_SESSION_ID=ses_test"), "{env}");
+        assert!(
+            has("FCTL_SESSION_URL=https://fctl.test/s/ses_test"),
+            "{env}"
+        );
+        assert!(
+            has(&format!("FCTL_SESSION_SOCKET={}", socket.display())),
+            "{env}"
+        );
         Ok(())
     }
 

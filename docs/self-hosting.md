@@ -74,7 +74,7 @@ to keep it to this machine, or the https address of a
 that creates the first account, the primary instance owner's, after what
 plain http gives up:
 
-```
+```text
 Made a master key in /data/master-key. It encrypts stored credentials and secrets: keep it with the data (or set FCTL_MASTER_KEY to it).
 Applied 18 database migrations
 fctl control plane 0.11.0 at http://192.168.1.20:8787, listening on 0.0.0.0:8787, data in /data
@@ -918,7 +918,7 @@ choice, where GitHub says they may be. New repositories go into
 organization the workspace works in all of; the app can create repositories
 in organizations, not in people's own accounts.
 
-Under **Admin → GitHub** (`fctl admin github`), an instance admin sees the
+Under **Admin → GitHub** (`fctl admin github list`), an instance admin sees the
 app's installations and the workspaces that use each, and can take an
 account from a workspace (`fctl admin github remove <account>
 <workspace>`), which its running sessions lose within the hour. Only the
