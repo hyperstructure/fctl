@@ -609,4 +609,8 @@ Claude's environment has the project's variables and secrets,
 `FCTL_SESSION_URL`, `FCTL_SESSION_SOCKET`, the sandbox's size in
 `FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB`, and in projects that keep
 a memory `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. `ANTHROPIC_*` variables and
-the Bedrock, Vertex and Foundry switches never reach it.
+the Bedrock, Vertex and Foundry switches never reach it. The setup script
+has the image's environment, the project's variables and secrets, the
+clouds' variables, the sandbox's size and, on hosts after fctl 0.38.1,
+`FCTL_SESSION_ID`, `FCTL_SESSION_URL` and `FCTL_SESSION_SOCKET`, so that
+`fctl id-token` works there as it does for the agent.

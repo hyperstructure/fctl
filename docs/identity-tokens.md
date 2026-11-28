@@ -385,7 +385,10 @@ needs ([Your own image](sandbox-images.md#your-own-image)). On Google
 Cloud, `gcloud secrets versions access latest --secret=npm-token
 --project=acme-prod` reads one from Secret Manager; on Azure, `az
 keyvault secret show --vault-name acme --name npm-token --query value -o
-tsv` reads one from Key Vault, after the `az login` above.
+tsv` reads one from Key Vault, after the `az login` above. A secret in
+Vault or another service of yours that takes identity tokens comes the
+same way, with a token from `fctl id-token`
+([below](#hashicorp-vault-and-others)).
 
 The project's agents have the same credentials, and read what the setup
 script writes: keep there only secrets the agents may hold too.
@@ -412,14 +415,17 @@ vault write auth/fctl/role/web-agents - <<'EOF'
 }
 EOF
 
-# in a session
-vault write auth/fctl/login role=web-agents jwt="$(fctl id-token -a https://vault.acme.dev)"
+# in a session, or in the project's setup script
+export VAULT_TOKEN=$(vault write -field=token auth/fctl/login role=web-agents \
+  jwt="$(fctl id-token -a https://vault.acme.dev)")
+vault kv get -field=token secret/web/npm
 ```
 
-`fctl id-token` doesn't work in a setup script, so neither does this
-login there: it reaches fctl-agent through the session's socket, which
-only the agent's environment has. Log in to Vault in the session, or
-keep what the setup script needs in a cloud the project connects
+The setup script mints identity tokens as the agent does, through
+fctl-agent and the session's socket, on runners whose host is newer
+than fctl 0.38.1. On older ones, `fctl id-token` there says to run it in
+a session's sandbox: log in to Vault in the session instead, or keep
+what the setup script needs in a cloud the project connects
 ([above](#secrets-for-the-setup-script)).
 
 ## What a token proves
@@ -429,8 +435,9 @@ that session, through the runner that runs it, in the last 10 minutes. It
 doesn't prove what the agent meant to do. Keep in mind:
 
 - **Whatever runs in the sandbox can mint one**: the agent, the tools and
-  scripts it runs, code in the repository. Give a role or a service what
-  the project's agents should do there, and no more.
+  scripts it runs, the project's setup script, code in the repository.
+  Give a role or a service what the project's agents should do there,
+  and no more.
 - **So can the runner's owner**, who controls the machine and its host,
   for the sessions the runner runs. Trust workspace runners alone with
   `runner_personal` false, or certain runners with `runner_id`.
