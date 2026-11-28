@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { describeScope, example, formScope, NEW_TOKEN, ready, tokenRequest, words } from "./tokens";
+import {
+  describeScope,
+  example,
+  expiries,
+  fitExpiry,
+  formScope,
+  NEW_TOKEN,
+  ready,
+  tokenRequest,
+  words,
+} from "./tokens";
 
 const place = (id: string, name?: string, slug?: string): G.TokenPlace => ({ id, name, slug });
 
@@ -74,6 +84,19 @@ describe("access tokens", () => {
       )?.github_access,
     ).toBeUndefined();
     expect(formScope({ ...NEW_TOKEN, access: "full", github: "comment" }, names)).toBeUndefined();
+  });
+
+  it("lasts no longer than the instance lets a token last", () => {
+    expect(expiries(0).map((e) => e.value)).toEqual(["7", "30", "90", "365", "never"]);
+    expect(expiries(90).map((e) => e.value)).toEqual(["7", "30", "90"]);
+    expect(expiries(60).map((e) => e.label)).toEqual(["7 days", "30 days", "60 days"]);
+    // The form's 90 days, or never, become the longest it lets.
+    expect(fitExpiry("90", 60)).toBe("60");
+    expect(fitExpiry("never", 30)).toBe("30");
+    expect(fitExpiry("7", 30)).toBe("7");
+    expect(fitExpiry("never", 0)).toBe("never");
+    expect(tokenRequest({ ...NEW_TOKEN, name: "CI", expires: "60" }).expires_in_days).toBe(60);
+    expect(tokenRequest({ ...NEW_TOKEN, name: "CI", expires: "never" }).expires_in_days).toBeUndefined();
   });
 
   it("needs a name, and a project when it names some", () => {

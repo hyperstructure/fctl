@@ -56,6 +56,13 @@ pub struct SignInInfo {
     /// ([`InstanceSettings::self_sign_up`]). Off, the page tells people
     /// without an account to ask an admin.
     pub self_sign_up: bool,
+    /// This request comes from outside the networks the instance takes
+    /// sign-ins from ([`InstanceSettings::networks`]): the page says so,
+    /// as only the primary instance owner signs in from here. Absent from
+    /// control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub outside: bool,
 }
 
 /// A provider people sign in with: Google, or (later) another OpenID
@@ -328,6 +335,10 @@ pub struct Me {
     /// of the people at a domain of one of your addresses
     /// ([`InstanceSettings::sign_in`]). Absent where none does.
     pub sign_in: Option<SignInRequirement>,
+    /// How long your sign-ins last and whether you make access tokens, as
+    /// the instance's admins set them. Absent for limited tokens, and from
+    /// control planes before it.
+    pub sessions: Option<SessionPolicy>,
 }
 
 /// How someone signs in, as a domain of one of their addresses requires
@@ -1769,6 +1780,104 @@ pub struct InstanceSettings {
     /// trouble at Claude doesn't: [`DEFAULT_CLAUDE_REFUSALS`] by default,
     /// 1 to [`MAX_CLAUDE_REFUSALS`].
     pub claude_refusals: u32,
+    /// A browser stays signed in at most this many hours after its sign-in,
+    /// however much it's used; then its person signs in again, through
+    /// their domain's provider where one is required, which checks they
+    /// may. 0 (the default): as long as it's used. At most
+    /// [`MAX_BROWSER_MAX_HOURS`].
+    pub browser_max_hours: u32,
+    /// A browser unused this many minutes is signed out: no request with
+    /// its sign-in, a tab that shows something live keeping it in use.
+    /// [`DEFAULT_BROWSER_IDLE_MINUTES`] (30 days) by default, at least
+    /// [`MIN_BROWSER_IDLE_MINUTES`].
+    pub browser_idle_minutes: u32,
+    /// A CLI stays signed in at most this many days after its sign-in;
+    /// then it signs in again with `fctl login`. 0 (the default): as long
+    /// as it's used, until 180 days unused. At most [`MAX_CLI_MAX_DAYS`].
+    pub cli_max_days: u32,
+    /// An access token lasts at most this many days after it's made: new
+    /// ones can't be made to last longer, and older ones end then. 0 (the
+    /// default): as long as their maker chose, for ever included. At most
+    /// [`MAX_ACCESS_TOKEN_DAYS`].
+    pub access_token_max_days: u32,
+    /// Members make access tokens. Off, only instance admins and the
+    /// primary instance owner make them, and members' stop working: they
+    /// use the CLI, signed in as themselves. On by default.
+    pub member_access_tokens: bool,
+    /// The networks people sign in and send requests from, as CIDR ranges
+    /// (`203.0.113.0/24`, `2001:db8::/32`): an office's, a VPN's. Browsers,
+    /// CLIs, access tokens, admin tokens and service accounts outside them
+    /// are refused; runners, webhooks and published links aren't held to
+    /// them, and the primary instance owner signs in from anywhere, in a
+    /// browser or the CLI. None (the default): anywhere. At most
+    /// `fctl_domain::networks::MAX_NETWORKS`.
+    pub networks: Vec<String>,
+}
+
+/// How long sign-ins last and who makes access tokens: the instance's
+/// session policies, as [`InstanceSettings`] keeps them
+/// (`browser_max_hours` and the rest), each in the same unit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct SessionPolicy {
+    pub browser_max_hours: u32,
+    pub browser_idle_minutes: u32,
+    pub cli_max_days: u32,
+    pub access_token_max_days: u32,
+    pub member_access_tokens: bool,
+}
+
+impl Default for SessionPolicy {
+    fn default() -> Self {
+        InstanceSettings::default().session_policy()
+    }
+}
+
+impl InstanceSettings {
+    /// Its session policies.
+    pub fn session_policy(&self) -> SessionPolicy {
+        SessionPolicy {
+            browser_max_hours: self.browser_max_hours,
+            browser_idle_minutes: self.browser_idle_minutes,
+            cli_max_days: self.cli_max_days,
+            access_token_max_days: self.access_token_max_days,
+            member_access_tokens: self.member_access_tokens,
+        }
+    }
+}
+
+/// [`InstanceSettings::browser_idle_minutes`] by default: 30 days, the
+/// longest it may be.
+pub const DEFAULT_BROWSER_IDLE_MINUTES: u32 = 30 * 24 * 60;
+/// The shortest [`InstanceSettings::browser_idle_minutes`].
+pub const MIN_BROWSER_IDLE_MINUTES: u32 = 5;
+/// The longest [`InstanceSettings::browser_max_hours`]: a year.
+pub const MAX_BROWSER_MAX_HOURS: u32 = 8760;
+/// The longest [`InstanceSettings::cli_max_days`]: a year.
+pub const MAX_CLI_MAX_DAYS: u32 = 365;
+/// The longest [`InstanceSettings::access_token_max_days`], as long as an
+/// access token may be made to last: ten years.
+pub const MAX_ACCESS_TOKEN_DAYS: u32 = 3650;
+
+/// `POST /api/v1/admin/sign-in/sessions/preview`'s answer: what saving a
+/// [`SessionPolicy`] in place of the instance's would end at once, before
+/// anything changes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SessionPolicyPreview {
+    /// Browsers it signs out, which have been signed in longer than it lets
+    /// them, or unused longer.
+    pub browsers: u32,
+    /// CLIs it signs out, signed in longer than it lets them.
+    pub clis: u32,
+    /// Access tokens it ends: older than it lets them be, or members' where
+    /// members no longer make them.
+    pub access_tokens: u32,
+    /// Of `access_tokens`, those of members.
+    pub member_tokens: u32,
+    /// It signs out the browser or CLI this request comes from.
+    pub you: bool,
 }
 
 /// How the people at some domains sign in ([`InstanceSettings::sign_in`]):
@@ -1825,6 +1934,18 @@ pub struct SignInOverview {
     /// The instance sends email: people hear when a rule changes how they
     /// sign in.
     pub email: bool,
+    /// How long sign-ins last and who makes access tokens. Its defaults
+    /// from control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<SessionPolicy>", optional))]
+    pub sessions: SessionPolicy,
+    /// [`InstanceSettings::networks`]. None from control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub networks: Vec<String>,
+    /// The address this request comes from, as the instance sees it: what a
+    /// network has to hold for the admin to stay in.
+    pub address: Option<String>,
 }
 
 /// A provider as instance admins see it ([`SignInOverview::providers`]).
@@ -1991,6 +2112,12 @@ impl Default for InstanceSettings {
             claude_limit_pauses: true,
             claude_instance_view: false,
             claude_refusals: DEFAULT_CLAUDE_REFUSALS,
+            browser_max_hours: 0,
+            browser_idle_minutes: DEFAULT_BROWSER_IDLE_MINUTES,
+            cli_max_days: 0,
+            access_token_max_days: 0,
+            member_access_tokens: true,
+            networks: Vec::new(),
         }
     }
 }
@@ -2024,6 +2151,21 @@ pub struct UpdateInstanceSettingsRequest {
     pub claude_instance_view: Option<bool>,
     /// 1 to [`MAX_CLAUDE_REFUSALS`].
     pub claude_refusals: Option<u32>,
+    /// 0 to [`MAX_BROWSER_MAX_HOURS`]. Saving a session policy ends at once
+    /// the sign-ins and access tokens it doesn't let last
+    /// ([`SessionPolicyPreview`]).
+    pub browser_max_hours: Option<u32>,
+    /// [`MIN_BROWSER_IDLE_MINUTES`] to [`DEFAULT_BROWSER_IDLE_MINUTES`].
+    pub browser_idle_minutes: Option<u32>,
+    /// 0 to [`MAX_CLI_MAX_DAYS`].
+    pub cli_max_days: Option<u32>,
+    /// 0 to [`MAX_ACCESS_TOKEN_DAYS`].
+    pub access_token_max_days: Option<u32>,
+    pub member_access_tokens: Option<bool>,
+    /// Replaces the networks: `[]` for anywhere. Refused (`409`) where the
+    /// caller's own address would be outside them, unless they're the
+    /// primary instance owner.
+    pub networks: Option<Vec<String>>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────

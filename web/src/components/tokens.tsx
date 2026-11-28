@@ -14,11 +14,14 @@ import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
 import { GITHUB_ACCESS } from "@/lib/github-access";
 import { siteUrl } from "@/lib/install";
-import { keys, queryClient, useProjects, useWorkspaces } from "@/lib/queries";
+import { keys, queryClient, useMe, useProjects, useWorkspaces } from "@/lib/queries";
+import { days as expiryWords } from "@/lib/session-policy";
 import {
   describeScope,
-  EXPIRIES,
   example,
+  expiries,
+  expiryDays,
+  fitExpiry,
   formScope,
   NEW_TOKEN,
   reach,
@@ -33,23 +36,33 @@ const GUIDE = () => `${siteUrl()}/docs/automation/`;
 
 export function AccessTokens() {
   const list = useQuery({ queryKey: keys.tokens, queryFn: api.tokens });
+  const { data: me } = useMe();
   const [open, setOpen] = useState(false);
   const revoke = useMutation({
     mutationFn: (id: string) => api.deleteToken(id),
     onSuccess: () => list.refetch(),
   });
   const tokens = list.data?.tokens.filter((t) => t.kind === "pat") ?? [];
+  // Where only admins make them, a member's stopped working: the instance's admins say so in Admin → Sign-in.
+  const adminsOnly = me?.sessions?.member_access_tokens === false && me.user.role === "member";
+  const max = me?.sessions?.access_token_max_days ?? 0;
   return (
     <Section
       title="Access tokens"
-      description="For scripts, CI and bots: each works as you, limited to what it is for, until it expires or you revoke it."
+      description={
+        adminsOnly
+          ? "For scripts, CI and bots. Only this instance's admins make them: use the CLI, signed in as you with fctl login, or ask an admin."
+          : `For scripts, CI and bots: each works as you, limited to what it is for, until it expires or you revoke it.${max > 0 ? ` This instance lets one last ${expiryWords(max)} at most.` : ""}`
+      }
       actions={
-        <Button size="sm" icon={<Plus className="size-3.5" />} onClick={() => setOpen(true)}>
-          New access token
-        </Button>
+        adminsOnly ? undefined : (
+          <Button size="sm" icon={<Plus className="size-3.5" />} onClick={() => setOpen(true)}>
+            New access token
+          </Button>
+        )
       }
     >
-      {tokens.length ? (
+      {adminsOnly && tokens.length === 0 ? null : tokens.length ? (
         <ul className="divide-y divide-line border-y border-line">
           {tokens.map((t) => (
             <li key={t.id} className="flex items-start gap-3 py-3">
@@ -87,14 +100,16 @@ export function AccessTokens() {
           </a>
         </p>
       )}
-      <NewTokenDialog open={open} onClose={() => setOpen(false)} />
+      {!adminsOnly && <NewTokenDialog open={open} onClose={() => setOpen(false)} max={max} />}
     </Section>
   );
 }
 
 /** Makes an access token: what it does, where, what its agents may do on GitHub, how long it works. */
-export function NewTokenDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [form, setForm] = useState<TokenForm>(NEW_TOKEN);
+export function NewTokenDialog({ open, onClose, max }: { open: boolean; onClose: () => void; max: number }) {
+  const [typed, setForm] = useState<TokenForm>(NEW_TOKEN);
+  // Within the longest the instance lets a token last.
+  const form = { ...typed, expires: fitExpiry(typed.expires, max) };
   const [created, setCreated] = useState<G.CreatedToken | null>(null);
   const set = (f: Partial<TokenForm>) => setForm((was) => ({ ...was, ...f }));
   const create = useMutation({
@@ -123,7 +138,7 @@ export function NewTokenDialog({ open, onClose }: { open: boolean; onClose: () =
       {created ? (
         <Created token={created} onDone={close} />
       ) : (
-        <TokenFormView form={form} set={set} create={create} />
+        <TokenFormView form={form} set={set} create={create} max={max} />
       )}
     </Dialog>
   );
@@ -133,10 +148,13 @@ function TokenFormView({
   form,
   set,
   create,
+  max,
 }: {
   form: TokenForm;
   set: (f: Partial<TokenForm>) => void;
   create: { mutate: () => void; isPending: boolean; error: Error | null };
+  /** The longest the instance lets a token last, in days; 0: as long as its maker chooses. */
+  max: number;
 }) {
   const workspaces = useWorkspaces().data?.workspaces ?? [];
   const projects = useProjects().data?.projects ?? [];
@@ -148,7 +166,7 @@ function TokenFormView({
     [workspaces, projects],
   );
   const scope = formScope(form, names);
-  const expiry = EXPIRIES.find((e) => e.value === form.expires)?.days;
+  const expiry = expiryDays(form.expires);
   const field = (create.error as { field?: string } | null)?.field;
   const err = (f: string) => (field === f ? create.error?.message : undefined);
   const id = useId();
@@ -240,13 +258,17 @@ function TokenFormView({
             )}
           </Field>
         )}
-        <Field label="Expires" error={err("expires_in_days")}>
+        <Field
+          label="Expires"
+          hint={max > 0 ? `This instance lets a token last ${expiryWords(max)} at most.` : undefined}
+          error={err("expires_in_days")}
+        >
           {(fid) => (
             <Select
               id={fid}
               value={form.expires}
               onChange={(expires) => set({ expires })}
-              options={EXPIRIES.map((e) => ({ value: e.value, label: e.label }))}
+              options={expiries(max).map((e) => ({ value: e.value, label: e.label }))}
             />
           )}
         </Field>

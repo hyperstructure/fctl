@@ -140,8 +140,25 @@ owner and purpose), so a value copied between rows does not decrypt.
   while the provider is down; an admin can't save a rule their own
   sign-in doesn't meet, and letting a domain go, or passkeys in, is a
   sensitive action. Closing someone's account at the provider stops their
-  next sign-in, not the sessions they have: disable their account here
-  too.
+  next sign-in, not the sign-ins they have: disable their account here
+  too, or keep sign-ins short.
+- **How long sign-ins last.** A browser's sign-in ends after 30 days
+  unused, a CLI's after 180, and an access token when its maker chose.
+  Instance admins can say less (Admin → Sign-in → Staying signed in,
+  `fctl admin sign-in policies`): browsers signed in at most so many
+  hours, however much they're used, and signed out after as little as 5
+  minutes unused; CLIs at most so many days; access tokens no older than
+  so many days, and made by admins alone. Every request checks its token
+  against them, those made before too, and saving one ends the sign-ins
+  it doesn't let last. Letting them last longer is a sensitive action.
+- **Networks.** Instance admins can take sign-ins and requests only from
+  some IP ranges (Admin → Sign-in → Networks): browsers, CLIs, access
+  tokens, admin tokens and service accounts elsewhere are refused, while
+  runners, webhooks and published links aren't held to them. The primary
+  instance owner signs in from anywhere with a browser or the CLI; an admin
+  can't save ranges their own address is outside of; and letting people in
+  from more places is a sensitive action. The address is the one
+  Cloudflare, or a self-hosted server's trusted proxies, saw.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin

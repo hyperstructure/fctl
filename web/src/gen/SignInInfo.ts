@@ -22,4 +22,11 @@ rules: Array<SignInRule>,
  * ([`InstanceSettings::self_sign_up`]). Off, the page tells people
  * without an account to ask an admin.
  */
-self_sign_up: boolean, };
+self_sign_up: boolean, 
+/**
+ * This request comes from outside the networks the instance takes
+ * sign-ins from ([`InstanceSettings::networks`]): the page says so,
+ * as only the primary instance owner signs in from here. Absent from
+ * control planes before it.
+ */
+outside?: boolean, };

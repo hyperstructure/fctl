@@ -436,8 +436,33 @@ by its id, `google` ([ADR 0099](adr/0099-domains-require-signing-in-with-their-p
   token, removes one. Saving rules that let anyone sign in another way
   (a domain let go, passkeys let in, another provider) is a sensitive
   action (`Sensitive::RelaxSignIn`). Closing someone's account at the
-  provider stops their next sign-in, not the sessions they have:
-  disabling their account here does that.
+  provider stops their next sign-in, not the sign-ins they have:
+  disabling their account here does that, and session policies keep them
+  short.
+- **Session policies** (`InstanceSettings::browser_max_hours`,
+  `browser_idle_minutes`, `cli_max_days`, `access_token_max_days`,
+  `member_access_tokens`; Admin → Sign-in → Staying signed in, `fctl admin
+  sign-in policies`): how long a browser's and a CLI's sign-ins last from
+  when they were made, how long a browser lasts unused (30 days unless
+  less), the oldest an access token may be, and whether members make them
+  ([ADR 0102](adr/0102-instances-limit-how-long-sign-ins-last.md)). Every
+  request checks its token against them as `auth::authenticate` reads it
+  (`fctl_domain::session_policy::ended`), those made before them too; a
+  token's sliding end never passes them, and its use is recorded at least
+  every quarter of the time a browser may sit unused. Saving one deletes
+  what it ends at once, in one statement (`sign_in::revoke_ended`, whose
+  count `POST /admin/sign-in/sessions/preview` shows first). Admin tokens
+  and service accounts' secrets aren't held to them.
+- **Networks** (`InstanceSettings::networks`, `fctl_domain::networks`):
+  the CIDR ranges sign-ins and requests come from, by `CF-Connecting-IP`.
+  `auth::authenticate` refuses a CLI's, access token's or admin token's
+  request from elsewhere and treats a browser as signed out without
+  clearing its cookie; `service_accounts::authenticate` refuses theirs;
+  `auth::start_web_session`, the password and reset handlers, the Google
+  sign-in (`?error=network`) and the CLI's device code refuse a sign-in.
+  The primary instance owner's browser and CLI are exempt
+  (`sign_in::outside`); runners, webhooks and published links never reach
+  these checks.
 - **Accounts only from the directory.** With `InstanceSettings::self_sign_up`
   off, a provider's sign-in makes an account only for an address with an
   allowlist entry of its own (an invitation's, or one an admin allowed):

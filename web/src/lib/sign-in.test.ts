@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
+import { DEFAULT_POLICY } from "./session-policy";
 import {
   consequences,
   domainOf,
@@ -170,6 +171,7 @@ describe("changing the rules", () => {
       passkeys: 9,
       no_way_in: 3,
       email: true,
+      sessions: DEFAULT_POLICY,
     };
     expect(today(overview)).toBe(
       "52 people have an account: 38 with a password, 12 with Google and 9 with a passkey. 3 people haven't signed in yet.",

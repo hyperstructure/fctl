@@ -9,6 +9,7 @@ use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use fctl_domain::cookies::Cookie;
 use fctl_domain::limits::Limits;
+use fctl_domain::session_policy;
 use fctl_domain::sign_in::SignedIn;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_proto::ApiError;
@@ -16,10 +17,6 @@ use fctl_proto::api::{InstanceSettings, Me, TokenKind};
 use worker::{D1Database, Request};
 
 pub const DAY_MS: i64 = 24 * 60 * 60 * 1000;
-/// Web sessions expire this long after their last use.
-pub const WEB_SESSION_TTL_MS: i64 = 30 * DAY_MS;
-/// CLI tokens expire this long after their last use.
-pub const CLI_TOKEN_TTL_MS: i64 = 180 * DAY_MS;
 
 // ───────────────────────────── passwords ─────────────────────────────
 
@@ -65,6 +62,9 @@ pub struct NewToken<'a> {
     pub verified_at: Option<i64>,
     /// How the sign-in it comes from was made (`fctl_domain::sign_in`).
     pub how: SignedIn,
+    /// The instance's settings, where the caller has them: their session
+    /// policy says when it ends. Read from D1 otherwise.
+    pub settings: Option<&'a InstanceSettings>,
 }
 
 /// Creates a web session, CLI token or PAT and returns its id and secret.
@@ -81,6 +81,7 @@ pub async fn issue_token(
         limits,
         verified_at,
         how,
+        settings,
     } = new;
     let secret_kind = match kind {
         TokenKind::Web => SecretKind::WebSession,
@@ -89,11 +90,20 @@ pub async fn issue_token(
     };
     let secret = new_secret(secret_kind);
     let id = fctl_domain::ids::token_id(ctx.now);
-    let expires_at = expires_at.or(match kind {
-        TokenKind::Web => Some(ctx.now + WEB_SESSION_TTL_MS),
-        TokenKind::Cli => Some(ctx.now + CLI_TOKEN_TTL_MS),
-        TokenKind::Pat => None,
-    });
+    // A browser's or a CLI's lasts as the instance's session policy says.
+    // An access token keeps the end its maker chose, which the policy
+    // checked: every request applies the policy's longest from when it was
+    // made, so that relaxing the policy gives the maker's choice back.
+    let policy = match settings {
+        Some(s) => s.session_policy(),
+        None => crate::instance::settings(&ctx.db).await?.session_policy(),
+    };
+    let expires_at = match kind {
+        TokenKind::Pat => expires_at,
+        TokenKind::Web | TokenKind::Cli => {
+            session_policy::expires_at(&policy, kind, ctx.now, ctx.now, expires_at)
+        }
+    };
     let scope = limits
         .filter(|_| kind == TokenKind::Pat)
         .map(Limits::to_json);
@@ -122,15 +132,21 @@ pub async fn issue_token(
     .run()
     .await?;
     if kind == TokenKind::Web {
-        let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
         ctx.cookies.push(http::set_cookie(
             Cookie::Session,
             &secret,
-            max_age,
+            cookie_max_age(&policy, ctx.now, ctx.now),
             ctx.cfg.secure_cookies(),
         ));
     }
     Ok((id.0, secret))
+}
+
+/// The seconds a browser keeps the session cookie of a sign-in made at
+/// `created_at`, as it's used at `now` (`session_policy::cookie_until`).
+fn cookie_max_age(policy: &fctl_proto::api::SessionPolicy, created_at: i64, now: i64) -> u64 {
+    let ms = (session_policy::cookie_until(policy, created_at, now) - now).max(0);
+    (ms / 1000) as u64
 }
 
 /// Signs in `user` in the browser: a new web session, and `last_login_at`
@@ -146,6 +162,12 @@ pub async fn start_web_session(
     how: SignedIn,
 ) -> AppResult<()> {
     let verified_at = confirmed.then_some(ctx.now);
+    let settings = crate::instance::settings(&ctx.db).await?;
+    // Every way into a browser comes here: none from outside the
+    // instance's networks, but the primary instance owner's.
+    if crate::sign_in::outside(&settings, ctx.ip.as_deref(), user, true) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     let (token_id, _) = issue_token(
         ctx,
         &user.id,
@@ -153,6 +175,7 @@ pub async fn start_web_session(
         NewToken {
             verified_at,
             how: how.clone(),
+            settings: Some(&settings),
             ..NewToken::default()
         },
     )
@@ -164,7 +187,6 @@ pub async fn start_web_session(
     )?
     .run()
     .await?;
-    let settings = crate::instance::settings(&ctx.db).await?;
     ctx.auth = Some(Authed::signed_in(
         user,
         token_id,
@@ -226,6 +248,30 @@ struct TokenLookup {
     instance_settings: Option<String>,
     #[serde(flatten)]
     user: UserRow,
+}
+
+impl TokenLookup {
+    /// Whether, and why, the token no longer signs its person in at `now`
+    /// under `settings`' session policy (`fctl_domain::session_policy`).
+    /// `in_use`: a socket opened with it is open, which counts as use,
+    /// though nothing records it ([`session_policy::Token::in_use`]).
+    fn ended(
+        &self,
+        kind: TokenKind,
+        settings: &InstanceSettings,
+        now: i64,
+        in_use: bool,
+    ) -> Option<session_policy::Ended> {
+        let token = session_policy::Token {
+            kind,
+            created_at: self.token_created_at,
+            last_used_at: self.last_used_at,
+            expires_at: self.expires_at,
+            member: self.user.role() == fctl_proto::session::InstanceRole::Member,
+        };
+        let token = if in_use { token.in_use(now) } else { token };
+        session_policy::ended(&settings.session_policy(), &token, now)
+    }
 }
 
 /// The bearer token or session cookie of a request, if any (`secure`:
@@ -291,11 +337,24 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
     let found: Option<TokenLookup> = q(db, &token_lookup_sql("id"), &[s(token_id)])?
         .first()
         .await?;
+    // An open socket is in use: it records that as a request does
+    // ([`authenticate`]), so that its sign-in's end slides, and the hourly
+    // job, which deletes ended sign-ins, leaves it.
+    if let Some(f) = &found {
+        let settings = crate::instance::parse(f.instance_settings.as_deref());
+        let kind = TokenKind::parse(&f.kind).unwrap_or(TokenKind::Pat);
+        if f.ended(kind, &settings, now, true).is_none() {
+            touch(db, f, kind, &settings.session_policy(), now).await?;
+        }
+    }
     Ok(found.and_then(|f| {
-        if f.expires_at.is_some_and(|e| e <= now) || !f.user.is_active() {
+        let settings = crate::instance::parse(f.instance_settings.as_deref());
+        let kind = TokenKind::parse(&f.kind).unwrap_or(TokenKind::Pat);
+        // Only its sign-in's age, its end as its maker chose and who makes
+        // access tokens close it.
+        if f.ended(kind, &settings, now, true).is_some() || !f.user.is_active() {
             return None;
         }
-        let settings = crate::instance::parse(f.instance_settings.as_deref());
         let how = SignedIn::read(f.auth_method.as_deref(), f.auth_domain.as_deref());
         if f.user.admits(&settings, &how).is_err() {
             return None;
@@ -311,6 +370,61 @@ pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult
             settings,
         })
     }))
+}
+
+/// When a token's use is recorded again after its last record: often
+/// enough, for a browser, that one in use isn't taken for unused.
+fn touch_after(kind: TokenKind, policy: &fctl_proto::api::SessionPolicy) -> i64 {
+    match kind {
+        TokenKind::Web => session_policy::touch_after_ms(policy),
+        TokenKind::Cli | TokenKind::Pat => session_policy::TOUCH_MS,
+    }
+}
+
+/// The end a token of `kind` slides to as it's used at `now`: a browser's
+/// or a CLI's as the session policy says; an access token's stays its
+/// maker's ([`issue_token`]).
+fn slid(
+    found: &TokenLookup,
+    kind: TokenKind,
+    policy: &fctl_proto::api::SessionPolicy,
+    now: i64,
+) -> Option<i64> {
+    match kind {
+        TokenKind::Pat => found.expires_at,
+        TokenKind::Web | TokenKind::Cli => {
+            session_policy::expires_at(policy, kind, found.token_created_at, now, None)
+        }
+    }
+}
+
+/// Records a socket's use of its token, at most as often as
+/// [`touch_after`] says.
+async fn touch(
+    db: &D1Database,
+    found: &TokenLookup,
+    kind: TokenKind,
+    policy: &fctl_proto::api::SessionPolicy,
+    now: i64,
+) -> AppResult<()> {
+    if found
+        .last_used_at
+        .is_some_and(|t| now - t <= touch_after(kind, policy))
+    {
+        return Ok(());
+    }
+    q(
+        db,
+        "UPDATE tokens SET last_used_at = ?, expires_at = ? WHERE id = ?",
+        &[
+            n(now),
+            on(slid(found, kind, policy, now)),
+            s(&found.token_id),
+        ],
+    )?
+    .run()
+    .await?;
+    Ok(())
 }
 
 /// Resolves the caller from the bearer token or the session cookie. Invalid
@@ -362,14 +476,18 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         }
         return Err(AppError(ApiError::unauthorized()));
     };
-    if found.expires_at.is_some_and(|e| e <= ctx.now) {
+    let kind = TokenKind::parse(&found.kind).unwrap_or(TokenKind::Pat);
+    let settings = crate::instance::parse(found.instance_settings.as_deref());
+    // Expired, or past what the instance's session policy lets it last: a
+    // browser's is signed out, and signs in again.
+    if let Some(why) = found.ended(kind, &settings, ctx.now, false) {
         if via_cookie {
             clear_session_cookie(ctx);
             return Ok(());
         }
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::Unauthorized,
-            "Your token has expired. Sign in again.",
+            session_policy::refusal(&settings.session_policy(), kind, why),
         )));
     }
     if !found.user.is_active() {
@@ -378,8 +496,19 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
             "Your account is disabled. Ask an admin for access.",
         )));
     }
-    let kind = TokenKind::parse(&found.kind).unwrap_or(TokenKind::Pat);
-    let settings = crate::instance::parse(found.instance_settings.as_deref());
+    // From outside the instance's networks: a browser is as signed out,
+    // and keeps its sign-in for when it's back inside one.
+    if crate::sign_in::outside(
+        &settings,
+        ctx.ip.as_deref(),
+        &found.user,
+        kind != TokenKind::Pat,
+    ) {
+        if via_cookie {
+            return Ok(());
+        }
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     // A domain of theirs signs in with a provider only: a sign-in made
     // another way, or before fctl kept how, no longer lets them in. A
     // browser's is signed out, and the sign-in page shows the way in.
@@ -391,16 +520,15 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         }
         return Err(AppError(crate::sign_in::token_refused(&required, kind)));
     }
-    // Touch the token at most every 10 minutes; slide web and CLI expiry.
+    // Touch the token at most every 10 minutes, or more often where
+    // browsers sign out after a short while unused; slide web and CLI
+    // expiry, never past what the session policy lets them last.
+    let policy = settings.session_policy();
     let stale = found
         .last_used_at
-        .is_none_or(|t| ctx.now - t > 10 * 60 * 1000);
+        .is_none_or(|t| ctx.now - t > touch_after(kind, &policy));
     if stale {
-        let new_expiry = match kind {
-            TokenKind::Web => Some(ctx.now + WEB_SESSION_TTL_MS),
-            TokenKind::Cli => Some(ctx.now + CLI_TOKEN_TTL_MS),
-            TokenKind::Pat => found.expires_at,
-        };
+        let new_expiry = slid(&found, kind, &policy, ctx.now);
         let db = crate::db::handle(&ctx.db);
         let id = found.token_id.clone();
         let now = ctx.now;
@@ -415,11 +543,10 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
             Ok(())
         });
         if kind == TokenKind::Web && via_cookie {
-            let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
             ctx.cookies.push(http::set_cookie(
                 Cookie::Session,
                 &secret,
-                max_age,
+                cookie_max_age(&policy, found.token_created_at, ctx.now),
                 ctx.cfg.secure_cookies(),
             ));
         }
@@ -478,6 +605,9 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
         )));
     }
     let settings = crate::instance::parse(found.instance_settings.as_deref());
+    if crate::sign_in::outside(&settings, ctx.ip.as_deref(), &found.user, false) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     // Held to the rules as its admin's own sign-ins are: one their domain's
     // rule doesn't meet stops.
     let how = SignedIn::read(found.auth_method.as_deref(), found.auth_domain.as_deref());
@@ -599,6 +729,7 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
         claude_stand_in: user.claude_stand_in,
         export: Some(data_export(ctx, user)),
         sign_in: crate::sign_in::requirement(user, &ctx.settings()),
+        sessions: Some(ctx.settings().session_policy()),
     })
 }
 
