@@ -51,8 +51,9 @@ already remove anyone from it.
   Workspace in its own workspace. Google closing someone's account stops
   their next sign-in there, not the sign-ins they have, which last as
   the instance lets them: its admins remove them from the workspace too
-  (session policies, #657, set how long sign-ins last on an instance of
-  one's own).
+  (session policies, [ADR
+  0102](0102-instances-limit-how-long-sign-ins-last.md), set how long
+  sign-ins last on an instance of one's own).
 - Its primary admin can always stop requiring it, even while it closes
   the workspace to them, so that a workspace nobody can meet the
   requirement of (Google sign-in no longer set up, their Google accounts
