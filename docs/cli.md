@@ -1670,7 +1670,7 @@ fctl admin delete-user grace@example.com   # asks you to type their address (--c
 fctl admin workspaces                      # and which need a primary admin
 fctl admin set-primary side-project grace@example.com   # when its primary admin's account is disabled
 fctl admin delete-workspace side-project   # asks you to type its name (--confirm NAME without a terminal)
-fctl admin github                          # the app's installations, and the workspaces that use each
+fctl admin github list                     # the app's installations, and the workspaces that use each
 fctl admin github remove acme side-project               # take acme from the workspace (its admins reconnect it)
 fctl admin early-access                    # who asked for early access, where the instance takes requests
 fctl admin early-access remove spam@example.com   # asking again adds them back
@@ -1822,7 +1822,7 @@ Two-factor sign-in takes a code from an authenticator app after your
 password, and after Google if you choose:
 
 ```sh
-fctl account two-factor                    # what you have, and what the instance requires
+fctl account two-factor status             # what you have, and what the instance requires
 fctl account two-factor enable             # prints a QR code, asks for the app's code, shows recovery codes
 fctl account two-factor enable --code 123456   # replace your app: a code from it, or a recovery code
 fctl account two-factor recovery-codes     # ten new ones; the old ones stop working
