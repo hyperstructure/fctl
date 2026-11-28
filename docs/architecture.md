@@ -5,7 +5,7 @@ agents do it in isolated sandboxes on machines you own. This document is
 the map. Read it before changing anything that crosses a component
 boundary.
 
-```
+```text
                          ┌──────── Cloudflare, or a container ────────┐
   browser (web app) ───► │  fctl-control  (Rust → wasm Worker)        │
   fctl CLI ────────────► │   ├─ REST API  /api/v1/*                   │
@@ -436,8 +436,33 @@ by its id, `google` ([ADR 0099](adr/0099-domains-require-signing-in-with-their-p
   token, removes one. Saving rules that let anyone sign in another way
   (a domain let go, passkeys let in, another provider) is a sensitive
   action (`Sensitive::RelaxSignIn`). Closing someone's account at the
-  provider stops their next sign-in, not the sessions they have:
-  disabling their account here does that.
+  provider stops their next sign-in, not the sign-ins they have:
+  disabling their account here does that, and session policies keep them
+  short.
+- **Session policies** (`InstanceSettings::browser_max_hours`,
+  `browser_idle_minutes`, `cli_max_days`, `access_token_max_days`,
+  `member_access_tokens`; Admin → Sign-in → Staying signed in, `fctl admin
+  sign-in policies`): how long a browser's and a CLI's sign-ins last from
+  when they were made, how long a browser lasts unused (30 days unless
+  less), the oldest an access token may be, and whether members make them
+  ([ADR 0102](adr/0102-instances-limit-how-long-sign-ins-last.md)). Every
+  request checks its token against them as `auth::authenticate` reads it
+  (`fctl_domain::session_policy::ended`), those made before them too; a
+  token's sliding end never passes them, and its use is recorded at least
+  every quarter of the time a browser may sit unused. Saving one deletes
+  what it ends at once, in one statement (`sign_in::revoke_ended`, whose
+  count `POST /admin/sign-in/sessions/preview` shows first). Admin tokens
+  and service accounts' secrets aren't held to them.
+- **Networks** (`InstanceSettings::networks`, `fctl_domain::networks`):
+  the CIDR ranges sign-ins and requests come from, by `CF-Connecting-IP`.
+  `auth::authenticate` refuses a CLI's, access token's or admin token's
+  request from elsewhere and treats a browser as signed out without
+  clearing its cookie; `service_accounts::authenticate` refuses theirs;
+  `auth::start_web_session`, the password and reset handlers, the Google
+  sign-in (`?error=network`) and the CLI's device code refuse a sign-in.
+  The primary instance owner's browser and CLI are exempt
+  (`sign_in::outside`); runners, webhooks and published links never reach
+  these checks.
 - **A workspace's own requirement** (`workspaces.sign_in`, a
   `SignInRule`; the workspace's Settings → Access, `fctl workspaces set
   --require-google acme.com`;
@@ -998,7 +1023,7 @@ Signing in to GitHub needs the app's client ID and secret
 setup URL with Redirect on update; without the first two a workspace keeps
 the accounts it has but connects no new one (`can_connect` is false). Instance admins
 connect and approve nothing: Admin → GitHub lists the installations and the
-workspaces that use each (`fctl admin github`), and an instance admin can
+workspaces that use each (`fctl admin github list`), and an instance admin can
 take an account from a workspace, not give one. Project repositories must
 be within the workspace's connections (`fctl_domain::repos::check_scope`),
 and every token a session gets is minted within them (`repos::narrow`), for
@@ -2120,7 +2145,8 @@ audience, for 10 minutes ([Identity tokens](identity-tokens.md),
   (`fctl_domain::id_tokens::plan`); two Workers that find one due make
   one, as the insert checks that no newer key is there.
 - **Agents mint them through their host**, as `fctl memory` does: `fctl
-  id-token` asks fctl-agent (`AgentCall::IdToken`), which refuses where
+  id-token`, run by the agent or by the project's setup script, asks
+  fctl-agent (`AgentCall::IdToken`), which refuses where
   its spec has no `id_tokens`, and the host sends it with its runner token.
   The control plane checks that the runner runs the session now
   (`spec::check_runs`), that the session's status is active, that its
@@ -5208,14 +5234,17 @@ session until it is
   (`Runner.waits_for_driver`).
 
 A second socket beside
-it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
-serves programs in the sandbox: `fctl edit` names and describes the session
+it, the session socket (`FCTL_SESSION_SOCKET`, with `FCTL_SESSION_ID`, in
+the environment of Claude and of the project's setup script), serves
+programs in the sandbox: `fctl edit` names and describes the session
 there, `fctl publish` publishes screenshots, `fctl memory` and `fctl retro`
 keep the project's memory and record and update retrospectives,
 `fctl resolve` resolves review threads ([GitHub access](#github-access)),
-and `fctl ticket` reads and writes the project's tickets
-([Ticket trackers](#ticket-trackers)), with no fctl credentials in the
-sandbox.
+`fctl ticket` reads and writes the project's tickets
+([Ticket trackers](#ticket-trackers)), and `fctl id-token` mints identity
+tokens ([Identity tokens](#identity-tokens)), with no fctl credentials in
+the sandbox. fctl-agents of fctl 0.38.1 and earlier give the setup script
+neither variable, so `fctl` there can't reach the socket.
 
 Docker sandboxes don't reach cloud metadata services
 (`fctl_domain::metadata`), which hand out the machine's own credentials,

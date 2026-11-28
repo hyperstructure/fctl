@@ -129,6 +129,10 @@ pub enum Sensitive {
     /// domain requires the provider, whoever next signs in with its address
     /// there links to their account.
     UnlinkSignIn,
+    /// Letting sign-ins and access tokens last longer, members make access
+    /// tokens again (`fctl_domain::session_policy::relaxes`), or people sign
+    /// in from more networks (`fctl_domain::networks::widens`).
+    RelaxSessions,
 }
 
 impl Sensitive {
@@ -175,6 +179,9 @@ impl Sensitive {
             }
             RelaxSignIn => "let people sign in another way than their domain's provider",
             UnlinkSignIn => "unlink someone's sign-in account",
+            RelaxSessions => {
+                "let sign-ins or access tokens last longer, or come from more networks"
+            }
         }
     }
 }
@@ -262,6 +269,15 @@ pub fn instance_settings_change(
         .is_some_and(|next| relaxes(&current.sign_in, next))
     {
         Some(Sensitive::RelaxSignIn)
+    } else if crate::session_policy::relaxes(
+        &current.session_policy(),
+        &session_policy(current, update),
+    ) || update
+        .networks
+        .as_ref()
+        .is_some_and(|next| crate::networks::widens(&current.networks, next))
+    {
+        Some(Sensitive::RelaxSessions)
     } else {
         None
     }
@@ -276,6 +292,27 @@ pub fn workspace_sign_in_relaxed(
 ) -> bool {
     let list = |r: Option<&fctl_proto::api::SignInRule>| r.into_iter().cloned().collect::<Vec<_>>();
     relaxes(&list(current), &list(next))
+}
+
+/// The session policy `update` leaves the instance with, from `current`.
+pub fn session_policy(
+    current: &InstanceSettings,
+    update: &UpdateInstanceSettingsRequest,
+) -> fctl_proto::api::SessionPolicy {
+    let was = current.session_policy();
+    fctl_proto::api::SessionPolicy {
+        browser_max_hours: update.browser_max_hours.unwrap_or(was.browser_max_hours),
+        browser_idle_minutes: update
+            .browser_idle_minutes
+            .unwrap_or(was.browser_idle_minutes),
+        cli_max_days: update.cli_max_days.unwrap_or(was.cli_max_days),
+        access_token_max_days: update
+            .access_token_max_days
+            .unwrap_or(was.access_token_max_days),
+        member_access_tokens: update
+            .member_access_tokens
+            .unwrap_or(was.member_access_tokens),
+    }
 }
 
 /// Whether `next` lets anyone sign in a way `current` doesn't: a domain
@@ -611,6 +648,70 @@ mod tests {
         assert!(!workspace_sign_in_relaxed(Some(&acme), Some(&acme)));
         assert!(!workspace_sign_in_relaxed(None, Some(&acme)));
         assert!(!workspace_sign_in_relaxed(None, None));
+    }
+
+    #[test]
+    fn letting_sign_ins_last_longer_is_sensitive() {
+        let current = InstanceSettings {
+            browser_max_hours: 12,
+            member_access_tokens: false,
+            ..Default::default()
+        };
+        let change =
+            |update: UpdateInstanceSettingsRequest| instance_settings_change(&current, &update);
+        let relaxes = Some(Sensitive::RelaxSessions);
+        assert_eq!(
+            change(UpdateInstanceSettingsRequest {
+                browser_max_hours: Some(0),
+                ..Default::default()
+            }),
+            relaxes
+        );
+        assert_eq!(
+            change(UpdateInstanceSettingsRequest {
+                member_access_tokens: Some(true),
+                ..Default::default()
+            }),
+            relaxes
+        );
+        // Shorter, or the same, isn't; nor is a first limit.
+        assert_eq!(
+            change(UpdateInstanceSettingsRequest {
+                browser_max_hours: Some(8),
+                member_access_tokens: Some(false),
+                cli_max_days: Some(30),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(change(UpdateInstanceSettingsRequest::default()), None);
+        // Networks: anywhere again, or one more; not fewer.
+        let inside = InstanceSettings {
+            networks: vec!["10.0.0.0/8".to_owned()],
+            ..Default::default()
+        };
+        let networks = |next: &[&str]| {
+            instance_settings_change(
+                &inside,
+                &UpdateInstanceSettingsRequest {
+                    networks: Some(next.iter().map(|n| (*n).to_owned()).collect()),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(networks(&[]), relaxes);
+        assert_eq!(networks(&["10.0.0.0/8", "192.0.2.0/24"]), relaxes);
+        assert_eq!(networks(&["10.0.0.0/8"]), None);
+        assert_eq!(
+            instance_settings_change(
+                &InstanceSettings::default(),
+                &UpdateInstanceSettingsRequest {
+                    networks: Some(vec!["10.0.0.0/8".to_owned()]),
+                    ..Default::default()
+                }
+            ),
+            None
+        );
     }
 
     #[test]

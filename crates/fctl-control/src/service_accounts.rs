@@ -274,6 +274,9 @@ pub async fn authenticate(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
         )));
     };
     let settings = crate::instance::settings(&ctx.db).await?;
+    if !fctl_domain::networks::admits(&settings.networks, ctx.ip.as_deref()) {
+        return Err(AppError(crate::sign_in::outside_refused(ctx.ip.as_deref())));
+    }
     // Its keeper left or lost the role, or, as it acts with their
     // authority, has to set up two-factor sign-in first, as their own
     // tokens wait too.

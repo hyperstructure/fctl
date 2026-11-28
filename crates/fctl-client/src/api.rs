@@ -2300,6 +2300,16 @@ impl Api {
         .await
     }
 
+    /// What saving `policy` in place of the instance's session policy
+    /// would end at once, before anything changes (admins). Saving it is
+    /// [`Self::update_instance_settings`] with its fields.
+    pub async fn session_policy_preview(
+        &self,
+        policy: &SessionPolicy,
+    ) -> Result<SessionPolicyPreview> {
+        self.post("/admin/sign-in/sessions/preview", policy).await
+    }
+
     /// Invites an address to the instance, and to workspaces you are an
     /// admin of.
     pub async fn invite(&self, req: &CreateInviteRequest) -> Result<Invite> {

@@ -30,4 +30,28 @@ sign_in?: Array<SignInRule>, self_sign_up?: boolean, claude_oversight?: ClaudeOv
 /**
  * 1 to [`MAX_CLAUDE_REFUSALS`].
  */
-claude_refusals?: number, };
+claude_refusals?: number, 
+/**
+ * 0 to [`MAX_BROWSER_MAX_HOURS`]. Saving a session policy ends at once
+ * the sign-ins and access tokens it doesn't let last
+ * ([`SessionPolicyPreview`]).
+ */
+browser_max_hours?: number, 
+/**
+ * [`MIN_BROWSER_IDLE_MINUTES`] to [`DEFAULT_BROWSER_IDLE_MINUTES`].
+ */
+browser_idle_minutes?: number, 
+/**
+ * 0 to [`MAX_CLI_MAX_DAYS`].
+ */
+cli_max_days?: number, 
+/**
+ * 0 to [`MAX_ACCESS_TOKEN_DAYS`].
+ */
+access_token_max_days?: number, member_access_tokens?: boolean, 
+/**
+ * Replaces the networks: `[]` for anywhere. Refused (`409`) where the
+ * caller's own address would be outside them, unless they're the
+ * primary instance owner.
+ */
+networks?: Array<string>, };

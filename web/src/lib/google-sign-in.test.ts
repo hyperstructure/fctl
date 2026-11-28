@@ -30,6 +30,7 @@ describe("what the sign-in page says when Google didn't sign someone in", () => 
 
   it("tells a stranger where accounts come from only from the directory", () => {
     expect(googleError("sign_up_closed", true)).toContain("Ask an admin of this instance for one.");
+    expect(googleError("network", true)).toContain("Connect to one (your VPN, say), then sign in.");
   });
 
   it("says the sign-in did not work for an error it doesn't know", () => {

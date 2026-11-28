@@ -7,6 +7,8 @@
 
 mod cmd;
 mod config;
+#[cfg(test)]
+mod doc_commands;
 mod prompt;
 mod render;
 mod stall;

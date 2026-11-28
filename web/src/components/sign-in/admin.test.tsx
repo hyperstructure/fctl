@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
+import { DEFAULT_POLICY } from "@/lib/session-policy";
 import { SignInAdmin } from "./admin";
 
 const signInPreview = vi.fn();
@@ -51,6 +52,7 @@ const overview = (fields: Partial<G.SignInOverview> = {}): G.SignInOverview => (
   owner: person("Ada"),
   method: "password",
   email: true,
+  sessions: DEFAULT_POLICY,
   ...fields,
 });
 
